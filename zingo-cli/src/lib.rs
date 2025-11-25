@@ -607,14 +607,6 @@ pub fn run_regtest_cli() {
 
     println!("Launching local regtest network...");
 
-    // Launch the local network first
-    let local_net = RT.block_on(regtest::launch_local_net());
-
-    // Get the lightwalletd port from the launched network
-    let lightwalletd_port = local_net.indexer().port();
-
-    println!("Local network launched on port {lightwalletd_port}");
-
     // Create a regtest-specific config directly
     let data_dir = regtest::get_regtest_dir();
 
@@ -628,7 +620,7 @@ pub fn run_regtest_cli() {
     let cli_config = ConfigTemplate {
         params: vec![],
         server: zingolib::config::construct_lightwalletd_uri(Some(format!(
-            "http://127.0.0.1:{lightwalletd_port}"
+            "http://127.0.0.1:18232"
         ))),
         seed: None,
         ufvk: None,

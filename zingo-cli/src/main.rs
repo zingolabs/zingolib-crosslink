@@ -9,5 +9,10 @@ pub fn main() {
     if let Err(e) = rustls::crypto::ring::default_provider().install_default() {
         eprintln!("Error installing crypto provider: {e:?}");
     }
+
+    #[cfg(not(feature = "regtest"))]
     zingo_cli::run_cli();
+
+    #[cfg(feature = "regtest")]
+    zingo_cli::run_regtest_cli();
 }
