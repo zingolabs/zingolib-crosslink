@@ -13,6 +13,7 @@ use std::{
 use json::JsonValue;
 use tokio::{sync::RwLock, task::JoinHandle};
 
+use tracing::instrument;
 use zcash_client_backend::tor;
 use zcash_keys::address::UnifiedAddress;
 use zcash_primitives::{consensus::BlockHeight, legacy::TransparentAddress};
@@ -90,6 +91,7 @@ impl LightClient {
     /// Creates a `LightClient` from a `wallet` and `config`.
     /// Will fail if a wallet file already exists in the given data directory unless `overwrite` is `true`.
     #[allow(clippy::result_large_err)]
+    #[instrument(name = "create_from_wallet", skip(wallet, overwrite))]
     pub fn create_from_wallet(
         wallet: LightWallet,
         config: ZingoConfig,

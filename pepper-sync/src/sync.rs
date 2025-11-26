@@ -12,6 +12,7 @@ use tokio::sync::{RwLock, mpsc};
 use incrementalmerkletree::{Marking, Retention};
 use orchard::tree::MerkleHashOrchard;
 use shardtree::store::ShardStore;
+use tracing::instrument;
 use zcash_client_backend::proto::service::RawTransaction;
 use zcash_client_backend::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
 use zcash_keys::keys::UnifiedFullViewingKey;
@@ -359,6 +360,8 @@ where
 
     let mut wallet_height = state::get_wallet_height(consensus_parameters, &*wallet_guard)
         .map_err(SyncError::WalletError)?;
+
+    tracing::info!("Wallet height: {}", wallet_height);
     let chain_height = client::get_chain_height(fetch_request_sender.clone()).await?;
     if chain_height == 0.into() {
         return Err(SyncError::ServerError(ServerError::GenesisBlockOnly));
@@ -848,6 +851,7 @@ where
 }
 
 /// Scan post-processing
+#[instrument(name = "scan_results", skip_all, level = "info")]
 async fn process_scan_results<W>(
     consensus_parameters: &impl consensus::Parameters,
     wallet: &mut W,
@@ -1455,15 +1459,16 @@ fn checked_birthday<W: SyncWallet>(
     consensus_parameters: &impl consensus::Parameters,
     wallet: &W,
 ) -> Result<BlockHeight, W::Error> {
-    let wallet_birthday = wallet.get_birthday()?;
-    let sapling_activation_height = consensus_parameters
-        .activation_height(consensus::NetworkUpgrade::Sapling)
-        .expect("sapling activation height should always return Some");
+    let wallet_birthday = wallet.get_birthday();
+    // let sapling_activation_height = consensus_parameters
+    //     .activation_height(consensus::NetworkUpgrade::Sapling)
+    //     .expect("sapling activation height should always return Some");
 
-    match wallet_birthday.cmp(&sapling_activation_height) {
-        cmp::Ordering::Greater | cmp::Ordering::Equal => Ok(wallet_birthday),
-        cmp::Ordering::Less => Ok(sapling_activation_height),
-    }
+    // match wallet_birthday.cmp(&sapling_activation_height) {
+    //     cmp::Ordering::Greater | cmp::Ordering::Equal => Ok(wallet_birthday),
+    //     cmp::Ordering::Less => Ok(sapling_activation_height),
+    // }
+    wallet_birthday
 }
 
 /// Sets up mempool stream.

@@ -37,6 +37,7 @@ zcash_keys = { workspace = true }
 zingo_common_components = { workspace = true, features = [
     "for_test",
 ], optional = true }
+zebra-chain = { workspace = true }
 
 [dev-dependencies]
 zingolib = { workspace = true, features = ["testutils"] }

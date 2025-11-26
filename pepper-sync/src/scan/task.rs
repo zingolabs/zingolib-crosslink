@@ -366,6 +366,7 @@ where
                     )
                     .await?
                 };
+
                 while let Some(compact_block) = match block_stream.message().await {
                     Ok(b) => b,
                     Err(e) if e.code() == tonic::Code::DeadlineExceeded => {
@@ -389,6 +390,11 @@ where
                         return Err(e.into());
                     }
                 } {
+                    tracing::info!(
+                        "Received compact block with hash: {} when scanning range: {}",
+                        compact_block.hash(),
+                        scan_task.scan_range
+                    );
                     if fetch_nullifiers_only {
                         sapling_nullifier_count += compact_block
                             .vtx
@@ -465,7 +471,7 @@ where
                     }
 
                     retry_height = compact_block.height() + 1;
-                    scan_task.compact_blocks.push(compact_block);
+                    scan_task.compact_blocks.push(compact_block.clone());
                 }
 
                 let _ignore_error = batch_sender.send(scan_task).await;

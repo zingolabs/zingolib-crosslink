@@ -82,6 +82,7 @@ struct ScanData {
     witness_data: WitnessData,
 }
 
+#[derive(Debug)]
 pub(crate) struct ScanResults {
     pub(crate) nullifiers: NullifierMap,
     pub(crate) outpoints: BTreeMap<OutputId, ScanTarget>,

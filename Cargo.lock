@@ -9255,6 +9255,7 @@ dependencies = [
  "zcash_local_net",
  "zcash_primitives 0.24.0",
  "zcash_protocol 0.6.1",
+ "zebra-chain",
  "zingo_common_components",
  "zingolib",
  "zip32",

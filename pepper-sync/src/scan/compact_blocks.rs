@@ -7,6 +7,7 @@ use incrementalmerkletree::{Marking, Position, Retention};
 use orchard::{note_encryption::CompactAction, tree::MerkleHashOrchard};
 use sapling_crypto::{Node, note_encryption::CompactOutputDescription};
 use tokio::sync::mpsc;
+use tracing::instrument;
 use zcash_client_backend::proto::compact_formats::{
     CompactBlock, CompactOrchardAction, CompactSaplingOutput,
 };
@@ -200,6 +201,7 @@ where
 ///
 /// If available, also checks continuity with the blocks adjacent to the `compact_blocks` forming the start and end
 /// seams of the scan ranges.
+#[instrument(name = "check_continuity", skip_all, level = "info")]
 fn check_continuity(
     compact_blocks: &[CompactBlock],
     start_seam_block: Option<&WalletBlock>,

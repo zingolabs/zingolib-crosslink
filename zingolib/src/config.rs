@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 use std::{
+    fmt::Formatter,
     io::{self, Error},
     num::NonZeroU32,
     path::{Path, PathBuf},
@@ -23,9 +24,11 @@ use log4rs::{
     encode::pattern::PatternEncoder,
     filter::threshold::ThresholdFilter,
 };
+use tracing::instrument;
 use zcash_primitives::consensus::{
     BlockHeight, MAIN_NETWORK, NetworkType, NetworkUpgrade, Parameters, TEST_NETWORK,
 };
+use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
 
 use crate::wallet::WalletSettings;
 
@@ -38,7 +41,7 @@ pub const ZENNIES_FOR_ZINGO_REGTEST_ADDRESS: &str = "uregtest14emvr2anyul683p43d
 #[must_use]
 pub fn get_donation_address_for_chain(chain: &ChainType) -> &'static str {
     match chain {
-        ChainType::Testnet => ZENNIES_FOR_ZINGO_TESTNET_ADDRESS,
+        ChainType::Testnet(_) => ZENNIES_FOR_ZINGO_TESTNET_ADDRESS,
         ChainType::Mainnet => ZENNIES_FOR_ZINGO_DONATION_ADDRESS,
         ChainType::Regtest(_) => ZENNIES_FOR_ZINGO_REGTEST_ADDRESS,
     }
@@ -48,18 +51,59 @@ pub fn get_donation_address_for_chain(chain: &ChainType) -> &'static str {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ChainType {
     /// Public testnet
-    Testnet,
+    Testnet(zebra_chain::parameters::testnet::ConfiguredActivationHeights),
     /// Mainnet
     Mainnet,
-    /// Local testnet
+    /// Local regtest
     Regtest(zebra_chain::parameters::testnet::ConfiguredActivationHeights),
+}
+
+impl ChainType {
+    pub fn show(&self) {
+        tracing::info!("{}", self);
+
+        let name = match self {
+            ChainType::Testnet(_) => "Testnet: ",
+            ChainType::Mainnet => "Mainnet: ",
+            ChainType::Regtest(_) => "Regtest: ",
+        };
+
+        tracing::info!("{name}");
+        tracing::info!(
+            "Blossom: {}",
+            self.activation_height(NetworkUpgrade::Blossom).unwrap()
+        );
+        tracing::info!(
+            "Heartwood: {}",
+            self.activation_height(NetworkUpgrade::Heartwood).unwrap()
+        );
+        tracing::info!(
+            "Canopy: {}",
+            self.activation_height(NetworkUpgrade::Canopy).unwrap()
+        );
+        tracing::info!(
+            "Nu5: {}",
+            self.activation_height(NetworkUpgrade::Nu5).unwrap()
+        );
+        tracing::info!(
+            "Nu6: {}",
+            self.activation_height(NetworkUpgrade::Nu6).unwrap()
+        );
+        tracing::info!(
+            "Nu6_1: {}",
+            match self.activation_height(NetworkUpgrade::Nu6_1) {
+                Some(height) => height.to_string(),
+                None => "Nu6_1 is UNSET".to_string(),
+            }
+        );
+    }
 }
 
 impl std::fmt::Display for ChainType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use ChainType::{Mainnet, Regtest, Testnet};
         let name = match self {
-            Testnet => "test",
+            Testnet(_) => "test",
             Mainnet => "main",
             Regtest(_) => "regtest",
         };
@@ -70,7 +114,7 @@ impl std::fmt::Display for ChainType {
 impl Parameters for ChainType {
     fn network_type(&self) -> NetworkType {
         match self {
-            ChainType::Testnet => NetworkType::Test,
+            ChainType::Testnet(_) => NetworkType::Test,
             ChainType::Mainnet => NetworkType::Main,
             ChainType::Regtest(_) => NetworkType::Regtest,
         }
@@ -79,7 +123,20 @@ impl Parameters for ChainType {
     fn activation_height(&self, nu: NetworkUpgrade) -> Option<BlockHeight> {
         use ChainType::{Mainnet, Regtest, Testnet};
         match self {
-            Testnet => TEST_NETWORK.activation_height(nu),
+            Testnet(activation_heights) => match nu {
+                NetworkUpgrade::Overwinter => {
+                    activation_heights.overwinter.map(BlockHeight::from_u32)
+                }
+                NetworkUpgrade::Sapling => activation_heights.sapling.map(BlockHeight::from_u32),
+                NetworkUpgrade::Blossom => activation_heights.blossom.map(BlockHeight::from_u32),
+                NetworkUpgrade::Heartwood => {
+                    activation_heights.heartwood.map(BlockHeight::from_u32)
+                }
+                NetworkUpgrade::Canopy => activation_heights.canopy.map(BlockHeight::from_u32),
+                NetworkUpgrade::Nu5 => activation_heights.nu5.map(BlockHeight::from_u32),
+                NetworkUpgrade::Nu6 => activation_heights.nu6.map(BlockHeight::from_u32),
+                NetworkUpgrade::Nu6_1 => activation_heights.nu6_1.map(BlockHeight::from_u32),
+            },
             Mainnet => MAIN_NETWORK.activation_height(nu),
             Regtest(activation_heights) => match nu {
                 NetworkUpgrade::Overwinter => {
@@ -122,9 +179,32 @@ pub enum ChainFromStringError {
 /// * `Err(String)` - An error message if the chain name is invalid
 pub fn chain_from_str(chain_name: &str) -> Result<ChainType, ChainFromStringError> {
     match chain_name {
-        "testnet" => Ok(ChainType::Testnet),
+        "testnet" => Ok(ChainType::Testnet(ConfiguredActivationHeights {
+            before_overwinter: Some(1),
+            overwinter: Some(1),
+            sapling: Some(1),
+            blossom: Some(1),
+            heartwood: Some(1),
+            canopy: Some(1),
+            nu5: Some(1),
+            nu6: Some(1),
+            nu6_1: None,
+            nu7: None,
+        })),
         "mainnet" => Ok(ChainType::Mainnet),
-        "regtest" => Err(ChainFromStringError::UnknownRegtestChain),
+        // "regtest" => Err(ChainFromStringError::UnknownRegtestChain),
+        "regtest" => Ok(ChainType::Regtest(ConfiguredActivationHeights {
+            before_overwinter: Some(1),
+            overwinter: Some(1),
+            sapling: Some(1),
+            blossom: Some(1),
+            heartwood: Some(1),
+            canopy: Some(1),
+            nu5: Some(1),
+            nu6: Some(1),
+            nu6_1: None,
+            nu7: None,
+        })),
         _ => Err(ChainFromStringError::UnknownChain(chain_name.to_string())),
     }
 }
@@ -136,9 +216,9 @@ pub const ZENNIES_FOR_ZINGO_DONATION_ADDRESS: &str = "u1p32nu0pgev5cr0u6t4ja9lcn
 /// TODO: Add Doc Comment Here!
 pub const ZENNIES_FOR_ZINGO_AMOUNT: u64 = 1_000_000;
 /// The lightserver that handles blockchain requests
-pub const DEFAULT_LIGHTWALLETD_SERVER: &str = "https://zec.rocks:443";
+pub const DEFAULT_LIGHTWALLETD_SERVER: &str = "http://70.34.201.202:18233";
 /// Used for testnet
-pub const DEFAULT_TESTNET_LIGHTWALLETD_SERVER: &str = "https://testnet.zec.rocks";
+pub const DEFAULT_TESTNET_LIGHTWALLETD_SERVER: &str = "http://70.34.201.202:18233";
 /// TODO: Add Doc Comment Here!
 pub const DEFAULT_WALLET_NAME: &str = "zingo-wallet.dat";
 /// TODO: Add Doc Comment Here!
@@ -370,13 +450,24 @@ impl ZingoConfig {
     /// create a `ZingoConfig` that helps a `LightClient` connect to a server.
     #[must_use]
     pub fn create_testnet() -> ZingoConfig {
-        ZingoConfig::build(ChainType::Testnet)
-            .set_lightwalletd_uri(
-                (DEFAULT_TESTNET_LIGHTWALLETD_SERVER)
-                    .parse::<http::Uri>()
-                    .unwrap(),
-            )
-            .create()
+        ZingoConfig::build(ChainType::Testnet(ConfiguredActivationHeights {
+            before_overwinter: Some(1),
+            overwinter: Some(1),
+            sapling: Some(1),
+            blossom: Some(1),
+            heartwood: Some(1),
+            canopy: Some(1),
+            nu5: Some(1),
+            nu6: Some(1),
+            nu6_1: None,
+            nu7: None,
+        }))
+        .set_lightwalletd_uri(
+            (DEFAULT_TESTNET_LIGHTWALLETD_SERVER)
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .create()
     }
 
     #[cfg(any(test, feature = "testutils"))]
@@ -487,7 +578,7 @@ impl ZingoConfig {
                 }
 
                 match &self.chain {
-                    ChainType::Testnet => zcash_data_location.push("testnet3"),
+                    ChainType::Testnet(_) => zcash_data_location.push("testnet3"),
                     ChainType::Mainnet => {}
                     ChainType::Regtest(_) => zcash_data_location.push("regtest"),
                 }
@@ -531,11 +622,17 @@ impl ZingoConfig {
 
     /// TODO: Add Doc Comment Here!
     #[must_use]
+    #[instrument(name = "get_lightwalletd_uri", skip_all)]
     pub fn get_lightwalletd_uri(&self) -> http::Uri {
-        self.lightwalletd_uri
+        let uri = self
+            .lightwalletd_uri
             .read()
             .expect("Couldn't read configured server URI!")
-            .clone()
+            .clone();
+
+        tracing::info!(%uri, "Lightwalletd URI");
+
+        uri
     }
 
     /// TODO: Add Doc Comment Here!

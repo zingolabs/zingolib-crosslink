@@ -17,6 +17,7 @@ pub mod send_with_proposal {
 
     use nonempty::NonEmpty;
 
+    use tracing::instrument;
     use zcash_client_backend::proposal::Proposal;
     use zcash_client_backend::zip321::TransactionRequest;
 
@@ -47,6 +48,7 @@ pub mod send_with_proposal {
                 .await?)
         }
 
+        #[instrument(name = "shield", skip(self, proposal), level = "info")]
         async fn shield(
             &mut self,
             proposal: &Proposal<zip317::FeeRule, Infallible>,
@@ -110,6 +112,7 @@ pub mod send_with_proposal {
         }
 
         /// Shields all transparent funds skipping proposal confirmation.
+        #[instrument(name = "quick_shield", skip(self), level = "info")]
         pub async fn quick_shield(
             &mut self,
             account_id: zip32::AccountId,

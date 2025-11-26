@@ -2,6 +2,7 @@
 
 use tonic::Request;
 
+use tracing::instrument;
 use zcash_client_backend::proto::service::{BlockId, ChainSpec, Empty, LightdInfo, RawTransaction};
 
 #[cfg(feature = "testutils")]
@@ -42,6 +43,7 @@ pub async fn get_trees(uri: http::Uri, height: u64) -> Result<TreeState, String>
 }
 
 /// `get_latest_block` GRPC call
+#[instrument(name = "get_latest_block")]
 pub async fn get_latest_block(uri: http::Uri) -> Result<BlockId, String> {
     let mut client = crate::grpc_client::get_zcb_client(uri.clone())
         .await

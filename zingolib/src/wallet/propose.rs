@@ -1,5 +1,6 @@
 //! creating proposals from wallet data
 
+use tracing::instrument;
 use zcash_client_backend::{
     data_api::wallet::input_selection::GreedyInputSelector,
     fees::{DustAction, DustOutputPolicy},
@@ -72,6 +73,7 @@ impl LightWallet {
     /// In other words, shield does not take a user-specified amount
     /// to shield, rather it consumes all transparent value in the wallet that
     /// can be consumed without costing more in zip317 fees than is being transferred.
+    #[instrument(name = "create_shield_proposal", skip(self), level = "info")]
     pub(crate) async fn create_shield_proposal(
         &mut self,
         account_id: zip32::AccountId,
@@ -84,6 +86,8 @@ impl LightWallet {
             DustOutputPolicy::new(DustAction::AllowDustChange, None),
         );
         let network = self.network;
+
+        tracing::info!("Creating shield proposal");
 
         // TODO: store t addrs as concrete types instead of encoded
         let transparent_addresses = self
@@ -120,6 +124,8 @@ impl LightWallet {
             // ConfirmationsPolicy::new_symmetrical(self.wallet_settings.min_confirmations, false),
         )
         .map_err(ProposeShieldError::Component)?;
+
+        // tracing::info!("Created shield proposal: {:?}", proposed_shield);
 
         for step in proposed_shield.steps().iter() {
             if step

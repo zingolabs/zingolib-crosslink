@@ -7,6 +7,7 @@ use nonempty::NonEmpty;
 use pepper_sync::sync::ScanPriority;
 use pepper_sync::sync::ScanRange;
 use pepper_sync::wallet::NoteInterface;
+use tracing::instrument;
 use zcash_client_backend::proposal::Proposal;
 use zcash_primitives::consensus::BlockHeight;
 use zcash_primitives::transaction::Transaction;
@@ -77,6 +78,7 @@ impl LightWallet {
 
 impl LightWallet {
     /// Creates and stores transaction from the given `proposal`, returning the txids for each calculated transaction.
+    #[instrument(name = "calculate_transactions", skip(self, proposal), level = "info")]
     pub(crate) async fn calculate_transactions<NoteRef>(
         &mut self,
         proposal: &Proposal<zip317::FeeRule, NoteRef>,
@@ -124,6 +126,11 @@ impl LightWallet {
         Ok(calculated_txids)
     }
 
+    #[instrument(
+        name = "create_proposed_transactions",
+        skip(self, sapling_prover, proposal),
+        level = "info"
+    )]
     async fn create_proposed_transactions<NoteRef>(
         &mut self,
         sapling_prover: LocalTxProver,
@@ -136,6 +143,8 @@ impl LightWallet {
             .get(&sending_account)
             .ok_or(KeyError::NoAccountKeys)?
             .try_into()?;
+
+        network.show();
 
         zcash_client_backend::data_api::wallet::create_proposed_transactions(
             self,
@@ -184,6 +193,7 @@ impl LightWallet {
         }
     }
 
+    #[instrument(name = "transmit_transactions_inner", skip(self), level = "info")]
     async fn transmit_transactions_inner(
         &mut self,
         server_uri: http::Uri,
@@ -202,6 +212,11 @@ impl LightWallet {
                 .wallet_transactions
                 .get_mut(&txid)
                 .ok_or(TransmissionError::TransactionNotFound(txid))?;
+
+            tracing::info!(
+                "Transmitting transaction {:?}",
+                calculated_transaction.transaction().consensus_branch_id()
+            );
 
             if !matches!(
                 calculated_transaction.status(),

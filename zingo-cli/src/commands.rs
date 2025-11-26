@@ -15,6 +15,7 @@ use pepper_sync::config::PerformanceLevel;
 use pepper_sync::keys::transparent;
 use std::sync::LazyLock;
 use tokio::runtime::Runtime;
+use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
 
 use zcash_address::unified::{Container, Encoding, Ufvk};
 use zcash_keys::address::Address;
@@ -219,7 +220,18 @@ impl Command for ParseAddressCommand {
         )> {
             [
                 zingolib::config::ChainType::Mainnet,
-                zingolib::config::ChainType::Testnet,
+                zingolib::config::ChainType::Testnet(ConfiguredActivationHeights {
+                    before_overwinter: Some(1),
+                    overwinter: Some(1),
+                    sapling: Some(1),
+                    blossom: Some(1),
+                    heartwood: Some(1),
+                    canopy: Some(1),
+                    nu5: Some(1),
+                    nu6: Some(1),
+                    nu6_1: None,
+                    nu7: None,
+                }),
                 #[cfg(feature = "regtest")]
                 zingolib::config::ChainType::Regtest(for_test::all_height_one_nus()),
             ]
@@ -230,7 +242,7 @@ impl Command for ParseAddressCommand {
             #[allow(unreachable_patterns)]
             let chain_name_string = match chain_name {
                 zingolib::config::ChainType::Mainnet => "main",
-                zingolib::config::ChainType::Testnet => "test",
+                zingolib::config::ChainType::Testnet(_) => "test",
                 #[cfg(feature = "regtest")]
                 zingolib::config::ChainType::Regtest(_) => "regtest",
                 _ => unreachable!("Invalid chain type"),

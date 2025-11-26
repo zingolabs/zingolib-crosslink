@@ -603,7 +603,17 @@ pub fn run_cli() {
 /// It bypasses clap entirely and directly sets up a regtest environment
 #[cfg(feature = "regtest")]
 pub fn run_regtest_cli() {
+    use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
+
     use crate::commands::RT;
+
+    let cfg = match ConfigTemplate::fill(build_clap_app()) {
+        Ok(cli_config) => cli_config,
+        Err(e) => {
+            eprintln!("Error filling config template: {e:?}");
+            return;
+        }
+    };
 
     println!("Launching local regtest network...");
 
@@ -614,13 +624,14 @@ pub fn run_regtest_cli() {
     std::fs::create_dir_all(&data_dir).expect("Failed to create regtest directory");
 
     // Use a temporary directory for wallet data in regtest
-    let wallet_dir = zingolib::testutils::tempfile::tempdir().expect("Failed to create temp dir");
-    let wallet_data_dir = wallet_dir.path().to_path_buf();
+    let wallet_dir = cfg.data_dir;
+    // let wallet_dir = zingolib::testutils::tempfile::tempdir().expect("Failed to create temp dir");
+    let wallet_data_dir = wallet_dir.as_path().to_path_buf();
 
     let cli_config = ConfigTemplate {
         params: vec![],
         server: zingolib::config::construct_lightwalletd_uri(Some(format!(
-            "http://127.0.0.1:18232"
+            "http://70.34.201.202:18233"
         ))),
         seed: None,
         ufvk: None,
@@ -629,9 +640,18 @@ pub fn run_regtest_cli() {
         sync: false, // Don't auto-sync in regtest
         waitsync: false,
         command: None,
-        chaintype: ChainType::Regtest(
-            zingo_common_components::protocol::activation_heights::for_test::all_height_one_nus(),
-        ),
+        chaintype: ChainType::Regtest(ConfiguredActivationHeights {
+            before_overwinter: Some(1),
+            overwinter: Some(1),
+            sapling: Some(1),
+            blossom: Some(1),
+            heartwood: Some(1),
+            canopy: Some(1),
+            nu5: Some(1),
+            nu6: Some(1),
+            nu6_1: None,
+            nu7: None,
+        }),
         tor_enabled: false,
     };
 

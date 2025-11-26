@@ -99,7 +99,7 @@ tokio-rustls = "0.26"
 tonic = { version = "0.13", features = ["tls-webpki-roots"] }
 tonic-build = "0.13"
 tower = { version = "0.5" }
-tracing = "0.1"
+tracing = { version = "0.1", features = ["attributes"] }
 tracing-subscriber = "0.3"
 webpki-roots = "0.25"
 
