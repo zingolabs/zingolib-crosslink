@@ -390,11 +390,6 @@ where
                         return Err(e.into());
                     }
                 } {
-                    tracing::info!(
-                        "Received compact block with hash: {} when scanning range: {}",
-                        compact_block.hash(),
-                        scan_task.scan_range
-                    );
                     if fetch_nullifiers_only {
                         sapling_nullifier_count += compact_block
                             .vtx

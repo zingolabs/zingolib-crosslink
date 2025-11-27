@@ -367,9 +367,15 @@ where
         return Err(SyncError::ServerError(ServerError::GenesisBlockOnly));
     }
     if wallet_height > chain_height {
-        if wallet_height - chain_height > MAX_VERIFICATION_WINDOW {
+        if wallet_height - chain_height >= MAX_VERIFICATION_WINDOW {
             return Err(SyncError::ChainError(MAX_VERIFICATION_WINDOW));
         }
+
+        tracing::info!(
+            "wallet height ({}) is greater than chain height ({}) - truncating wallet data",
+            wallet_height,
+            chain_height
+        );
         truncate_wallet_data(&mut *wallet_guard, chain_height)?;
         wallet_height = chain_height;
     }
@@ -1019,6 +1025,7 @@ where
                 if initial_verification_height - scan_range_to_verify.block_range().start
                     > MAX_VERIFICATION_WINDOW
                 {
+                    clear_wallet_data(wallet)?;
                     return Err(ServerError::ChainVerificationError.into());
                 }
 
@@ -1096,12 +1103,13 @@ where
 }
 
 /// Removes all wallet data above the given `truncate_height`.
+#[instrument(name = "truncate_wallet_data", level = "info", skip(wallet))]
 fn truncate_wallet_data<W>(
     wallet: &mut W,
     truncate_height: BlockHeight,
 ) -> Result<(), SyncError<W::Error>>
 where
-    W: SyncWallet + SyncBlocks + SyncTransactions + SyncNullifiers + SyncShardTrees,
+    W: SyncWallet + SyncBlocks + SyncTransactions + SyncNullifiers + SyncOutPoints + SyncShardTrees,
 {
     let birthday = wallet
         .get_sync_state()
@@ -1110,8 +1118,10 @@ where
         .expect("should be non-empty in this scope");
     let checked_truncate_height = match truncate_height.cmp(&birthday) {
         std::cmp::Ordering::Greater | std::cmp::Ordering::Equal => truncate_height,
-        std::cmp::Ordering::Less => birthday,
+        std::cmp::Ordering::Less => consensus::H0,
     };
+
+    tracing::info!(birthday = %birthday, truncate_height = %truncate_height, "truncating wallet data");
 
     wallet
         .truncate_wallet_blocks(checked_truncate_height)
@@ -1122,9 +1132,40 @@ where
     wallet
         .truncate_nullifiers(checked_truncate_height)
         .map_err(SyncError::WalletError)?;
+    wallet
+        .truncate_outpoints(checked_truncate_height)
+        .map_err(SyncError::WalletError)?;
     wallet.truncate_shard_trees(checked_truncate_height)?;
 
     Ok(())
+}
+
+fn clear_wallet_data<W>(wallet: &mut W) -> Result<(), SyncError<W::Error>>
+where
+    W: SyncWallet + SyncBlocks + SyncTransactions + SyncNullifiers + SyncOutPoints + SyncShardTrees,
+{
+    let scan_targets = wallet
+        .get_wallet_transactions()
+        .map_err(SyncError::WalletError)?
+        .values()
+        .filter_map(|transaction| {
+            transaction
+                .status()
+                .get_confirmed_height()
+                .map(|height| ScanTarget {
+                    block_height: height,
+                    txid: transaction.txid(),
+                    narrow_scan_area: true,
+                })
+        })
+        .collect::<Vec<_>>();
+    let sync_state = wallet
+        .get_sync_state_mut()
+        .map_err(SyncError::WalletError)?;
+    *sync_state = SyncState::new();
+    add_scan_targets(sync_state, &scan_targets);
+
+    truncate_wallet_data(wallet, consensus::H0)
 }
 
 /// Updates the wallet with data from `scan_results`

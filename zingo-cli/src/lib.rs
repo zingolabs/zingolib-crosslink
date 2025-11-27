@@ -631,7 +631,7 @@ pub fn run_regtest_cli() {
     let cli_config = ConfigTemplate {
         params: vec![],
         server: zingolib::config::construct_lightwalletd_uri(Some(format!(
-            "http://70.34.201.202:18233"
+            "http://127.0.0.1:18233"
         ))),
         seed: None,
         ufvk: None,

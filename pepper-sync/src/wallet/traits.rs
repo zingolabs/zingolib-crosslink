@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use orchard::tree::MerkleHashOrchard;
 use shardtree::store::{Checkpoint, ShardStore, TreeState};
 use tokio::sync::mpsc;
+use tracing::instrument;
 use zcash_client_backend::keys::UnifiedFullViewingKey;
 use zcash_primitives::consensus::BlockHeight;
 use zcash_primitives::transaction::TxId;
@@ -312,6 +313,7 @@ pub trait SyncShardTrees: SyncWallet {
     }
 
     /// Removes all shard tree data above the given `block_height`.
+    #[instrument(name = "truncate_shard_trees", level = "info", skip(self), err)]
     fn truncate_shard_trees(
         &mut self,
         truncate_height: BlockHeight,
@@ -337,6 +339,12 @@ pub trait SyncShardTrees: SyncWallet {
     }
 }
 
+#[instrument(
+    name = "add_checkpoint",
+    level = "info",
+    err,
+    skip(shard_tree, fetch_request_sender)
+)]
 async fn add_checkpoint<D, L, const DEPTH: u8, const SHARD_HEIGHT: u8>(
     fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
     checkpoint_height: BlockHeight,
@@ -369,9 +377,8 @@ where
             })
             .expect("infallible");
 
-        if let Some(checkpoint) = previous_checkpoint {
-            // checkpoint.tree_state() // Note: I think this zeroes out the `marks_removed` field
-            checkpoint
+        let tree_state = if let Some(checkpoint) = previous_checkpoint {
+            checkpoint.tree_state()
         } else {
             let frontiers =
                 client::get_frontiers(fetch_request_sender.clone(), checkpoint_height - 1).await?;
@@ -379,14 +386,18 @@ where
                 ShieldedProtocol::Sapling => frontiers.final_sapling_tree().tree_size(),
                 ShieldedProtocol::Orchard => frontiers.final_orchard_tree().tree_size(),
             };
-            let tree_state = if tree_size == 0 {
+            if tree_size == 0 {
                 TreeState::Empty
             } else {
                 TreeState::AtPosition(incrementalmerkletree::Position::from(tree_size - 1))
-            };
-
-            Checkpoint::from_parts(tree_state, BTreeSet::new())
-        }
+            }
+        };
+        tracing::info!(
+            checkpoint_height = %checkpoint_height,
+            tree_state = ?tree_state,
+            "adding checkpoint"
+        );
+        Checkpoint::from_parts(tree_state, BTreeSet::new())
     };
 
     shard_tree
