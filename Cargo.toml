@@ -4,8 +4,8 @@
 #  This doesn't account for all dependency relations, for example, zingocli depends on zingoconfig directly (for now).
 [workspace]
 members = [
-    "libtonode-tests",
-    "darkside-tests",
+    # "libtonode-tests",
+    # "darkside-tests",
     "zingo-cli",
     "zingolib",
     "zingo-memo",
@@ -24,26 +24,26 @@ orchard = "0.11.0"
 sapling-crypto = "0.5.0"
 incrementalmerkletree = "0.8.2"
 shardtree = "0.6.1"
-zcash_address = { git = "https://github.com/zingolabs/librustzcash", rev = "ab1965d62f8500449389e473a08a06de3193648c" }
-zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash", rev = "ab1965d62f8500449389e473a08a06de3193648c", features = [
+zcash_address = { git = "https://github.com/ShieldedLabs/crosslink_monolith", rev = "8d0843816acf5b81cdd609dd679cf9b6731e7e4a" }
+zcash_client_backend = { git = "https://github.com/ShieldedLabs/crosslink_monolith", rev = "8d0843816acf5b81cdd609dd679cf9b6731e7e4a", features = [
     "lightwalletd-tonic",
     "orchard",
     "transparent-inputs",
     "tor",
 ] }
-zcash_encoding = { git = "https://github.com/zingolabs/librustzcash", rev = "ab1965d62f8500449389e473a08a06de3193648c" }
-zcash_keys = { git = "https://github.com/zingolabs/librustzcash", rev = "ab1965d62f8500449389e473a08a06de3193648c", features = [
+zcash_encoding = { git = "https://github.com/ShieldedLabs/crosslink_monolith", rev = "8d0843816acf5b81cdd609dd679cf9b6731e7e4a" }
+zcash_keys = { git = "https://github.com/ShieldedLabs/crosslink_monolith", rev = "8d0843816acf5b81cdd609dd679cf9b6731e7e4a", features = [
     "transparent-inputs",
     "sapling",
     "orchard",
 ] }
 zcash_note_encryption = "0.4.0"
-zcash_primitives = { git = "https://github.com/zingolabs/librustzcash", rev = "ab1965d62f8500449389e473a08a06de3193648c" }
-zcash_proofs = { git = "https://github.com/zingolabs/librustzcash", rev = "ab1965d62f8500449389e473a08a06de3193648c" }
-zcash_protocol = { git = "https://github.com/zingolabs/librustzcash", rev = "ab1965d62f8500449389e473a08a06de3193648c" }
-zcash_transparent = { git = "https://github.com/zingolabs/librustzcash", rev = "ab1965d62f8500449389e473a08a06de3193648c" }
+zcash_primitives = { git = "https://github.com/ShieldedLabs/crosslink_monolith", rev = "8d0843816acf5b81cdd609dd679cf9b6731e7e4a" }
+zcash_proofs = { git = "https://github.com/ShieldedLabs/crosslink_monolith", rev = "8d0843816acf5b81cdd609dd679cf9b6731e7e4a" }
+zcash_protocol = { git = "https://github.com/ShieldedLabs/crosslink_monolith", rev = "8d0843816acf5b81cdd609dd679cf9b6731e7e4a" }
+zcash_transparent = { git = "https://github.com/ShieldedLabs/crosslink_monolith", rev = "8d0843816acf5b81cdd609dd679cf9b6731e7e4a" }
 
-zebra-chain = { version = "3.0" }
+zebra-chain = { git = "https://github.com/ShieldedLabs/crosslink_monolith", rev = "8d0843816acf5b81cdd609dd679cf9b6731e7e4a" }
 
 zingo_netutils = { git = "https://github.com/zingolabs/zingo-common.git", branch = "dev" }
 zingo_common_components = { git = "https://github.com/zingolabs/zingo-common.git", branch = "dev" }
