@@ -2,6 +2,7 @@
 
 use zcash_address::ZcashAddress;
 use zcash_client_backend::zip321::TransactionRequest;
+use zcash_protocol::memo::MemoBytes;
 use zcash_protocol::value::Zatoshis;
 
 use crate::config::ZENNIES_FOR_ZINGO_AMOUNT;
@@ -58,7 +59,7 @@ impl LightClient {
         &mut self,
         address: ZcashAddress,
         zennies_for_zingo: bool,
-        memo: Option<zcash_primitives::memo::MemoBytes>,
+        memo: Option<MemoBytes>,
         account_id: zip32::AccountId,
     ) -> Result<ProportionalFeeProposal, ProposeSendError> {
         let max_send_value = self

@@ -11,8 +11,9 @@ use pepper_sync::keys::decode_address;
 use zcash_address::unified::Fvk;
 use zcash_keys::address::UnifiedAddress;
 use zcash_keys::encoding::AddressCodec;
-use zcash_primitives::consensus::NetworkConstants;
+use zcash_protocol::consensus::Parameters;
 use zcash_protocol::{PoolType, ShieldedProtocol, consensus};
+use zcash_transparent::keys::AccountPubKey;
 
 use crate::config::ZingoConfig;
 use crate::lightclient::LightClient;
@@ -41,8 +42,7 @@ pub fn build_fvks_from_unified_keystore(unified_keystore: &UnifiedKeyStore) -> [
     let orchard_vk: orchard::keys::FullViewingKey = unified_keystore.try_into().unwrap();
     let sapling_vk: sapling_crypto::zip32::DiversifiableFullViewingKey =
         unified_keystore.try_into().unwrap();
-    let transparent_vk: zcash_primitives::legacy::keys::AccountPubKey =
-        unified_keystore.try_into().unwrap();
+    let transparent_vk: AccountPubKey = unified_keystore.try_into().unwrap();
 
     let mut transparent_vk_bytes = [0u8; 65];
     transparent_vk_bytes.copy_from_slice(&transparent_vk.serialize());
@@ -604,10 +604,7 @@ pub(crate) use build_method_push;
 pub(crate) use build_push_list;
 
 /// Take a P2PKH taddr and interpret it as a tex addr
-pub fn interpret_taddr_as_tex_addr(
-    taddr_bytes: [u8; 20],
-    p: &impl zcash_primitives::consensus::Parameters,
-) -> String {
+pub fn interpret_taddr_as_tex_addr(taddr_bytes: [u8; 20], p: &impl Parameters) -> String {
     bech32::encode::<bech32::Bech32m>(
         bech32::Hrp::parse_unchecked(p.network_type().hrp_tex_address()),
         &taddr_bytes,

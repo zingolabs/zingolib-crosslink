@@ -4,6 +4,7 @@ use std::ops::Range;
 
 use tokio::sync::mpsc::UnboundedReceiver;
 
+use netutils::UnderlyingService;
 use zcash_client_backend::proto::{
     compact_formats::CompactBlock,
     service::{
@@ -12,8 +13,8 @@ use zcash_client_backend::proto::{
         compact_tx_streamer_client::CompactTxStreamerClient,
     },
 };
-use zcash_primitives::{consensus::BlockHeight, transaction::TxId};
-use zingo_netutils::UnderlyingService;
+use zcash_primitives::transaction::TxId;
+use zcash_protocol::consensus::BlockHeight;
 
 use crate::client::FetchRequest;
 

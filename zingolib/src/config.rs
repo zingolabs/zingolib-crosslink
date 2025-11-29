@@ -25,7 +25,7 @@ use log4rs::{
     filter::threshold::ThresholdFilter,
 };
 use tracing::instrument;
-use zcash_primitives::consensus::{
+use zcash_protocol::consensus::{
     BlockHeight, MAIN_NETWORK, NetworkType, NetworkUpgrade, Parameters, TEST_NETWORK,
 };
 use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
@@ -48,7 +48,7 @@ pub fn get_donation_address_for_chain(chain: &ChainType) -> &'static str {
 }
 
 /// The networks a zingolib client can run against
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ChainType {
     /// Public testnet
     Testnet(zebra_chain::parameters::testnet::ConfiguredActivationHeights),

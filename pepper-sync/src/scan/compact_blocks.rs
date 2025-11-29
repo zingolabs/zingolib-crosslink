@@ -13,8 +13,9 @@ use zcash_client_backend::proto::compact_formats::{
 };
 use zcash_keys::keys::UnifiedFullViewingKey;
 use zcash_note_encryption::Domain;
-use zcash_primitives::{block::BlockHash, zip32::AccountId};
+use zcash_primitives::block::BlockHash;
 use zcash_protocol::consensus::{self, BlockHeight};
+use zip32::AccountId;
 
 use crate::{
     client::{self, FetchRequest},

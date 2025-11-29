@@ -6,20 +6,15 @@ use zcash_address::ZcashAddress;
 use zcash_client_backend::{
     data_api::{
         Account, AccountBirthday, AccountPurpose, BlockMetadata, InputSource, NullifierQuery,
-        ORCHARD_SHARD_HEIGHT, SAPLING_SHARD_HEIGHT, SpendableNotes, TargetValue,
-        TransactionDataRequest, WalletCommitmentTrees, WalletRead, WalletSummary, WalletWrite,
-        Zip32Derivation, chain::CommitmentTreeRoot,
+        ORCHARD_SHARD_HEIGHT, SAPLING_SHARD_HEIGHT, TargetValue, TransactionDataRequest,
+        WalletCommitmentTrees, WalletRead, WalletSummary, WalletWrite, Zip32Derivation,
+        chain::CommitmentTreeRoot, wallet::ConfirmationsPolicy,
     },
     wallet::{NoteId, ReceivedNote, TransparentAddressMetadata, WalletTransparentOutput},
 };
 use zcash_keys::{address::UnifiedAddress, keys::UnifiedFullViewingKey};
 use zcash_primitives::{
     block::BlockHash,
-    legacy::{
-        TransparentAddress,
-        keys::{NonHardenedChildIndex, TransparentKeyScope},
-    },
-    memo::Memo,
     transaction::{Transaction, TxId},
 };
 use zcash_protocol::{
@@ -145,10 +140,7 @@ impl WalletRead for LightWallet {
         unimplemented!()
     }
 
-    fn get_wallet_summary(
-        &self,
-        min_confirmations: u32,
-    ) -> Result<Option<WalletSummary<Self::AccountId>>, Self::Error> {
+    fn get_wallet_summary(&self) -> Result<Option<WalletSummary<Self::AccountId>>, Self::Error> {
         unimplemented!()
     }
 

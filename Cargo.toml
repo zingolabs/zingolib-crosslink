@@ -4,16 +4,17 @@
 #  This doesn't account for all dependency relations, for example, zingocli depends on zingoconfig directly (for now).
 [workspace]
 members = [
-    "libtonode-tests",
-    "darkside-tests",
+
     "zingo-cli",
     "zingolib",
     "zingo-memo",
     "pepper-sync",
     "zingo-price",
     "zingolib_testutils",
+    "netutils",
 ]
 resolver = "2"
+exclude = ["libtonode-tests", "darkside-tests"]
 
 [workspace.dependencies]
 bip0039 = { version = "0.12", features = ["rand"] }
@@ -24,28 +25,34 @@ orchard = "0.11.0"
 sapling-crypto = "0.5.0"
 incrementalmerkletree = "0.8.2"
 shardtree = "0.6.1"
-zcash_address = { git = "https://github.com/zingolabs/librustzcash", rev = "ab1965d62f8500449389e473a08a06de3193648c" }
-zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash", rev = "ab1965d62f8500449389e473a08a06de3193648c", features = [
+zcash_address = { git = "https://github.com/ShieldedLabs/librustzcash", rev = "e875826969cf02149a60115059574551a745b280" }
+zcash_client_backend = { git = "https://github.com/ShieldedLabs/librustzcash", rev = "e875826969cf02149a60115059574551a745b280", features = [
     "lightwalletd-tonic",
     "orchard",
     "transparent-inputs",
     "tor",
 ] }
-zcash_encoding = { git = "https://github.com/zingolabs/librustzcash", rev = "ab1965d62f8500449389e473a08a06de3193648c" }
-zcash_keys = { git = "https://github.com/zingolabs/librustzcash", rev = "ab1965d62f8500449389e473a08a06de3193648c", features = [
+zcash_encoding = { git = "https://github.com/ShieldedLabs/librustzcash", rev = "e875826969cf02149a60115059574551a745b280" }
+zcash_keys = { git = "https://github.com/ShieldedLabs/librustzcash", rev = "e875826969cf02149a60115059574551a745b280", features = [
     "transparent-inputs",
     "sapling",
     "orchard",
 ] }
 zcash_note_encryption = "0.4.0"
-zcash_primitives = { git = "https://github.com/zingolabs/librustzcash", rev = "ab1965d62f8500449389e473a08a06de3193648c" }
-zcash_proofs = { git = "https://github.com/zingolabs/librustzcash", rev = "ab1965d62f8500449389e473a08a06de3193648c" }
-zcash_protocol = { git = "https://github.com/zingolabs/librustzcash", rev = "ab1965d62f8500449389e473a08a06de3193648c" }
-zcash_transparent = { git = "https://github.com/zingolabs/librustzcash", rev = "ab1965d62f8500449389e473a08a06de3193648c" }
+zcash_primitives = { git = "https://github.com/ShieldedLabs/librustzcash", rev = "e875826969cf02149a60115059574551a745b280", features = [
+    "std",
+] }
+# zcash_primitives = { path = "../librustzcash/zcash_primitives", features = [
+#     "std",
+# ] }
 
-zebra-chain = { version = "3.0" }
+zcash_proofs = { git = "https://github.com/ShieldedLabs/librustzcash", rev = "e875826969cf02149a60115059574551a745b280" }
+zcash_protocol = { git = "https://github.com/ShieldedLabs/librustzcash", rev = "e875826969cf02149a60115059574551a745b280" }
+zcash_transparent = { git = "https://github.com/ShieldedLabs/librustzcash", rev = "e875826969cf02149a60115059574551a745b280" }
 
-zingo_netutils = { git = "https://github.com/zingolabs/zingo-common.git", branch = "dev" }
+zebra-chain = { git = "https://github.com/ShieldedLabs/crosslink_monolith", rev = "ca1d9b7b188f4ab8e0f3e21ace1e74fdc57f82b0" }
+
+netutils = { path = "netutils" }
 zingo_common_components = { git = "https://github.com/zingolabs/zingo-common.git", branch = "dev" }
 
 append-only-vec = "0.1.7"
@@ -80,7 +87,7 @@ prost = "0.13"
 rand = "0.8"
 reqwest = { version = "0.12.15", default-features = false }
 ring = "0.17"
-rusqlite = "0.32"
+rusqlite = "0.37"
 rust_decimal = "1.37.2"
 rust-embed = "6"
 rustls = { version = "0.23", features = ["ring"] }
@@ -96,8 +103,8 @@ tempfile = "3"
 thiserror = "2"
 tokio = "1"
 tokio-rustls = "0.26"
-tonic = { version = "0.13", features = ["tls-webpki-roots"] }
-tonic-build = "0.13"
+tonic = { version = "0.14.2", features = ["tls-webpki-roots"] }
+tonic-build = "0.14.2"
 tower = { version = "0.5" }
 tracing = { version = "0.1", features = ["attributes"] }
 tracing-subscriber = "0.3"
@@ -116,6 +123,29 @@ zingo-price = { path = "zingo-price" }
 zingo-status = { path = "zingo-status" }
 pepper-sync = { path = "pepper-sync" }
 zingolib = { path = "zingolib" }
+
+[patch."https://github.com/ShieldedLabs/librustzcash"]
+zcash_primitives = { path = "../librustzcash/zcash_primitives" }
+zcash_address = { path = "../librustzcash/components/zcash_address" }
+zcash_client_backend = { path = "../librustzcash/zcash_client_backend", features = [
+    "lightwalletd-tonic",
+    "orchard",
+    "transparent-inputs",
+    "tor",
+] }
+zcash_encoding = { path = "../librustzcash/components/zcash_encoding" }
+zcash_keys = { path = "../librustzcash/zcash_keys", features = [
+    "transparent-inputs",
+    "sapling",
+    "orchard",
+] }
+# zcash_primitives = { path = "../librustzcash/zcash_primitives", features = [
+#     "std",
+# ] }
+
+zcash_proofs = { path = "../librustzcash/zcash_proofs" }
+zcash_protocol = { path = "../librustzcash/components/zcash_protocol" }
+zcash_transparent = { path = "../librustzcash/zcash_transparent" }
 
 # [patch.crates-io]
 # zcash_client_backend = { git = "https://github.com/zingolabs/librustzcash", rev = "ab1965d62f8500449389e473a08a06de3193648c" }

@@ -23,16 +23,16 @@ use zcash_client_backend::proto::compact_formats::CompactBlock;
 use zcash_keys::{address::UnifiedAddress, encoding::encode_payment_address};
 use zcash_primitives::{
     block::BlockHash,
-    legacy::Script,
-    memo::Memo,
     transaction::{TxId, components::transparent::OutPoint},
 };
 use zcash_protocol::{
     PoolType, ShieldedProtocol,
     consensus::{self, BlockHeight},
+    memo::Memo,
     value::Zatoshis,
 };
 
+use zcash_transparent::address::Script;
 use zingo_status::confirmation_status::ConfirmationStatus;
 
 use crate::{
