@@ -1,0 +1,10 @@
+[package]
+name = "tfl-types"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = "1"
+tokio = { version = "1", features = ["sync"] }
+zebra-chain = { git = "https://github.com/ShieldedLabs/crosslink_monolith.git", rev = "6b0837ca32e2ae138f9b0a7040da5ea95121413f" }
+zebra-rpc = { git = "https://github.com/ShieldedLabs/crosslink_monolith.git", rev = "6b0837ca32e2ae138f9b0a7040da5ea95121413f" }

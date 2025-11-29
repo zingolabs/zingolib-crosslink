@@ -13,6 +13,8 @@ members = [
     "zingo-price",
     "zingolib_testutils",
 ]
+
+exclude = ["tfl-types"]
 resolver = "2"
 
 [workspace.dependencies]
