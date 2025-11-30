@@ -368,7 +368,11 @@ where
     }
     if wallet_height > chain_height {
         if wallet_height - chain_height >= MAX_VERIFICATION_WINDOW {
-            return Err(SyncError::ChainError(MAX_VERIFICATION_WINDOW));
+            return Err(SyncError::ChainError(
+                MAX_VERIFICATION_WINDOW,
+                chain_height.into(),
+                wallet_height.into(),
+            ));
         }
 
         tracing::info!(
