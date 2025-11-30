@@ -2,6 +2,7 @@ use std::{collections::HashMap, convert::Infallible, num::NonZeroU32};
 
 use secrecy::SecretVec;
 use shardtree::{ShardTree, error::ShardTreeError, store::ShardStore};
+use tracing::instrument;
 use zcash_address::ZcashAddress;
 use zcash_client_backend::{
     data_api::{
@@ -13,8 +14,8 @@ use zcash_client_backend::{
         wallet::{ConfirmationsPolicy, TargetHeight},
     },
     wallet::{
-        Exposure, NoteId, ReceivedNote, TransparentAddressMetadata, TransparentAddressSource,
-        WalletTransparentOutput,
+        Exposure, GapMetadata, NoteId, ReceivedNote, TransparentAddressMetadata,
+        TransparentAddressSource, WalletTransparentOutput,
     },
 };
 use zcash_keys::{address::UnifiedAddress, keys::UnifiedFullViewingKey};
@@ -268,12 +269,24 @@ impl WalletRead for LightWallet {
                     .ok()?
                     .convert_if_network::<TransparentAddress>(self.network.network_type())
                     .expect("incorrect network should be checked on wallet load");
+
+                let exposure = match address_id.scope() {
+                    // TransparentScope::External => Exposure::Exposed {
+                    //     at_height: BlockHeight::from_u32(100),
+                    //     gap_metadata: GapMetadata::DerivationUnknown,
+                    // },
+                    TransparentScope::External => Exposure::CannotKnow,
+                    TransparentScope::Internal => Exposure::Unknown,
+                    // We’re filtering Refund out above, but keep a fallback:
+                    TransparentScope::Refund => Exposure::CannotKnow,
+                };
+
                 let address_metadata = TransparentAddressMetadata::new(
                     TransparentAddressSource::Derived {
                         scope: address_id.scope().into(),
                         address_index: address_id.address_index(),
                     },
-                    Exposure::Unknown,
+                    exposure,
                     None,
                 );
 
@@ -282,6 +295,28 @@ impl WalletRead for LightWallet {
             .collect();
 
         Ok(map)
+    }
+
+    #[instrument(
+        name = "get_transparent_address_metadata",
+        skip(self),
+        err,
+        ret,
+        level = "info"
+    )]
+    fn get_transparent_address_metadata(
+        &self,
+        account: Self::AccountId,
+        address: &TransparentAddress,
+    ) -> Result<Option<TransparentAddressMetadata>, Self::Error> {
+        // For now we only look at the "normal" transparent receivers.
+        // This is slightly weaker than the doc's "equivalent" implementation
+        // (it also checks ephemeral addresses), but it's enough to avoid the panic
+        // and should work fine as long as QuickShield doesn't rely on refund
+        // addresses' metadata.
+        let receivers = self.get_transparent_receivers(account, true, true)?;
+
+        Ok(receivers.get(address).cloned())
     }
 
     fn get_transparent_balances(
@@ -818,6 +853,13 @@ impl InputSource for LightWallet {
         unimplemented!()
     }
 
+    #[instrument(
+        name = "get_spendable_transparent_outputs",
+        skip(self),
+        err,
+        ret,
+        level = "info"
+    )]
     fn get_spendable_transparent_outputs(
         &self,
         address: &TransparentAddress,
@@ -834,6 +876,22 @@ impl InputSource for LightWallet {
             .into_iter()
             .filter(|&output| output.address() == address)
             .filter_map(|output| {
+                let confirmed_height = self
+                    .output_transaction(output)
+                    .status()
+                    .get_confirmed_height();
+
+                // If zero-conf shielding is disabled, skip outputs without a
+                // confirmed height.
+                let confirmed_height = if min_confirmations.allow_zero_conf_shielding() {
+                    confirmed_height
+                } else {
+                    match confirmed_height {
+                        Some(h) => Some(h),
+                        None => return None,
+                    }
+                };
+
                 Some(WalletUtxo::new(
                     WalletTransparentOutput::from_parts(
                         OutputId::new(output.output_id().txid(), output.output_id().output_index())
@@ -842,10 +900,10 @@ impl InputSource for LightWallet {
                             zcash_protocol::value::Zatoshis::from_u64(output.value()).unwrap(),
                             output.script().clone(),
                         ),
-                        None,
+                        confirmed_height,
                     )
                     .unwrap(),
-                    None,
+                    Some(TransparentKeyScope::EXTERNAL),
                 ))
                 // WalletUtxo::from_parts(
                 //     output.output_id().into(),

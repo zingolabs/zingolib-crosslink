@@ -26,6 +26,7 @@ use log4rs::{
 use zcash_protocol::consensus::{
     BlockHeight, MAIN_NETWORK, NetworkType, NetworkUpgrade, Parameters, TEST_NETWORK,
 };
+use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
 
 use crate::wallet::WalletSettings;
 
@@ -124,7 +125,18 @@ pub fn chain_from_str(chain_name: &str) -> Result<ChainType, ChainFromStringErro
     match chain_name {
         "testnet" => Ok(ChainType::Testnet),
         "mainnet" => Ok(ChainType::Mainnet),
-        "regtest" => Err(ChainFromStringError::UnknownRegtestChain),
+        "regtest" => Ok(ChainType::Regtest(ConfiguredActivationHeights {
+            before_overwinter: Some(1),
+            overwinter: Some(1),
+            sapling: Some(1),
+            blossom: Some(1),
+            heartwood: Some(1),
+            canopy: Some(1),
+            nu5: Some(1),
+            nu6: Some(1),
+            nu6_1: None,
+            nu7: None,
+        })),
         _ => Err(ChainFromStringError::UnknownChain(chain_name.to_string())),
     }
 }

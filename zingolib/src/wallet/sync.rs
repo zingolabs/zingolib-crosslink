@@ -11,6 +11,7 @@ use pepper_sync::{
         },
     },
 };
+use tracing::instrument;
 use zcash_keys::{address::UnifiedAddress, keys::UnifiedFullViewingKey};
 use zcash_protocol::consensus::BlockHeight;
 use zip32::{AccountId, DiversifierIndex};
@@ -193,10 +194,12 @@ impl SyncOutPoints for LightWallet {
 }
 
 impl SyncShardTrees for LightWallet {
+    #[instrument(name = "get_shard_trees", skip(self), ret, level = "info")]
     fn get_shard_trees(&self) -> Result<&ShardTrees, Self::Error> {
         Ok(&self.shard_trees)
     }
 
+    #[instrument(name = "get_shard_trees_mut", skip(self), level = "info")]
     fn get_shard_trees_mut(&mut self) -> Result<&mut ShardTrees, Self::Error> {
         Ok(&mut self.shard_trees)
     }

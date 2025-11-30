@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use orchard::tree::MerkleHashOrchard;
 use shardtree::store::{Checkpoint, ShardStore, TreeState};
 use tokio::sync::mpsc;
+use tracing::instrument;
 use zcash_client_backend::keys::UnifiedFullViewingKey;
 use zcash_primitives::transaction::TxId;
 use zcash_protocol::ShieldedProtocol;
@@ -311,6 +312,7 @@ pub trait SyncShardTrees: SyncWallet {
     }
 
     /// Removes all shard tree data above the given `block_height`.
+    #[instrument(name = "truncate_shard_trees", skip(self), level = "info")]
     fn truncate_shard_trees(
         &mut self,
         truncate_height: BlockHeight,

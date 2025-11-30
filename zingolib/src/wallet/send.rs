@@ -7,6 +7,7 @@ use nonempty::NonEmpty;
 use pepper_sync::sync::ScanPriority;
 use pepper_sync::sync::ScanRange;
 use pepper_sync::wallet::NoteInterface;
+use tracing::instrument;
 use zcash_client_backend::data_api::wallet::SpendingKeys;
 use zcash_client_backend::proposal::Proposal;
 use zcash_primitives::transaction::Transaction;
@@ -77,6 +78,7 @@ impl LightWallet {
 
 impl LightWallet {
     /// Creates and stores transaction from the given `proposal`, returning the txids for each calculated transaction.
+    #[instrument(name = "calculate_transactions", skip(self, proposal), level = "info")]
     pub(crate) async fn calculate_transactions<NoteRef>(
         &mut self,
         proposal: &Proposal<zip317::FeeRule, NoteRef>,
@@ -124,6 +126,11 @@ impl LightWallet {
         Ok(calculated_txids)
     }
 
+    #[instrument(
+        name = "create_proposed_transactions",
+        skip(self, proposal, sapling_prover),
+        level = "info"
+    )]
     async fn create_proposed_transactions<NoteRef>(
         &mut self,
         sapling_prover: LocalTxProver,

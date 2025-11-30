@@ -80,7 +80,7 @@ where
         self.orchard.flush();
     }
 
-    #[tracing::instrument(skip_all, fields(height = block.height))]
+    #[tracing::instrument(skip_all, fields(height = block.height), level = "debug")]
     pub(crate) fn add_block<P>(
         &mut self,
         params: &P,

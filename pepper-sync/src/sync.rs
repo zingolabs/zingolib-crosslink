@@ -1462,7 +1462,7 @@ fn checked_birthday<W: SyncWallet>(
 
     match wallet_birthday.cmp(&sapling_activation_height) {
         cmp::Ordering::Greater | cmp::Ordering::Equal => Ok(wallet_birthday),
-        cmp::Ordering::Less => Ok(sapling_activation_height),
+        cmp::Ordering::Less => Ok(wallet_birthday),
     }
 }
 

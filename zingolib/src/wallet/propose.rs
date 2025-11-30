@@ -1,5 +1,7 @@
 //! creating proposals from wallet data
 
+use log::info;
+use tracing::instrument;
 use zcash_client_backend::{
     data_api::wallet::{ConfirmationsPolicy, input_selection::GreedyInputSelector},
     fees::{DustAction, DustOutputPolicy},
@@ -38,7 +40,7 @@ impl LightWallet {
             zcash_primitives::transaction::fees::zip317::FeeRule::standard(),
             Some(memo),
             ShieldedProtocol::Orchard,
-            DustOutputPolicy::new(DustAction::AllowDustChange, None),
+            DustOutputPolicy::new(DustAction::AddDustToFee, None),
         );
         let network = self.network;
 
@@ -72,6 +74,7 @@ impl LightWallet {
     /// In other words, shield does not take a user-specified amount
     /// to shield, rather it consumes all transparent value in the wallet that
     /// can be consumed without costing more in zip317 fees than is being transferred.
+    #[instrument(name = "create_shield_proposal", skip(self), err, level = "info")]
     pub(crate) async fn create_shield_proposal(
         &mut self,
         account_id: zip32::AccountId,
@@ -110,7 +113,7 @@ impl LightWallet {
             &network,
             &input_selector,
             &change_strategy,
-            Zatoshis::const_from_u64(10_000),
+            Zatoshis::const_from_u64(1),
             &transparent_addresses,
             account_id,
             // TODO: replace wallet min_confirmations field with confirmation policy to unify for all proposals
