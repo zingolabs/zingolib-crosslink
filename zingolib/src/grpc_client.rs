@@ -7,23 +7,23 @@ use tokio_rustls::rustls::pki_types::{Der, TrustAnchor};
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tower::ServiceExt;
 use zcash_client_backend::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
-use zingo_netutils::UnderlyingService;
+use netutils::UnderlyingService;
 
 /// Creates a `zcash_client_backend` compatible GRPC client from a URI
-/// This duplicates the connection logic from `zingo_netutils` but creates a `zcash_client_backend` client
+/// This duplicates the connection logic from `netutils` but creates a `zcash_client_backend` client
 pub async fn get_zcb_client(
     uri: Uri,
-) -> Result<CompactTxStreamerClient<UnderlyingService>, zingo_netutils::GetClientError> {
+) -> Result<CompactTxStreamerClient<UnderlyingService>, netutils::GetClientError> {
     let uri = Arc::new(uri);
     let mut http_connector = HttpConnector::new();
     http_connector.enforce_http(false);
     let scheme = uri
         .scheme()
-        .ok_or(zingo_netutils::GetClientError::InvalidScheme)?
+        .ok_or(netutils::GetClientError::InvalidScheme)?
         .clone();
     let authority = uri
         .authority()
-        .ok_or(zingo_netutils::GetClientError::InvalidAuthority)?
+        .ok_or(netutils::GetClientError::InvalidAuthority)?
         .clone();
 
     if uri.scheme_str() == Some("https") {
@@ -54,7 +54,7 @@ pub async fn get_zcb_client(
             })
             .service(http_connector);
 
-        let client = zingo_netutils::client::client_from_connector(connector, false);
+        let client = netutils::client::client_from_connector(connector, false);
         let svc = tower::ServiceBuilder::new()
             .map_request(move |mut request: http::Request<_>| {
                 let path_and_query = request
@@ -77,7 +77,7 @@ pub async fn get_zcb_client(
         Ok(CompactTxStreamerClient::new(svc.boxed_clone()))
     } else {
         let connector = tower::ServiceBuilder::new().service(http_connector);
-        let client = zingo_netutils::client::client_from_connector(connector, true);
+        let client = netutils::client::client_from_connector(connector, true);
         let svc = tower::ServiceBuilder::new()
             .map_request(move |mut request: http::Request<_>| {
                 let path_and_query = request

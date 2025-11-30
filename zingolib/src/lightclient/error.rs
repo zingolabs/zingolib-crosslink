@@ -25,7 +25,7 @@ pub enum LightClientError {
     SyncModeError(#[from] SyncModeError),
     /// gPRC client error
     #[error("gRPC client error. {0}")]
-    ClientError(#[from] zingo_netutils::GetClientError),
+    ClientError(#[from] netutils::GetClientError),
     /// File error
     #[error("File error. {0}")]
     FileError(#[from] std::io::Error),

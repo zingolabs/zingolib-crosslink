@@ -3,8 +3,7 @@
 use json::JsonValue;
 
 use zcash_address::ZcashAddress;
-use zcash_primitives::memo::MemoBytes;
-use zcash_protocol::value::Zatoshis;
+use zcash_protocol::{memo::MemoBytes, value::Zatoshis};
 
 use crate::commands::error::CommandError;
 use zingolib::data::receivers::Receivers;

@@ -5,9 +5,9 @@ use super::darkside_types::{
 
 use hyper::Uri;
 use hyper_util::client::legacy::connect::HttpConnector;
+use netutils::UnderlyingService;
 use std::sync::Arc;
 use tower::ServiceExt;
-use zingo_netutils::UnderlyingService;
 
 macro_rules! define_darkside_connector_methods(
     ($($name:ident (&$self:ident $(,$param:ident: $param_type:ty)*$(,)?) -> $return:ty {$param_packing:expr}),*) => {$(
@@ -39,7 +39,7 @@ impl DarksideConnector {
             let mut http_connector = HttpConnector::new();
             http_connector.enforce_http(false);
             let connector = tower::ServiceBuilder::new().service(http_connector);
-            let client = zingo_netutils::client::client_from_connector(connector, true);
+            let client = netutils::client::client_from_connector(connector, true);
             let uri = uri.clone();
             let svc = tower::ServiceBuilder::new()
                 //Here, we take all the pieces of our uri, and add in the path from the Requests's uri

@@ -6,11 +6,10 @@ use orchard::tree::MerkleHashOrchard;
 use shardtree::store::{Checkpoint, ShardStore, TreeState};
 use tokio::sync::mpsc;
 use zcash_client_backend::keys::UnifiedFullViewingKey;
-use zcash_primitives::consensus::BlockHeight;
 use zcash_primitives::transaction::TxId;
-use zcash_primitives::zip32::AccountId;
 use zcash_protocol::ShieldedProtocol;
-use zip32::DiversifierIndex;
+use zcash_protocol::consensus::BlockHeight;
+use zip32::{AccountId, DiversifierIndex};
 
 use crate::error::{ServerError, SyncError};
 use crate::keys::transparent::TransparentAddressId;
@@ -354,7 +353,7 @@ where
     let checkpoint = if let Some((_, position)) = located_trees
         .iter()
         .flat_map(|tree| tree.checkpoints.iter())
-        .find(|(height, _)| **height == checkpoint_height)
+        .find(|(height, _)| checkpoint_height == **height)
     {
         Checkpoint::at_position(*position)
     } else {

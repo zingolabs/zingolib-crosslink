@@ -7,8 +7,7 @@ use bip0039::Mnemonic;
 
 use zcash_client_backend::tor;
 use zcash_keys::address::UnifiedAddress;
-use zcash_primitives::legacy::keys::NonHardenedChildIndex;
-use zcash_primitives::{consensus::BlockHeight, transaction::TxId};
+use zcash_primitives::transaction::TxId;
 
 use pepper_sync::keys::transparent::{self, TransparentScope};
 use pepper_sync::wallet::{KeyIdInterface, ScanTarget, ShardTrees};
@@ -16,6 +15,8 @@ use pepper_sync::{
     keys::transparent::TransparentAddressId,
     wallet::{NullifierMap, OutputId, SyncState, WalletBlock, WalletTransaction},
 };
+use zcash_protocol::consensus::BlockHeight;
+use zcash_transparent::keys::NonHardenedChildIndex;
 use zingo_price::PriceList;
 
 use crate::config::ChainType;

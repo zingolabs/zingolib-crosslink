@@ -58,7 +58,7 @@ impl LightClient {
         &mut self,
         address: ZcashAddress,
         zennies_for_zingo: bool,
-        memo: Option<zcash_primitives::memo::MemoBytes>,
+        memo: Option<zcash_protocol::memo::MemoBytes>,
         account_id: zip32::AccountId,
     ) -> Result<ProportionalFeeProposal, ProposeSendError> {
         let max_send_value = self
@@ -192,6 +192,7 @@ mod shielding {
     use bip0039::Mnemonic;
     use pepper_sync::config::SyncConfig;
     use zcash_protocol::consensus::Parameters;
+    use zcash_transparent::address::TransparentAddress;
     use zingo_test_vectors::seeds;
 
     use crate::{
@@ -256,9 +257,7 @@ mod shielding {
             .values()
             .map(|address| {
                 Ok(zcash_address::ZcashAddress::try_from_encoded(address)?
-                    .convert_if_network::<zcash_primitives::legacy::TransparentAddress>(
-                        network.network_type(),
-                    )
+                    .convert_if_network::<TransparentAddress>(network.network_type())
                     .expect("incorrect network should be checked on wallet load"))
             })
             .collect::<Result<Vec<_>, zcash_address::ParseError>>()
@@ -266,12 +265,10 @@ mod shielding {
 
         assert_eq!(
             transparent_addresses,
-            [zcash_primitives::legacy::TransparentAddress::PublicKeyHash(
-                [
-                    161, 138, 222, 242, 254, 121, 71, 105, 93, 131, 177, 31, 59, 185, 120, 148,
-                    255, 189, 198, 33
-                ]
-            )]
+            [TransparentAddress::PublicKeyHash([
+                161, 138, 222, 242, 254, 121, 71, 105, 93, 131, 177, 31, 59, 185, 120, 148, 255,
+                189, 198, 33
+            ])]
         );
     }
 }

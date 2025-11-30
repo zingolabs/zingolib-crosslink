@@ -16,11 +16,11 @@ use zcash_client_backend::proto::service::RawTransaction;
 use zcash_client_backend::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
 use zcash_keys::keys::UnifiedFullViewingKey;
 use zcash_primitives::transaction::{Transaction, TxId};
-use zcash_primitives::zip32::AccountId;
 use zcash_protocol::ShieldedProtocol;
 use zcash_protocol::consensus::{self, BlockHeight};
 
 use zingo_status::confirmation_status::ConfirmationStatus;
+use zip32::AccountId;
 
 use crate::client::{self, FetchRequest};
 use crate::config::SyncConfig;
@@ -303,7 +303,7 @@ impl ScanRange {
 /// Set `sync_mode` back to `Running` to resume scanning.
 /// Set `sync_mode` to `Shutdown` to stop the sync process.
 pub async fn sync<P, W>(
-    client: CompactTxStreamerClient<zingo_netutils::UnderlyingService>,
+    client: CompactTxStreamerClient<netutils::UnderlyingService>,
     consensus_parameters: &P,
     wallet: Arc<RwLock<W>>,
     sync_mode: Arc<AtomicU8>,
@@ -1471,7 +1471,7 @@ fn checked_birthday<W: SyncWallet>(
 /// If there is some raw transaction, send to be scanned.
 /// If the mempool stream message is `None` (a block was mined) or the request failed, setup a new mempool stream.
 async fn mempool_monitor(
-    mut client: CompactTxStreamerClient<zingo_netutils::UnderlyingService>,
+    mut client: CompactTxStreamerClient<netutils::UnderlyingService>,
     mempool_transaction_sender: mpsc::Sender<RawTransaction>,
     unprocessed_transactions_count: Arc<AtomicU8>,
     shutdown_mempool: Arc<AtomicBool>,

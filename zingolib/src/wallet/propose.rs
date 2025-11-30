@@ -11,6 +11,7 @@ use zcash_protocol::{
     memo::{Memo, MemoBytes},
     value::Zatoshis,
 };
+use zcash_transparent::address::TransparentAddress;
 
 use super::{
     LightWallet,
@@ -90,9 +91,7 @@ impl LightWallet {
             .values()
             .map(|address| {
                 Ok(zcash_address::ZcashAddress::try_from_encoded(address)?
-                    .convert_if_network::<zcash_primitives::legacy::TransparentAddress>(
-                        self.network.network_type(),
-                    )
+                    .convert_if_network::<TransparentAddress>(self.network.network_type())
                     .expect("incorrect network should be checked on wallet load"))
             })
             .collect::<Result<Vec<_>, zcash_address::ParseError>>()?;
