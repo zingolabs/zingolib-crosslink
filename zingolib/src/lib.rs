@@ -26,3 +26,4 @@ extern crate rust_embed;
 #[derive(RustEmbed)]
 #[folder = "zcash-params/"]
 pub struct SaplingParams;
+pub use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
