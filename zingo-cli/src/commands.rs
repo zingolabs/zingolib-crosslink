@@ -1122,6 +1122,62 @@ impl Command for SendCommand {
     }
 }
 
+struct StakeCommand {}
+impl Command for StakeCommand {
+    fn help(&self) -> &'static str {
+        indoc! {r#"
+            Propose the staking of ZEC to the given finalizer.
+            The fee required to stake this transaction will be added to the proposal and displayed to the user.
+            The 'confirm' command must be called to complete and broadcast the proposed staking transaction(s).
+
+            Usage:
+                stake <finalizer-address> <amount in zatoshis>
+            Example:
+                stake ztestsapling1x65nq4dgp0qfywgxcwk9n0fvm4fysmapgr2q00p85ju252h6l7mmxu2jg9cqqhtvzd69jwhgv8d 200000
+                confirm
+
+        "#}
+    }
+
+    fn short_help(&self) -> &'static str {
+        "Propose the staking of ZEC to the given finalizer and display a proposal for confirmation."
+    }
+
+    fn exec(&self, args: &[&str], lightclient: &mut LightClient) -> String {
+        let receivers = match utils::parse_send_args(args) {
+            Ok(receivers) => receivers,
+            Err(e) => {
+                return format!("Error: {e}\nTry 'help send' for correct usage and examples.");
+            }
+        };
+        let request = match zingolib::data::receivers::transaction_request_from_receivers(receivers)
+        {
+            Ok(request) => request,
+            Err(e) => {
+                return format!("Error: {e}\nTry 'help send' for correct usage and examples.");
+            }
+        };
+        RT.block_on(async move {
+            match lightclient
+                .propose_stake(request, zip32::AccountId::ZERO)
+                .await
+            {
+                Ok(proposal) => {
+                    let fee = match zingolib::data::proposal::total_fee(&proposal) {
+                        Ok(fee) => fee,
+                        Err(e) => return object! { "error" => e.to_string() }.pretty(2),
+                    };
+                    object! { "fee" => fee.into_u64() }
+                }
+                Err(e) => {
+                    object! { "error" => e.to_string() }
+                }
+            }
+            .pretty(2)
+        })
+    }
+}
+
 struct SendAllCommand {}
 impl Command for SendAllCommand {
     fn help(&self) -> &'static str {
@@ -2039,6 +2095,7 @@ pub fn get_commands() -> HashMap<&'static str, Box<dyn Command>> {
         ("info", Box::new(InfoCommand {})),
         ("current_price", Box::new(CurrentPriceCommand {})),
         ("send", Box::new(SendCommand {})),
+        ("stake", Box::new(StakeCommand {})),
         ("resend", Box::new(ResendCommand {})),
         ("shield", Box::new(ShieldCommand {})),
         ("save", Box::new(SaveCommand {})),
