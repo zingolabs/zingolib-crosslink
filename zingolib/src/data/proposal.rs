@@ -36,6 +36,11 @@ pub(crate) enum ZingoProposal {
         proposal: ProportionalFeeShieldProposal,
         shielding_account: zip32::AccountId,
     },
+
+    Stake {
+        proposal: ProportionalFeeProposal,
+        sending_account: zip32::AccountId,
+    },
 }
 
 /// total sum of all transaction request payment amounts in a proposal

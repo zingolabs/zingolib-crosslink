@@ -10,6 +10,8 @@ use pepper_sync::wallet::NoteInterface;
 use tracing::instrument;
 use zcash_client_backend::data_api::wallet::SpendingKeys;
 use zcash_client_backend::proposal::Proposal;
+use zcash_primitives::transaction::StakingAction;
+use zcash_primitives::transaction::StakingActionKind;
 use zcash_primitives::transaction::Transaction;
 use zcash_primitives::transaction::TxId;
 use zcash_primitives::transaction::fees::zip317;
@@ -126,6 +128,59 @@ impl LightWallet {
         Ok(calculated_txids)
     }
 
+    /// Creates and stores transaction from the given `proposal`, returning the txids for each calculated transaction.
+    #[instrument(
+        name = "calculate_staking_transactions",
+        skip(self, proposal),
+        level = "info"
+    )]
+    pub(crate) async fn calculate_staking_transactions<NoteRef>(
+        &mut self,
+        proposal: &Proposal<zip317::FeeRule, NoteRef>,
+        sending_account: zip32::AccountId,
+    ) -> Result<NonEmpty<TxId>, CalculateTransactionError<NoteRef>> {
+        // Reset the progress to start. Any errors will get recorded here
+        self.reset_send_progress().await;
+
+        let (sapling_output, sapling_spend): (Vec<u8>, Vec<u8>) =
+            crate::wallet::utils::read_sapling_params()
+                .map_err(CalculateTransactionError::SaplingParams)?;
+
+        let sapling_prover =
+            zcash_proofs::prover::LocalTxProver::from_bytes(&sapling_spend, &sapling_output);
+
+        let calculated_txids = match proposal.steps().len() {
+            1 => {
+                self.create_proposed_staking_transactions(sapling_prover, proposal, sending_account)
+                    .await?
+            }
+            2 if proposal.steps()[1]
+                .transaction_request()
+                .payments()
+                .values()
+                .any(|payment| {
+                    matches!(
+                        payment
+                            .recipient_address()
+                            .clone()
+                            .convert_if_network::<zcash_keys::address::Address>(
+                                self.network.network_type()
+                            ),
+                        Ok(zcash_keys::address::Address::Tex(_))
+                    )
+                }) =>
+            {
+                self.create_proposed_staking_transactions(sapling_prover, proposal, sending_account)
+                    .await?
+            }
+
+            _ => return Err(CalculateTransactionError::NonTexMultiStep),
+        };
+        self.save_required = true;
+
+        Ok(calculated_txids)
+    }
+
     #[instrument(
         name = "create_proposed_transactions",
         skip(self, proposal, sapling_prover),
@@ -152,6 +207,45 @@ impl LightWallet {
             &SpendingKeys::new(usk),
             zcash_client_backend::wallet::OvkPolicy::Sender,
             proposal,
+            None,
+        )
+        .map_err(CalculateTransactionError::Calculation)
+    }
+
+    #[instrument(
+        name = "create_proposed_transactions",
+        skip(self, proposal, sapling_prover),
+        level = "info"
+    )]
+    async fn create_proposed_staking_transactions<NoteRef>(
+        &mut self,
+        sapling_prover: LocalTxProver,
+        proposal: &Proposal<zcash_primitives::transaction::fees::zip317::FeeRule, NoteRef>,
+        sending_account: zip32::AccountId,
+    ) -> Result<NonEmpty<TxId>, CalculateTransactionError<NoteRef>> {
+        let network = self.network;
+        let usk: zcash_keys::keys::UnifiedSpendingKey = self
+            .unified_key_store
+            .get(&sending_account)
+            .ok_or(KeyError::NoAccountKeys)?
+            .try_into()?;
+
+        zcash_client_backend::data_api::wallet::create_proposed_transactions(
+            self,
+            &network,
+            &sapling_prover,
+            &sapling_prover,
+            &SpendingKeys::new(usk),
+            zcash_client_backend::wallet::OvkPolicy::Sender,
+            proposal,
+            Some(StakingAction {
+                kind: StakingActionKind::Add,
+                val: 1000,
+                target: [0u8; 32],
+                source: [0u8; 32],
+                insecure_target_name: "".to_string(),
+                insecure_source_name: "".to_string(),
+            }),
         )
         .map_err(CalculateTransactionError::Calculation)
     }

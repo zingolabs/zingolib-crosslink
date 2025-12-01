@@ -53,6 +53,27 @@ impl LightClient {
         Ok(proposal)
     }
 
+    /// Creates and stores a stake proposal from a transaction request.
+    pub async fn propose_stake(
+        &mut self,
+        request: TransactionRequest,
+        account_id: zip32::AccountId,
+    ) -> Result<ProportionalFeeProposal, ProposeSendError> {
+        let proposal = self
+            .wallet
+            .write()
+            .await
+            .create_stake_proposal(request, account_id)
+            .await?;
+        self.store_proposal(ZingoProposal::Stake {
+            proposal: proposal.clone(),
+            sending_account: account_id,
+        })
+        .await;
+
+        Ok(proposal)
+    }
+
     /// Creates and stores a proposal for sending all shielded funds from a specified account to a given `address`.
     pub async fn propose_send_all(
         &mut self,

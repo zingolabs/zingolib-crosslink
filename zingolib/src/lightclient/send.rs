@@ -48,6 +48,23 @@ pub mod send_with_proposal {
                 .await?)
         }
 
+        async fn stake(
+            &mut self,
+            proposal: &Proposal<zip317::FeeRule, OutputRef>,
+            sending_account: zip32::AccountId,
+        ) -> Result<NonEmpty<TxId>, SendError> {
+            let mut wallet = self.wallet.write().await;
+            let calculated_txids = wallet
+                .calculate_staking_transactions(proposal, sending_account)
+                .await
+                .map_err(SendError::CalculateSendError)?;
+            self.latest_proposal = None;
+
+            Ok(wallet
+                .transmit_transactions(self.server_uri(), calculated_txids)
+                .await?)
+        }
+
         #[instrument(name = "quick_shield", skip(self, proposal), err, ret, level = "info")]
         async fn shield(
             &mut self,
@@ -89,6 +106,10 @@ pub mod send_with_proposal {
                         proposal,
                         shielding_account,
                     } => self.shield(&proposal, shielding_account).await,
+                    ZingoProposal::Stake {
+                        proposal,
+                        sending_account,
+                    } => self.stake(&proposal, sending_account).await,
                 }
             } else {
                 Err(SendError::NoStoredProposal)

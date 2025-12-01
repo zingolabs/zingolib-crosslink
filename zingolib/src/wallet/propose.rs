@@ -136,6 +136,49 @@ impl LightWallet {
         Ok(proposed_shield)
     }
 
+    /// Creates a proposal from a transaction request.
+    pub(crate) async fn create_stake_proposal(
+        &mut self,
+        request: TransactionRequest,
+        account_id: zip32::AccountId,
+    ) -> Result<crate::data::proposal::ProportionalFeeProposal, ProposeSendError> {
+        let refund_address_count = self
+            .transparent_addresses
+            .keys()
+            .filter(|&address_id| address_id.scope() == TransparentScope::Refund)
+            .count() as u32;
+        let memo = self.change_memo_from_transaction_request(&request, refund_address_count);
+        let input_selector = GreedyInputSelector::new();
+        let change_strategy = zcash_client_backend::fees::zip317::SingleOutputChangeStrategy::new(
+            zcash_primitives::transaction::fees::zip317::FeeRule::standard(),
+            Some(memo),
+            ShieldedProtocol::Orchard,
+            DustOutputPolicy::new(DustAction::AddDustToFee, None),
+        );
+        let network = self.network;
+
+        zcash_client_backend::data_api::wallet::propose_transfer::<
+            LightWallet,
+            ChainType,
+            GreedyInputSelector<LightWallet>,
+            zcash_client_backend::fees::zip317::SingleOutputChangeStrategy<
+                zcash_primitives::transaction::fees::zip317::FeeRule,
+                LightWallet,
+            >,
+            WalletError,
+        >(
+            self,
+            &network,
+            account_id,
+            &input_selector,
+            &change_strategy,
+            request,
+            // TODO: replace wallet min_confirmations field with confirmation policy to unify for all proposals
+            ConfirmationsPolicy::new_symmetrical(self.wallet_settings.min_confirmations, false),
+        )
+        .map_err(ProposeSendError::Proposal)
+    }
+
     fn change_memo_from_transaction_request(
         &self,
         request: &TransactionRequest,

@@ -20,24 +20,35 @@ orchard = "0.11.0"
 sapling-crypto = "0.5.0"
 incrementalmerkletree = "0.8.2"
 shardtree = "0.6.1"
-zcash_address = { git = "https://github.com/ShieldedLabs/librustzcash.git", rev = "e875826969cf02149a60115059574551a745b280" }
-zcash_client_backend = { git = "https://github.com/ShieldedLabs/librustzcash.git", rev = "e875826969cf02149a60115059574551a745b280", features = [
+zcash_encoding = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "49a381e757824262df3e0467af036ad573d8de20", features = [
+    "std",
+] }
+zcash_address = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "49a381e757824262df3e0467af036ad573d8de20", features = [
+    "std",
+] }
+zcash_client_backend = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "49a381e757824262df3e0467af036ad573d8de20", features = [
     "lightwalletd-tonic",
     "orchard",
     "transparent-inputs",
     "tor",
 ] }
-zcash_encoding = { git = "https://github.com/ShieldedLabs/librustzcash.git", rev = "e875826969cf02149a60115059574551a745b280" }
-zcash_keys = { git = "https://github.com/ShieldedLabs/librustzcash.git", rev = "e875826969cf02149a60115059574551a745b280", features = [
+zcash_keys = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "49a381e757824262df3e0467af036ad573d8de20", features = [
     "transparent-inputs",
     "sapling",
     "orchard",
+    "std",
+] }
+zcash_primitives = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "49a381e757824262df3e0467af036ad573d8de20", features = [
+    "std",
+] }
+zcash_proofs = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "49a381e757824262df3e0467af036ad573d8de20" }
+zcash_protocol = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "49a381e757824262df3e0467af036ad573d8de20", features = [
+    "std",
+] }
+zcash_transparent = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "49a381e757824262df3e0467af036ad573d8de20", features = [
+    "std",
 ] }
 zcash_note_encryption = "0.4"
-zcash_primitives = { git = "https://github.com/ShieldedLabs/librustzcash.git", rev = "e875826969cf02149a60115059574551a745b280" }
-zcash_proofs = { git = "https://github.com/ShieldedLabs/librustzcash.git", rev = "e875826969cf02149a60115059574551a745b280" }
-zcash_protocol = { git = "https://github.com/ShieldedLabs/librustzcash.git", rev = "e875826969cf02149a60115059574551a745b280" }
-zcash_transparent = { git = "https://github.com/ShieldedLabs/librustzcash.git", rev = "e875826969cf02149a60115059574551a745b280" }
 
 zebra-chain = { version = "3.0" }
 
@@ -116,28 +127,24 @@ netutils = { path = "netutils" }
 # Test Attributes
 test-log = "0.2"
 
-[patch."https://github.com/ShieldedLabs/librustzcash"]
-zcash_primitives = { path = "../librustzcash/zcash_primitives" }
-zcash_address = { path = "../librustzcash/components/zcash_address" }
-zcash_client_backend = { path = "../librustzcash/zcash_client_backend", features = [
-    "lightwalletd-tonic",
-    "orchard",
-    "transparent-inputs",
-    "tor",
-] }
-zcash_encoding = { path = "../librustzcash/components/zcash_encoding" }
-zcash_keys = { path = "../librustzcash/zcash_keys", features = [
-    "transparent-inputs",
-    "sapling",
-    "orchard",
-] }
-# zcash_primitives = { path = "../librustzcash/zcash_primitives", features = [
-#     "std",
+# [patch."https://github.com/ShieldedLabs/crosslink_monolith"]
+# zcash_primitives = { path = "../crosslink_monolith/librustzcash/zcash_primitives" }
+# zcash_address = { path = "../crosslink_monolith/librustzcash/components/zcash_address" }
+# zcash_client_backend = { path = "../crosslink_monolith/librustzcash/zcash_client_backend", features = [
+#     "lightwalletd-tonic",
+#     "orchard",
+#     "transparent-inputs",
+#     "tor",
 # ] }
-
-zcash_proofs = { path = "../librustzcash/zcash_proofs" }
-zcash_protocol = { path = "../librustzcash/components/zcash_protocol" }
-zcash_transparent = { path = "../librustzcash/zcash_transparent" }
+# zcash_encoding = { path = "../crosslink_monolith/librustzcash/components/zcash_encoding" }
+# zcash_keys = { path = "../crosslink_monolith/librustzcash/zcash_keys", features = [
+#     "transparent-inputs",
+#     "sapling",
+#     "orchard",
+# ] }
+# zcash_proofs = { path = "../crosslink_monolith/librustzcash/zcash_proofs" }
+# zcash_protocol = { path = "../crosslink_monolith/librustzcash/components/zcash_protocol" }
+# zcash_transparent = { path = "../crosslink_monolith/librustzcash/zcash_transparent" }
 
 [profile.test]
 opt-level = 3
