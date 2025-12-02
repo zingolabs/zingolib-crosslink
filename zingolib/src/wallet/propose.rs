@@ -7,6 +7,7 @@ use zcash_client_backend::{
     fees::{DustAction, DustOutputPolicy},
     zip321::TransactionRequest,
 };
+use zcash_primitives::transaction::StakingAction;
 use zcash_protocol::{
     ShieldedProtocol,
     consensus::{BlockHeight, Parameters},
@@ -19,7 +20,7 @@ use super::{
     LightWallet,
     error::{ProposeSendError, ProposeShieldError, WalletError},
 };
-use crate::config::ChainType;
+use crate::{config::ChainType, data::proposal::ProportionalFeeProposal};
 use pepper_sync::{keys::transparent::TransparentScope, sync::ScanPriority};
 
 impl LightWallet {
@@ -140,8 +141,9 @@ impl LightWallet {
     pub(crate) async fn create_stake_proposal(
         &mut self,
         request: TransactionRequest,
+        staking_action: StakingAction,
         account_id: zip32::AccountId,
-    ) -> Result<crate::data::proposal::ProportionalFeeProposal, ProposeSendError> {
+    ) -> Result<StakingProposal, ProposeSendError> {
         let refund_address_count = self
             .transparent_addresses
             .keys()
@@ -157,7 +159,7 @@ impl LightWallet {
         );
         let network = self.network;
 
-        zcash_client_backend::data_api::wallet::propose_transfer::<
+        let proposal = match zcash_client_backend::data_api::wallet::propose_transfer::<
             LightWallet,
             ChainType,
             GreedyInputSelector<LightWallet>,
@@ -177,6 +179,15 @@ impl LightWallet {
             ConfirmationsPolicy::new_symmetrical(self.wallet_settings.min_confirmations, false),
         )
         .map_err(ProposeSendError::Proposal)
+        {
+            Err(e) => return Err(e),
+            Ok(proposal) => proposal,
+        };
+
+        Ok(StakingProposal {
+            proportional_fee_proposal: proposal,
+            staking_action,
+        })
     }
 
     fn change_memo_from_transaction_request(
@@ -242,6 +253,30 @@ impl LightWallet {
                 .first()
                 .map(|range| range.block_range().start)
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StakingProposal {
+    proportional_fee_proposal: crate::data::proposal::ProportionalFeeProposal,
+    staking_action: StakingAction,
+}
+
+impl StakingProposal {
+    pub fn new(
+        proportional_fee_proposal: ProportionalFeeProposal,
+        staking_action: StakingAction,
+    ) -> Self {
+        Self {
+            proportional_fee_proposal,
+            staking_action,
+        }
+    }
+    pub fn proportional_fee_proposal(&self) -> &ProportionalFeeProposal {
+        &self.proportional_fee_proposal
+    }
+    pub fn staking_action(&self) -> &StakingAction {
+        &self.staking_action
     }
 }
 

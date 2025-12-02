@@ -3,7 +3,7 @@
 use std::convert::Infallible;
 
 use zcash_client_backend::proposal::Proposal;
-use zcash_primitives::transaction::fees::zip317;
+use zcash_primitives::transaction::{StakingAction, fees::zip317};
 use zcash_protocol::value::{BalanceError, Zatoshis};
 
 use crate::wallet::output::OutputRef;
@@ -39,6 +39,7 @@ pub(crate) enum ZingoProposal {
 
     Stake {
         proposal: ProportionalFeeProposal,
+        staking_action: StakingAction,
         sending_account: zip32::AccountId,
     },
 }

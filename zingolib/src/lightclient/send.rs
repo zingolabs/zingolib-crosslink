@@ -21,8 +21,8 @@ pub mod send_with_proposal {
     use zcash_client_backend::proposal::Proposal;
     use zcash_client_backend::zip321::TransactionRequest;
 
-    use zcash_primitives::transaction::TxId;
     use zcash_primitives::transaction::fees::zip317;
+    use zcash_primitives::transaction::{StakingAction, TxId};
 
     use crate::data::proposal::ZingoProposal;
     use crate::lightclient::LightClient;
@@ -51,11 +51,12 @@ pub mod send_with_proposal {
         async fn stake(
             &mut self,
             proposal: &Proposal<zip317::FeeRule, OutputRef>,
+            staking_action: StakingAction,
             sending_account: zip32::AccountId,
         ) -> Result<NonEmpty<TxId>, SendError> {
             let mut wallet = self.wallet.write().await;
             let calculated_txids = wallet
-                .calculate_staking_transactions(proposal, sending_account)
+                .calculate_staking_transactions(proposal, staking_action, sending_account)
                 .await
                 .map_err(SendError::CalculateSendError)?;
             self.latest_proposal = None;
@@ -108,8 +109,9 @@ pub mod send_with_proposal {
                     } => self.shield(&proposal, shielding_account).await,
                     ZingoProposal::Stake {
                         proposal,
+                        staking_action,
                         sending_account,
-                    } => self.stake(&proposal, sending_account).await,
+                    } => self.stake(&proposal, staking_action, sending_account).await,
                 }
             } else {
                 Err(SendError::NoStoredProposal)

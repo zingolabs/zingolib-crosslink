@@ -15,11 +15,17 @@ use pepper_sync::config::PerformanceLevel;
 use pepper_sync::keys::transparent;
 use std::sync::LazyLock;
 use tokio::runtime::Runtime;
+use zcash_address::ZcashAddress;
+use zcash_primitives::transaction::{StakingAction, StakingActionKind};
+use zcash_protocol::local_consensus::LocalNetwork;
+use zcash_protocol::memo::{Memo, MemoBytes};
+use zingolib::data::receivers::{Receiver, Receivers};
+use zingolib::utils::conversion::{txid_from_hex_encoded_str, zatoshis_from_u64};
 
 use zcash_address::unified::{Container, Encoding, Ufvk};
 use zcash_keys::address::Address;
 use zcash_keys::keys::UnifiedFullViewingKey;
-use zcash_protocol::consensus::NetworkType;
+use zcash_protocol::consensus::{BlockHeight, NetworkType};
 use zcash_protocol::value::Zatoshis;
 
 use pepper_sync::wallet::{KeyIdInterface, OrchardNote, SaplingNote, SyncMode};
@@ -27,9 +33,10 @@ use pepper_sync::wallet::{KeyIdInterface, OrchardNote, SaplingNote, SyncMode};
 use zingo_common_components::protocol::activation_heights::for_test;
 use zingolib::data::{PollReport, proposal};
 use zingolib::lightclient::LightClient;
-use zingolib::utils::conversion::txid_from_hex_encoded_str;
 use zingolib::wallet::keys::WalletAddressRef;
 use zingolib::wallet::keys::unified::{ReceiverSelection, UnifiedKeyStore};
+
+use crate::commands::error::CommandError;
 
 pub static RT: LazyLock<Runtime> = LazyLock::new(|| tokio::runtime::Runtime::new().unwrap());
 
@@ -1122,7 +1129,137 @@ impl Command for SendCommand {
     }
 }
 
+/// The stake command
 struct StakeCommand {}
+
+impl StakeCommand {
+    /// Parse the following arguments:
+    /// - action (add, sub, clear)
+    /// - finalizer address
+    /// - miner address
+    /// - amount (in zatoshis)
+    pub async fn parse_args(
+        args: &[&str],
+        lightclient: &mut LightClient,
+    ) -> Result<(Receivers, StakingAction), CommandError> {
+        if args.len() != 4 {
+            return Err(CommandError::InvalidArguments);
+        }
+
+        let staking_action_kind = StakeCommand::parse_action(args.get(0).unwrap())?;
+
+        let finalizer_address =
+            StakeCommand::addr_from_str_bytes(args.get(1).unwrap().as_bytes()).unwrap();
+
+        let miner_address = ZcashAddress::try_from_encoded(args.get(2).unwrap()).unwrap();
+
+        let amount_u64 = args
+            .get(3)
+            .unwrap()
+            .trim()
+            .parse::<u64>()
+            .map_err(CommandError::ParseIntFromString)?;
+        let amount = zatoshis_from_u64(amount_u64).map_err(CommandError::ConversionFailed)?;
+
+        let zero_source = [0u8; 32];
+
+        let staking_action = StakingAction {
+            kind: staking_action_kind,
+            val: amount_u64,
+            target: finalizer_address,
+            source: zero_source,
+            insecure_target_name: String::new(),
+            insecure_source_name: String::new(),
+        };
+
+        let wallet = lightclient.wallet.write().await;
+        let (_id, addr) = wallet
+            .unified_addresses()
+            .iter()
+            .next()
+            .ok_or(CommandError::InvalidArguments)?;
+        let send_back_address = addr.clone();
+
+        // println!("send_back_address: {send_back_address:#?}");
+
+        let receiver = Receiver {
+            recipient_address: miner_address,
+            amount: amount,
+            memo: Some(
+                MemoBytes::try_from(
+                    Memo::from_str(
+                        send_back_address
+                            .encode(&LocalNetwork {
+                                overwinter: Some(BlockHeight::from_u32(1)),
+                                sapling: Some(BlockHeight::from_u32(1)),
+                                blossom: Some(BlockHeight::from_u32(1)),
+                                heartwood: Some(BlockHeight::from_u32(1)),
+                                canopy: Some(BlockHeight::from_u32(1)),
+                                nu5: Some(BlockHeight::from_u32(1)),
+                                nu6: Some(BlockHeight::from_u32(1)),
+                                nu6_1: None,
+                            })
+                            .as_str(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap(),
+            ),
+        };
+        // println!("receiver: {receiver:#?}");
+
+        Ok((vec![receiver], staking_action))
+        // Err(CommandError::IncompatibleMemo)
+    }
+
+    pub fn parse_action(action: &str) -> Result<StakingActionKind, CommandError> {
+        match action {
+            "add" => Ok(StakingActionKind::Add),
+            "sub" => Ok(StakingActionKind::Sub),
+            "clear" => Ok(StakingActionKind::Clear),
+            _ => Err(CommandError::InvalidArguments),
+        }
+    }
+
+    pub fn addr_from_str_bytes(data: &[u8]) -> Option<[u8; 32]> {
+        const VALS: [u8; 256] = {
+            let mut v = [0xff; 256];
+            v[b'0' as usize] = 0x0;
+            v[b'1' as usize] = 0x1;
+            v[b'2' as usize] = 0x2;
+            v[b'3' as usize] = 0x3;
+            v[b'4' as usize] = 0x4;
+            v[b'5' as usize] = 0x5;
+            v[b'6' as usize] = 0x6;
+            v[b'7' as usize] = 0x7;
+            v[b'8' as usize] = 0x8;
+            v[b'9' as usize] = 0x9;
+            v[b'a' as usize] = 0xa;
+            v[b'b' as usize] = 0xb;
+            v[b'c' as usize] = 0xc;
+            v[b'd' as usize] = 0xd;
+            v[b'e' as usize] = 0xe;
+            v[b'f' as usize] = 0xf;
+            v
+        };
+        let mut buf = [0u8; 32];
+        for i in 0..32 {
+            let a = data.get(2 * i)?;
+            let b = data.get(2 * i + 1)?;
+            let a = VALS[*a as usize];
+            if a == 0xff {
+                return None;
+            }
+            let b = VALS[*b as usize];
+            if b == 0xff {
+                return None;
+            }
+            buf[31 - i] = (a << 4) | b
+        }
+        Some(buf)
+    }
+}
+
 impl Command for StakeCommand {
     fn help(&self) -> &'static str {
         indoc! {r#"
@@ -1131,7 +1268,7 @@ impl Command for StakeCommand {
             The 'confirm' command must be called to complete and broadcast the proposed staking transaction(s).
 
             Usage:
-                stake <finalizer-address> <amount in zatoshis>
+                stake <add | sub | clear> <finalizer-address> <miner-address> <amount in zatoshis>
             Example:
                 stake ztestsapling1x65nq4dgp0qfywgxcwk9n0fvm4fysmapgr2q00p85ju252h6l7mmxu2jg9cqqhtvzd69jwhgv8d 200000
                 confirm
@@ -1144,26 +1281,29 @@ impl Command for StakeCommand {
     }
 
     fn exec(&self, args: &[&str], lightclient: &mut LightClient) -> String {
-        let receivers = match utils::parse_send_args(args) {
-            Ok(receivers) => receivers,
-            Err(e) => {
-                return format!("Error: {e}\nTry 'help send' for correct usage and examples.");
-            }
-        };
-        let request = match zingolib::data::receivers::transaction_request_from_receivers(receivers)
-        {
-            Ok(request) => request,
-            Err(e) => {
-                return format!("Error: {e}\nTry 'help send' for correct usage and examples.");
-            }
-        };
         RT.block_on(async move {
+            let parsed_stake_command = match StakeCommand::parse_args(args, lightclient).await {
+                Ok(parsed_stake_command) => parsed_stake_command,
+                Err(e) => {
+                    return format!("Error: {e}\nTry 'help stake' for correct usage and examples.");
+                }
+            };
+            let request = match zingolib::data::receivers::transaction_request_from_receivers(
+                parsed_stake_command.0,
+            ) {
+                Ok(request) => request,
+                Err(e) => {
+                    return format!("Error: {e}\nTry 'help stake' for correct usage and examples.");
+                }
+            };
             match lightclient
-                .propose_stake(request, zip32::AccountId::ZERO)
+                .propose_stake(request, parsed_stake_command.1, zip32::AccountId::ZERO)
                 .await
             {
                 Ok(proposal) => {
-                    let fee = match zingolib::data::proposal::total_fee(&proposal) {
+                    let fee = match zingolib::data::proposal::total_fee(
+                        &proposal.proportional_fee_proposal(),
+                    ) {
                         Ok(fee) => fee,
                         Err(e) => return object! { "error" => e.to_string() }.pretty(2),
                     };

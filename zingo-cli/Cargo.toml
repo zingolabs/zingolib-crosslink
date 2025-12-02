@@ -31,6 +31,7 @@ zcash_primitives = { workspace = true }
 zcash_address = { workspace = true }
 zcash_keys = { workspace = true }
 zingo_common_components = { workspace = true, features = ["for_test"], optional = true }
+hex.workspace = true
 
 [dev-dependencies]
 zingolib = { workspace = true, features = ["testutils"] }

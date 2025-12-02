@@ -137,6 +137,7 @@ impl LightWallet {
     pub(crate) async fn calculate_staking_transactions<NoteRef>(
         &mut self,
         proposal: &Proposal<zip317::FeeRule, NoteRef>,
+        staking_action: StakingAction,
         sending_account: zip32::AccountId,
     ) -> Result<NonEmpty<TxId>, CalculateTransactionError<NoteRef>> {
         // Reset the progress to start. Any errors will get recorded here
@@ -151,8 +152,13 @@ impl LightWallet {
 
         let calculated_txids = match proposal.steps().len() {
             1 => {
-                self.create_proposed_staking_transactions(sapling_prover, proposal, sending_account)
-                    .await?
+                self.create_proposed_staking_transactions(
+                    sapling_prover,
+                    proposal,
+                    staking_action,
+                    sending_account,
+                )
+                .await?
             }
             2 if proposal.steps()[1]
                 .transaction_request()
@@ -170,8 +176,13 @@ impl LightWallet {
                     )
                 }) =>
             {
-                self.create_proposed_staking_transactions(sapling_prover, proposal, sending_account)
-                    .await?
+                self.create_proposed_staking_transactions(
+                    sapling_prover,
+                    proposal,
+                    staking_action,
+                    sending_account,
+                )
+                .await?
             }
 
             _ => return Err(CalculateTransactionError::NonTexMultiStep),
@@ -221,6 +232,7 @@ impl LightWallet {
         &mut self,
         sapling_prover: LocalTxProver,
         proposal: &Proposal<zcash_primitives::transaction::fees::zip317::FeeRule, NoteRef>,
+        staking_action: StakingAction,
         sending_account: zip32::AccountId,
     ) -> Result<NonEmpty<TxId>, CalculateTransactionError<NoteRef>> {
         let network = self.network;
@@ -238,14 +250,7 @@ impl LightWallet {
             &SpendingKeys::new(usk),
             zcash_client_backend::wallet::OvkPolicy::Sender,
             proposal,
-            Some(StakingAction {
-                kind: StakingActionKind::Add,
-                val: 1000,
-                target: [0u8; 32],
-                source: [0u8; 32],
-                insecure_target_name: "".to_string(),
-                insecure_source_name: "".to_string(),
-            }),
+            Some(staking_action),
         )
         .map_err(CalculateTransactionError::Calculation)
     }

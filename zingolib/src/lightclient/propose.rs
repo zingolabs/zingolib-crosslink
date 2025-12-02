@@ -2,6 +2,7 @@
 
 use zcash_address::ZcashAddress;
 use zcash_client_backend::zip321::TransactionRequest;
+use zcash_primitives::transaction::StakingAction;
 use zcash_protocol::value::Zatoshis;
 
 use crate::config::ZENNIES_FOR_ZINGO_AMOUNT;
@@ -14,6 +15,7 @@ use crate::data::receivers::transaction_request_from_receivers;
 use crate::lightclient::LightClient;
 use crate::wallet::error::ProposeSendError;
 use crate::wallet::error::ProposeShieldError;
+use crate::wallet::propose::StakingProposal;
 
 impl LightClient {
     pub(super) fn append_zingo_zenny_receiver(&self, receivers: &mut Vec<Receiver>) {
@@ -57,16 +59,18 @@ impl LightClient {
     pub async fn propose_stake(
         &mut self,
         request: TransactionRequest,
+        staking_action: StakingAction,
         account_id: zip32::AccountId,
-    ) -> Result<ProportionalFeeProposal, ProposeSendError> {
+    ) -> Result<StakingProposal, ProposeSendError> {
         let proposal = self
             .wallet
             .write()
             .await
-            .create_stake_proposal(request, account_id)
+            .create_stake_proposal(request, staking_action.clone(), account_id)
             .await?;
         self.store_proposal(ZingoProposal::Stake {
-            proposal: proposal.clone(),
+            proposal: proposal.clone().proportional_fee_proposal().clone(),
+            staking_action: staking_action,
             sending_account: account_id,
         })
         .await;

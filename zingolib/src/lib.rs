@@ -4,6 +4,7 @@
 //! Zingo backend library
 
 pub mod config;
+pub mod crosslink;
 pub mod data;
 pub mod error;
 pub mod grpc_client;
