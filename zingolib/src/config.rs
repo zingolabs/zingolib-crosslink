@@ -24,7 +24,7 @@ use log4rs::{
     filter::threshold::ThresholdFilter,
 };
 use zcash_protocol::consensus::{
-    BlockHeight, MAIN_NETWORK, NetworkType, NetworkUpgrade, Parameters, TEST_NETWORK,
+    BlockHeight, MAIN_NETWORK, NetworkType, NetworkUpgrade, Parameters,
 };
 use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
 
@@ -39,7 +39,7 @@ pub const ZENNIES_FOR_ZINGO_REGTEST_ADDRESS: &str = "uregtest14emvr2anyul683p43d
 #[must_use]
 pub fn get_donation_address_for_chain(chain: &ChainType) -> &'static str {
     match chain {
-        ChainType::Testnet => ZENNIES_FOR_ZINGO_TESTNET_ADDRESS,
+        ChainType::Testnet(_) => ZENNIES_FOR_ZINGO_TESTNET_ADDRESS,
         ChainType::Mainnet => ZENNIES_FOR_ZINGO_DONATION_ADDRESS,
         ChainType::Regtest(_) => ZENNIES_FOR_ZINGO_REGTEST_ADDRESS,
     }
@@ -49,7 +49,7 @@ pub fn get_donation_address_for_chain(chain: &ChainType) -> &'static str {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ChainType {
     /// Public testnet
-    Testnet,
+    Testnet(zebra_chain::parameters::testnet::ConfiguredActivationHeights),
     /// Mainnet
     Mainnet,
     /// Local testnet
@@ -60,7 +60,7 @@ impl std::fmt::Display for ChainType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use ChainType::{Mainnet, Regtest, Testnet};
         let name = match self {
-            Testnet => "test",
+            Testnet(_) => "test",
             Mainnet => "main",
             Regtest(_) => "regtest",
         };
@@ -71,7 +71,7 @@ impl std::fmt::Display for ChainType {
 impl Parameters for ChainType {
     fn network_type(&self) -> NetworkType {
         match self {
-            ChainType::Testnet => NetworkType::Test,
+            ChainType::Testnet(_) => NetworkType::Test,
             ChainType::Mainnet => NetworkType::Main,
             ChainType::Regtest(_) => NetworkType::Regtest,
         }
@@ -80,7 +80,20 @@ impl Parameters for ChainType {
     fn activation_height(&self, nu: NetworkUpgrade) -> Option<BlockHeight> {
         use ChainType::{Mainnet, Regtest, Testnet};
         match self {
-            Testnet => TEST_NETWORK.activation_height(nu),
+            Testnet(activation_heights) => match nu {
+                NetworkUpgrade::Overwinter => {
+                    activation_heights.overwinter.map(BlockHeight::from_u32)
+                }
+                NetworkUpgrade::Sapling => activation_heights.sapling.map(BlockHeight::from_u32),
+                NetworkUpgrade::Blossom => activation_heights.blossom.map(BlockHeight::from_u32),
+                NetworkUpgrade::Heartwood => {
+                    activation_heights.heartwood.map(BlockHeight::from_u32)
+                }
+                NetworkUpgrade::Canopy => activation_heights.canopy.map(BlockHeight::from_u32),
+                NetworkUpgrade::Nu5 => activation_heights.nu5.map(BlockHeight::from_u32),
+                NetworkUpgrade::Nu6 => activation_heights.nu6.map(BlockHeight::from_u32),
+                NetworkUpgrade::Nu6_1 => activation_heights.nu6_1.map(BlockHeight::from_u32),
+            },
             Mainnet => MAIN_NETWORK.activation_height(nu),
             Regtest(activation_heights) => match nu {
                 NetworkUpgrade::Overwinter => {
@@ -123,7 +136,18 @@ pub enum ChainFromStringError {
 /// * `Err(String)` - An error message if the chain name is invalid
 pub fn chain_from_str(chain_name: &str) -> Result<ChainType, ChainFromStringError> {
     match chain_name {
-        "testnet" => Ok(ChainType::Testnet),
+        "testnet" => Ok(ChainType::Testnet(ConfiguredActivationHeights {
+            before_overwinter: Some(1),
+            overwinter: Some(1),
+            sapling: Some(1),
+            blossom: Some(1),
+            heartwood: Some(1),
+            canopy: Some(1),
+            nu5: Some(1),
+            nu6: Some(1),
+            nu6_1: None,
+            nu7: None,
+        })),
         "mainnet" => Ok(ChainType::Mainnet),
         "regtest" => Ok(ChainType::Regtest(ConfiguredActivationHeights {
             before_overwinter: Some(1),
@@ -390,13 +414,24 @@ impl ZingoConfig {
     /// create a `ZingoConfig` that helps a `LightClient` connect to a server.
     #[must_use]
     pub fn create_testnet() -> ZingoConfig {
-        ZingoConfig::build(ChainType::Testnet)
-            .set_lightwalletd_uri(
-                (DEFAULT_TESTNET_LIGHTWALLETD_SERVER)
-                    .parse::<http::Uri>()
-                    .unwrap(),
-            )
-            .create()
+        ZingoConfig::build(ChainType::Testnet(ConfiguredActivationHeights {
+            before_overwinter: Some(1),
+            overwinter: Some(1),
+            sapling: Some(1),
+            blossom: Some(1),
+            heartwood: Some(1),
+            canopy: Some(1),
+            nu5: Some(1),
+            nu6: Some(1),
+            nu6_1: None,
+            nu7: None,
+        }))
+        .set_lightwalletd_uri(
+            (DEFAULT_TESTNET_LIGHTWALLETD_SERVER)
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .create()
     }
 
     #[cfg(any(test, feature = "testutils"))]
@@ -507,7 +542,7 @@ impl ZingoConfig {
                 }
 
                 match &self.chain {
-                    ChainType::Testnet => zcash_data_location.push("testnet3"),
+                    ChainType::Testnet(_) => zcash_data_location.push("testnet3"),
                     ChainType::Mainnet => {}
                     ChainType::Regtest(_) => zcash_data_location.push("regtest"),
                 }
