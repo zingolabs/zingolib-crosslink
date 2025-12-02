@@ -29,3 +29,4 @@ extern crate rust_embed;
 pub struct SaplingParams;
 
 pub use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
+pub use zip32::AccountId;
