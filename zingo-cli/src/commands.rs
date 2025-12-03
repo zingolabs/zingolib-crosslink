@@ -18,7 +18,6 @@ use tokio::runtime::Runtime;
 use zcash_address::ZcashAddress;
 use zcash_primitives::transaction::{StakingAction, StakingActionKind};
 use zcash_protocol::TxId;
-use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::memo::{Memo, MemoBytes};
 use zingolib::ConfiguredActivationHeights;
 use zingolib::data::receivers::{Receiver, Receivers};
@@ -1387,21 +1386,7 @@ impl UnstakeCommand {
             amount: amount,
             memo: Some(
                 MemoBytes::try_from(
-                    Memo::from_str(
-                        send_back_address
-                            .encode(&LocalNetwork {
-                                overwinter: Some(BlockHeight::from_u32(1)),
-                                sapling: Some(BlockHeight::from_u32(1)),
-                                blossom: Some(BlockHeight::from_u32(1)),
-                                heartwood: Some(BlockHeight::from_u32(1)),
-                                canopy: Some(BlockHeight::from_u32(1)),
-                                nu5: Some(BlockHeight::from_u32(1)),
-                                nu6: Some(BlockHeight::from_u32(1)),
-                                nu6_1: None,
-                            })
-                            .as_str(),
-                    )
-                    .unwrap(),
+                    Memo::from_str(send_back_address.encode(&TEST_NETWORK).as_str()).unwrap(),
                 )
                 .unwrap(),
             ),
