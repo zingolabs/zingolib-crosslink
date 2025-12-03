@@ -1340,13 +1340,12 @@ impl UnstakeCommand {
     /// Parse the following arguments:
     /// - finalizer address
     /// - miner address
-    /// - amount (in zatoshis)
     /// - txid
     pub async fn parse_args(
         args: &[&str],
         lightclient: &mut LightClient,
     ) -> Result<(Receivers, StakingAction), CommandError> {
-        if args.len() != 4 {
+        if args.len() != 3 {
             return Err(CommandError::InvalidArguments);
         }
 
@@ -1357,14 +1356,7 @@ impl UnstakeCommand {
 
         let miner_address = ZcashAddress::try_from_encoded(args.get(1).unwrap()).unwrap();
 
-        let amount_u64 = args
-            .get(2)
-            .unwrap()
-            .trim()
-            .parse::<u64>()
-            .map_err(CommandError::ParseIntFromString)?;
-
-        let txid = args.get(3).unwrap();
+        let txid = args.get(2).unwrap();
 
         let unfiltered_txs = lightclient.transaction_summaries(false).await.unwrap();
 
@@ -1383,7 +1375,7 @@ impl UnstakeCommand {
 
         let total_zats = found_tx.value + found_tx.fee.unwrap_or(0);
 
-        let amount = zatoshis_from_u64(amount_u64).map_err(CommandError::ConversionFailed)?;
+        let amount = zatoshis_from_u64(0).map_err(CommandError::ConversionFailed)?;
 
         let staking_action = StakingAction {
             kind: sub_action,
