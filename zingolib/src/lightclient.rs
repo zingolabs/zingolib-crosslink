@@ -380,13 +380,6 @@ impl LightClient {
     }
 }
 
-#[derive(Default, Debug, Clone)]
-pub struct WalletRosterMember {
-    pub pub_key: [u8; 32],
-    pub voting_power: u64,
-    pub txids: std::vec::Vec<StakeTxId>,
-}
-
 impl std::fmt::Debug for LightClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LightClient")
