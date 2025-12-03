@@ -3,7 +3,7 @@
 use chrono::DateTime;
 use json::JsonValue;
 
-use zcash_primitives::transaction::StakingAction;
+use zcash_primitives::transaction::{StakingAction, StakingActionKind};
 use zcash_protocol::{TxId, consensus::BlockHeight};
 
 use pepper_sync::keys::transparent::TransparentScope;
@@ -487,8 +487,17 @@ impl From<StakingActionWrapper> for JsonValue {
             return json::Null;
         }
 
+        let kind: String = match value.staking_action.clone().unwrap().kind {
+            StakingActionKind::Add => "add".to_string(),
+            StakingActionKind::Sub => "sub".to_string(),
+            StakingActionKind::Clear => "clear".to_string(),
+            StakingActionKind::Move => "move".to_string(),
+            StakingActionKind::MoveClear => "move_clear".to_string(),
+        };
+
         json::object! {
-            "kind" => value.staking_action.clone().unwrap().val,
+            "kind" => kind,
+            "val" => value.staking_action.clone().unwrap().val,
             "target" => hex::encode(value.staking_action.clone().unwrap().target),
             "source" => hex::encode(value.staking_action.clone().unwrap().source),
             "insecure_target_name" => value.staking_action.clone().unwrap().insecure_target_name,
