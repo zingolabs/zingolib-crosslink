@@ -27,7 +27,7 @@ use zingolib::utils::conversion::{txid_from_hex_encoded_str, zatoshis_from_u64};
 use zcash_address::unified::{Container, Encoding, Ufvk};
 use zcash_keys::address::Address;
 use zcash_keys::keys::UnifiedFullViewingKey;
-use zcash_protocol::consensus::{BlockHeight, NetworkType};
+use zcash_protocol::consensus::{BlockHeight, NetworkType, TEST_NETWORK};
 use zcash_protocol::value::Zatoshis;
 
 use pepper_sync::wallet::{KeyIdInterface, OrchardNote, SaplingNote, SyncMode};
@@ -1211,21 +1211,7 @@ impl StakeCommand {
             amount: amount,
             memo: Some(
                 MemoBytes::try_from(
-                    Memo::from_str(
-                        send_back_address
-                            .encode(&LocalNetwork {
-                                overwinter: Some(BlockHeight::from_u32(1)),
-                                sapling: Some(BlockHeight::from_u32(1)),
-                                blossom: Some(BlockHeight::from_u32(1)),
-                                heartwood: Some(BlockHeight::from_u32(1)),
-                                canopy: Some(BlockHeight::from_u32(1)),
-                                nu5: Some(BlockHeight::from_u32(1)),
-                                nu6: Some(BlockHeight::from_u32(1)),
-                                nu6_1: None,
-                            })
-                            .as_str(),
-                    )
-                    .unwrap(),
+                    Memo::from_str(send_back_address.encode(&TEST_NETWORK).as_str()).unwrap(),
                 )
                 .unwrap(),
             ),
