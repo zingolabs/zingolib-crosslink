@@ -23,7 +23,7 @@ use zcash_client_backend::proto::compact_formats::CompactBlock;
 use zcash_keys::{address::UnifiedAddress, encoding::encode_payment_address};
 use zcash_primitives::{
     block::BlockHash,
-    transaction::{TxId, components::transparent::OutPoint},
+    transaction::{StakingAction, TxId, components::transparent::OutPoint},
 };
 use zcash_protocol::{
     PoolType, ShieldedProtocol,
@@ -564,6 +564,11 @@ impl WalletTransaction {
                     .map(zcash_transparent::bundle::TxIn::prevout)
                     .collect::<Vec<_>>()
             })
+    }
+
+    /// Return the staking data associated with the transaction, if any.
+    pub fn staking_data(&self) -> Option<StakingAction> {
+        self.transaction.staking_action()
     }
 }
 

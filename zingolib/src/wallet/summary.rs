@@ -203,6 +203,8 @@ impl LightWallet {
                 //     });
                 // }
 
+                let staking_action = transaction.staking_data();
+
                 Ok(TransactionSummary {
                     txid: transaction.txid(),
                     datetime: transaction.datetime(),
@@ -218,6 +220,7 @@ impl LightWallet {
                     outgoing_orchard_notes,
                     outgoing_sapling_notes,
                     outgoing_transparent_coins,
+                    staking_action,
                 })
             })
             .collect::<Result<Vec<_>, SummaryError>>()?;

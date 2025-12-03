@@ -3,6 +3,7 @@
 use chrono::DateTime;
 use json::JsonValue;
 
+use zcash_primitives::transaction::StakingAction;
 use zcash_protocol::{TxId, consensus::BlockHeight};
 
 use pepper_sync::keys::transparent::TransparentScope;
@@ -138,6 +139,7 @@ pub struct TransactionSummary {
     pub outgoing_orchard_notes: Vec<OutgoingNoteSummary>,
     pub outgoing_sapling_notes: Vec<OutgoingNoteSummary>,
     pub outgoing_transparent_coins: Vec<OutgoingCoinSummary>,
+    pub staking_action: Option<StakingAction>,
 }
 
 impl TransactionSummary {
@@ -167,6 +169,7 @@ impl TransactionSummary {
         OutgoingNoteSummaries,
         OutgoingNoteSummaries,
         OutgoingCoinSummaries,
+        String,
     ) {
         let datetime = if let Some(dt) = DateTime::from_timestamp(i64::from(self.datetime), 0) {
             format!("{dt}")
@@ -191,6 +194,12 @@ impl TransactionSummary {
         let outgoing_transparent_coins =
             OutgoingCoinSummaries(self.outgoing_transparent_coins.clone());
 
+        let staking_data = if let Some(staking_action) = &self.staking_action {
+            staking_action.to_string()
+        } else {
+            "not available".to_string()
+        };
+
         (
             datetime,
             fee,
@@ -201,6 +210,7 @@ impl TransactionSummary {
             outgoing_orchard_notes,
             outgoing_sapling_notes,
             outgoing_transparent_coins,
+            staking_data,
         )
     }
 }
@@ -217,6 +227,7 @@ impl std::fmt::Display for TransactionSummary {
             outgoing_orchard_notes,
             outgoing_sapling_notes,
             outgoing_transparent_coins,
+            staking_data,
         ) = self.prepare_for_display();
         write!(
             f,
@@ -235,6 +246,7 @@ impl std::fmt::Display for TransactionSummary {
     outgoing orchard notes: {}
     outgoing sapling notes: {}
     outgoing transparent coins: {}
+    staking_action: {}
 }}",
             self.txid,
             datetime,
@@ -250,6 +262,7 @@ impl std::fmt::Display for TransactionSummary {
             outgoing_orchard_notes,
             outgoing_sapling_notes,
             outgoing_transparent_coins,
+            staking_data
         )
     }
 }
