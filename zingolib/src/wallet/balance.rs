@@ -5,7 +5,7 @@ use pepper_sync::wallet::{
     WalletTransaction,
 };
 use zcash_client_backend::data_api::WalletRead;
-use zcash_primitives::transaction::fees::zip317::MARGINAL_FEE;
+use zcash_primitives::transaction::{StakingActionKind, fees::zip317::MARGINAL_FEE};
 use zcash_protocol::{PoolType, value::Zatoshis};
 
 use crate::utils;
@@ -39,6 +39,9 @@ pub struct AccountBalance {
     pub unconfirmed_transparent_balance: Option<Zatoshis>,
     /// Sum of confirmed and unconfirmed transparent balances.
     pub total_transparent_balance: Option<Zatoshis>,
+
+    /// The total amount of Zatoshis staked.
+    pub staked_amount: Zatoshis,
 }
 
 impl std::fmt::Display for AccountBalance {
@@ -57,6 +60,8 @@ impl std::fmt::Display for AccountBalance {
     confirmed_transparent_balance: {}
     unconfirmed_transparent_balance: {}
     total_transparent_balance: {}
+
+    staked_amount: {}
 ]",
             self.confirmed_orchard_balance
                 .map_or("no view capability".to_string(), |zats| {
@@ -94,6 +99,7 @@ impl std::fmt::Display for AccountBalance {
                 .map_or("no view capability".to_string(), |zats| {
                     format_zatoshis(zats)
                 }),
+            format_zatoshis(self.staked_amount)
         )
     }
 }
@@ -110,6 +116,7 @@ impl From<AccountBalance> for json::JsonValue {
             "confirmed_transparent_balance" => value.confirmed_transparent_balance.map(zcash_protocol::value::Zatoshis::into_u64),
             "unconfirmed_transparent_balance" => value.unconfirmed_transparent_balance.map(zcash_protocol::value::Zatoshis::into_u64),
             "total_transparent_balance" => value.total_transparent_balance.map(zcash_protocol::value::Zatoshis::into_u64),
+            "staked_amount" => value.staked_amount.into_u64(),
         }
     }
 }
@@ -180,6 +187,15 @@ impl LightWallet {
         let total_transparent_balance = confirmed_transparent_balance
             .and_then(|confirmed| unconfirmed_transparent_balance + confirmed);
 
+        let transactions = self.wallet_transactions.values().collect::<Vec<_>>();
+
+        let total_staked = transactions
+            .iter()
+            .filter(|tx| tx.staking_data().is_some())
+            .filter(|tx| tx.staking_data().unwrap().kind == StakingActionKind::Add)
+            .map(|tx| tx.staking_data().unwrap().val)
+            .sum::<u64>();
+
         Ok(AccountBalance {
             confirmed_orchard_balance,
             unconfirmed_orchard_balance,
@@ -190,6 +206,7 @@ impl LightWallet {
             confirmed_transparent_balance,
             unconfirmed_transparent_balance,
             total_transparent_balance,
+            staked_amount: Zatoshis::from_u64(total_staked).unwrap(),
         })
     }
 
