@@ -378,6 +378,21 @@ impl LightClient {
 
         Ok(roster)
     }
+
+    pub async fn get_accumulated_stake_for_txid(&self, txid: [u8; 32]) -> u64 {
+        let roster = self.get_roster().await.unwrap();
+
+        let mut accumulated_stake = 0;
+        for member in &roster {
+            for stake_txid in &member.txids {
+                if stake_txid.txid == txid {
+                    accumulated_stake += stake_txid.zats;
+                }
+            }
+        }
+
+        return accumulated_stake;
+    }
 }
 
 impl std::fmt::Debug for LightClient {
