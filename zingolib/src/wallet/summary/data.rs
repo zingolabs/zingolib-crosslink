@@ -360,6 +360,7 @@ pub struct ValueTransfer {
     pub recipient_address: Option<String>,
     pub pool_received: Option<String>,
     pub memos: Vec<String>,
+    pub staking_action: Option<StakingAction>,
 }
 
 impl std::fmt::Debug for ValueTransfer {
@@ -376,6 +377,7 @@ impl std::fmt::Debug for ValueTransfer {
             .field("recipient_address", &self.recipient_address)
             .field("pool_received", &self.pool_received)
             .field("memos", &self.memos)
+            .field("staking_action", &self.staking_action)
             .finish()
     }
 }
@@ -411,6 +413,12 @@ impl std::fmt::Display for ValueTransfer {
         for (index, memo) in self.memos.iter().enumerate() {
             memos.push_str(&format!("\n\tmemo {}: {}", (index + 1), memo));
         }
+        let staking_data = if let Some(staking_action) = &self.staking_action {
+            format!("\n\tstaking action: {}", staking_action)
+        } else {
+            "not available".to_string()
+        };
+
         write!(
             f,
             "{{
@@ -425,6 +433,7 @@ impl std::fmt::Display for ValueTransfer {
     recipient_address: {}
     pool_received: {}
     memos: {}
+    staking_action: {}
 }}",
             self.txid,
             datetime,
@@ -436,7 +445,8 @@ impl std::fmt::Display for ValueTransfer {
             self.value,
             recipient_address,
             pool_received,
-            memos
+            memos,
+            staking_data
         )
     }
 }

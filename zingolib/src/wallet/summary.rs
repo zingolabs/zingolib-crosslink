@@ -293,6 +293,7 @@ impl LightWallet {
                             recipient_address: None,
                             pool_received: None,
                             memos,
+                            staking_action: transaction.staking_action,
                         });
                     }
                 }
@@ -323,6 +324,7 @@ impl LightWallet {
                             recipient_address: None,
                             pool_received: Some(PoolType::ORCHARD.to_string()),
                             memos,
+                            staking_action: transaction.staking_action.clone(),
                         });
                     }
                     if !transaction.sapling_notes.is_empty() {
@@ -350,6 +352,7 @@ impl LightWallet {
                             recipient_address: None,
                             pool_received: Some(PoolType::SAPLING.to_string()),
                             memos,
+                            staking_action: transaction.staking_action.clone(),
                         });
                     }
                 }
@@ -391,6 +394,7 @@ impl LightWallet {
                             recipient_address: None,
                             pool_received: None,
                             memos,
+                            staking_action: transaction.staking_action.clone(),
                         });
                     } else {
                         value_transfers.push(ValueTransfer {
@@ -407,6 +411,7 @@ impl LightWallet {
                             recipient_address: None,
                             pool_received: None,
                             memos: Vec::new(),
+                            staking_action: transaction.staking_action.clone(),
                         });
                     }
 
@@ -438,6 +443,7 @@ impl LightWallet {
                             recipient_address: None,
                             pool_received: Some(PoolType::ORCHARD.to_string()),
                             memos,
+                            staking_action: transaction.staking_action.clone(),
                         });
                     }
                     if !transaction.sapling_notes.is_empty() {
@@ -463,6 +469,7 @@ impl LightWallet {
                             recipient_address: None,
                             pool_received: Some(PoolType::SAPLING.to_string()),
                             memos,
+                            staking_action: transaction.staking_action.clone(),
                         });
                     }
                     if !transaction.transparent_coins.is_empty() {
@@ -483,6 +490,7 @@ impl LightWallet {
                             recipient_address: None,
                             pool_received: Some(PoolType::TRANSPARENT.to_string()),
                             memos: Vec::new(),
+                            staking_action: transaction.staking_action.clone(),
                         });
                     }
                 }
@@ -738,6 +746,7 @@ impl LightWallet {
                 recipient_address: Some(address),
                 pool_received: None,
                 memos,
+                staking_action: transaction.staking_action.clone(),
             });
         }
 
