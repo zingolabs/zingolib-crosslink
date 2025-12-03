@@ -299,7 +299,7 @@ impl LightClient {
         self.wallet.read().await.do_total_value_to_address().await
     }
 
-    pub async fn get_roster(&self) -> Result<Vec<WalletRosterMember>, String> {
+    pub async fn get_roster(&self) -> Result<Vec<RosterMember>, String> {
         let mut roster: Vec<RosterMember> = Vec::new();
         let uri = self.server_uri();
         let mut zcb_client = get_zcb_client(uri).await.unwrap();
@@ -376,15 +376,7 @@ impl LightClient {
             roster = new_roster;
         }
 
-        Ok(roster
-            .iter()
-            .map(|member| WalletRosterMember {
-                pub_key: member.pub_key,
-                voting_power: member.voting_power,
-                txids: member.txids.clone(),
-            })
-            .collect::<Vec<WalletRosterMember>>()
-            .clone())
+        Ok(roster)
     }
 }
 
