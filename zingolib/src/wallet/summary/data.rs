@@ -464,7 +464,35 @@ impl From<ValueTransfer> for JsonValue {
             "value" => value_transfer.value,
             "recipient_address" => value_transfer.recipient_address,
             "pool_received" => value_transfer.pool_received,
-            "memos" => value_transfer.memos
+            "memos" => value_transfer.memos,
+            "staking_action" => StakingActionWrapper::new(value_transfer.staking_action)
+        }
+    }
+}
+
+pub struct StakingActionWrapper {
+    pub staking_action: Option<StakingAction>,
+}
+
+impl StakingActionWrapper {
+    pub fn new(staking_action: Option<StakingAction>) -> Self {
+        StakingActionWrapper { staking_action }
+    }
+}
+
+// FIXME: use proper FFI type
+impl From<StakingActionWrapper> for JsonValue {
+    fn from(value: StakingActionWrapper) -> Self {
+        if value.staking_action.is_none() {
+            return json::Null;
+        }
+
+        json::object! {
+            "kind" => value.staking_action.clone().unwrap().val,
+            "target" => hex::encode(value.staking_action.clone().unwrap().target),
+            "source" => hex::encode(value.staking_action.clone().unwrap().source),
+            "insecure_target_name" => value.staking_action.clone().unwrap().insecure_target_name,
+            "insecure_source_name" => value.staking_action.clone().unwrap().insecure_source_name
         }
     }
 }
