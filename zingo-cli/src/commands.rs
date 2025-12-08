@@ -26,7 +26,7 @@ use zingolib::utils::conversion::{txid_from_hex_encoded_str, zatoshis_from_u64};
 use zcash_address::unified::{Container, Encoding, Ufvk};
 use zcash_keys::address::Address;
 use zcash_keys::keys::UnifiedFullViewingKey;
-use zcash_protocol::consensus::{BlockHeight, NetworkType, TEST_NETWORK};
+use zcash_protocol::consensus::{NetworkType, TEST_NETWORK};
 use zcash_protocol::value::Zatoshis;
 
 use pepper_sync::wallet::{KeyIdInterface, OrchardNote, SaplingNote, SyncMode};
@@ -1172,7 +1172,7 @@ impl StakeCommand {
         let staking_action_kind = StakingActionKind::Add;
 
         let finalizer_address =
-            StakeCommand::addr_from_str_bytes(args.get(0).unwrap().as_bytes()).unwrap();
+            StakeCommand::addr_from_str_bytes(args.first().unwrap().as_bytes()).unwrap();
 
         let miner_address = ZcashAddress::try_from_encoded(args.get(1).unwrap()).unwrap();
 
@@ -1207,12 +1207,11 @@ impl StakeCommand {
 
         let receiver = Receiver {
             recipient_address: miner_address,
-            amount: amount,
+            amount,
             memo: Some(
-                MemoBytes::try_from(
+                MemoBytes::from(
                     Memo::from_str(send_back_address.encode(&TEST_NETWORK).as_str()).unwrap(),
-                )
-                .unwrap(),
+                ),
             ),
         };
         // println!("receiver: {receiver:#?}");
@@ -1302,7 +1301,7 @@ impl Command for StakeCommand {
             {
                 Ok(proposal) => {
                     let fee = match zingolib::data::proposal::total_fee(
-                        &proposal.proportional_fee_proposal(),
+                        proposal.proportional_fee_proposal(),
                     ) {
                         Ok(fee) => fee,
                         Err(e) => return object! { "error" => e.to_string() }.pretty(2),
@@ -1337,7 +1336,7 @@ impl UnstakeCommand {
         let sub_action = StakingActionKind::Sub;
 
         let finalizer_address =
-            UnstakeCommand::addr_from_str_bytes(args.get(0).unwrap().as_bytes()).unwrap();
+            UnstakeCommand::addr_from_str_bytes(args.first().unwrap().as_bytes()).unwrap();
 
         let miner_address = ZcashAddress::try_from_encoded(args.get(1).unwrap()).unwrap();
 
@@ -1383,12 +1382,11 @@ impl UnstakeCommand {
 
         let receiver = Receiver {
             recipient_address: miner_address,
-            amount: amount,
+            amount,
             memo: Some(
-                MemoBytes::try_from(
+                MemoBytes::from(
                     Memo::from_str(send_back_address.encode(&TEST_NETWORK).as_str()).unwrap(),
-                )
-                .unwrap(),
+                ),
             ),
         };
         // println!("receiver: {receiver:#?}");
@@ -1478,7 +1476,7 @@ impl Command for UnstakeCommand {
             {
                 Ok(proposal) => {
                     let fee = match zingolib::data::proposal::total_fee(
-                        &proposal.proportional_fee_proposal(),
+                        proposal.proportional_fee_proposal(),
                     ) {
                         Ok(fee) => fee,
                         Err(e) => return object! { "error" => e.to_string() }.pretty(2),

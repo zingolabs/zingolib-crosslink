@@ -71,7 +71,7 @@ impl LightClient {
             .await?;
         self.store_proposal(ZingoProposal::Stake {
             proposal: proposal.clone().proportional_fee_proposal().clone(),
-            staking_action: staking_action,
+            staking_action,
             sending_account: account_id,
         })
         .await;

@@ -308,7 +308,7 @@ impl LightClient {
 
         let roster_bytes = res.into_inner().data;
 
-        let mut ok = roster_bytes.len() > 0;
+        let mut ok = !roster_bytes.is_empty();
         let mut cur = Cursor::new(&roster_bytes);
 
         let mut new_roster = Vec::new();
@@ -391,7 +391,7 @@ impl LightClient {
             }
         }
 
-        return accumulated_stake;
+        accumulated_stake
     }
 }
 

@@ -14,8 +14,8 @@ use zcash_client_backend::{
         wallet::{ConfirmationsPolicy, TargetHeight},
     },
     wallet::{
-        Exposure, GapMetadata, NoteId, ReceivedNote, TransparentAddressMetadata,
-        TransparentAddressSource, WalletTransparentOutput,
+        Exposure, NoteId, ReceivedNote, TransparentAddressMetadata, TransparentAddressSource,
+        WalletTransparentOutput,
     },
 };
 use zcash_keys::{address::UnifiedAddress, keys::UnifiedFullViewingKey};
@@ -531,11 +531,11 @@ impl WalletWrite for LightWallet {
         unimplemented!()
     }
 
-    fn delete_account(&mut self, account: Self::AccountId) -> Result<(), Self::Error> {
+    fn delete_account(&mut self, _account: Self::AccountId) -> Result<(), Self::Error> {
         todo!()
     }
 
-    fn set_tx_trust(&mut self, txid: TxId, trusted: bool) -> Result<(), Self::Error> {
+    fn set_tx_trust(&mut self, _txid: TxId, _trusted: bool) -> Result<(), Self::Error> {
         todo!()
     }
 }
@@ -837,10 +837,10 @@ impl InputSource for LightWallet {
 
     fn get_account_metadata(
         &self,
-        account: Self::AccountId,
-        selector: &NoteFilter,
-        target_height: TargetHeight,
-        exclude: &[Self::NoteRef],
+        _account: Self::AccountId,
+        _selector: &NoteFilter,
+        _target_height: TargetHeight,
+        _exclude: &[Self::NoteRef],
     ) -> Result<zcash_client_backend::data_api::AccountMeta, Self::Error> {
         unimplemented!()
     }

@@ -1,6 +1,5 @@
 //! creating proposals from wallet data
 
-use log::info;
 use tracing::instrument;
 use zcash_client_backend::{
     data_api::wallet::{ConfirmationsPolicy, input_selection::GreedyInputSelector},
