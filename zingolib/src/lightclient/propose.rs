@@ -40,6 +40,7 @@ impl LightClient {
         request: TransactionRequest,
         account_id: zip32::AccountId,
     ) -> Result<ProportionalFeeProposal, ProposeSendError> {
+        let _ignore_error = self.pause_sync();
         let proposal = self
             .wallet
             .write()
@@ -98,6 +99,7 @@ impl LightClient {
         }
         let request = transaction_request_from_receivers(receivers)
             .map_err(ProposeSendError::TransactionRequestFailed)?;
+        let _ignore_error = self.pause_sync();
         let proposal = self
             .wallet
             .write()

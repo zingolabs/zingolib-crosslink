@@ -495,6 +495,7 @@ fn set_checkpoint_retentions<L>(
                     marking: Marking::None,
                 };
             }
+            // NOTE: if there are no outputs in the block, this last retention will be a checkpoint and nothing will need to be mutated.
             _ => (),
         }
     }

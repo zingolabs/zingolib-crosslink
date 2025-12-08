@@ -28,6 +28,9 @@ use zcash_protocol::consensus::{
 };
 use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
 
+#[cfg(feature = "regtest")]
+use zingo_common_components::protocol::activation_heights::for_test::all_height_one_nus;
+
 use crate::wallet::WalletSettings;
 
 /// TODO: Add Doc Comment Here!
@@ -52,7 +55,7 @@ pub enum ChainType {
     Testnet(zebra_chain::parameters::testnet::ConfiguredActivationHeights),
     /// Mainnet
     Mainnet,
-    /// Local testnet
+    /// Regtest
     Regtest(zebra_chain::parameters::testnet::ConfiguredActivationHeights),
 }
 
@@ -116,14 +119,12 @@ impl Parameters for ChainType {
 /// An error determining chain id and parameters '`ChainType`' from string.
 #[derive(thiserror::Error, Debug)]
 pub enum ChainFromStringError {
-    /// of unknown chain,
-    #[error("Invalid chain name '{0}'. Expected one of: testnet, mainnet.")]
+    /// Invalid chain name. Expected one of: mainnet, testnet or regtest.
+    #[error("Invalid chain name '{0}'. Expected one of: mainnet, testnet or regtest.")]
     UnknownChain(String),
-    /// of regtest without specific activation heights,
-    #[error(
-        "Invalid chain name 'regtest'. Cant create a regtest chain from a string without assuming activation heights."
-    )]
-    UnknownRegtestChain,
+    /// "regtest" feature is not enabled.
+    #[error("\"regtest\" feature is not enabled.")]
+    RegtestFeatureNotEnabled,
 }
 
 /// Converts a chain name string to a `ChainType` variant.
