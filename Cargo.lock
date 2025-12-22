@@ -319,9 +319,9 @@ checksum = "9b34d609dfbaf33d6889b2b7106d3ca345eacad44200913df5ba02bfd31d2ba9"
 
 [[package]]
 name = "async-compression"
-version = "0.4.35"
+version = "0.4.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07a926debf178f2d355197f9caddb08e54a9329d44748034bba349c5848cb519"
+checksum = "98ec5f6c2f8bc326c994cb9e241cc257ddaba9afa8555a43cffbb5dd86efaa37"
 dependencies = [
  "compression-codecs",
  "compression-core",
@@ -398,9 +398,9 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "aws-lc-rs"
-version = "1.15.1"
+version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b5ce75405893cd713f9ab8e297d8e438f624dde7d706108285f7e17a25a180f"
+checksum = "6a88aab2464f1f25453baa7a07c84c5b7684e274054ba06817f382357f77a288"
 dependencies = [
  "aws-lc-sys",
  "zeroize",
@@ -408,9 +408,9 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-sys"
-version = "0.34.0"
+version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "179c3777a8b5e70e90ea426114ffc565b2c1a9f82f6c4a0c5a34aa6ef5e781b6"
+checksum = "b45afffdee1e7c9126814751f88dddc747f41d91da16c9551a0f1e8a11e788a1"
 dependencies = [
  "cc",
  "cmake",
@@ -420,9 +420,9 @@ dependencies = [
 
 [[package]]
 name = "axum"
-version = "0.8.7"
+version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b098575ebe77cb6d14fc7f32749631a6e44edbef6b796f89b020e99ba20d425"
+checksum = "8b52af3cb4058c895d37317bb27508dccc8e5f2d39454016b297bf4a400597b8"
 dependencies = [
  "axum-core",
  "bytes",
@@ -761,9 +761,9 @@ dependencies = [
 
 [[package]]
 name = "bumpalo"
-version = "3.19.0"
+version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46c5e41b57b8bba42a04676d81cb89e9ee8e859a1a66f80a5a72e1cb76b34d43"
+checksum = "5dd9dc738b7a8311c7ade152424974d8115f2cdad61e8dab8dac9f2362298510"
 
 [[package]]
 name = "by_address"
@@ -850,9 +850,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.49"
+version = "1.2.50"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90583009037521a116abf44494efecd645ba48b6622457080f080b85544e2215"
+checksum = "9f50d563227a1c37cc0a263f64eca3334388c01c5e4c4861a9def205c614383c"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1008,9 +1008,9 @@ dependencies = [
 
 [[package]]
 name = "cmake"
-version = "0.1.54"
+version = "0.1.57"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7caa3f9de89ddbe2c607f4101924c5abec803763ae9534e4f4d7d8f84aa81f0"
+checksum = "75443c44cd6b379beb8c5b45d85d0773baf31cce901fe7bb252f4eff3008ef7d"
 dependencies = [
  "cc",
 ]
@@ -1047,9 +1047,9 @@ checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
 name = "compression-codecs"
-version = "0.4.34"
+version = "0.4.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34a3cbbb8b6eca96f3a5c4bf6938d5b27ced3675d69f95bb51948722870bc323"
+checksum = "b0f7ac3e5b97fdce45e8922fb05cae2c37f7bbd63d30dd94821dacfd8f3f2bf2"
 dependencies = [
  "compression-core",
  "flate2",
@@ -1146,9 +1146,9 @@ dependencies = [
 
 [[package]]
 name = "cookie_store"
-version = "0.21.1"
+version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2eac901828f88a5241ee0600950ab981148a18f2f756900ffba1b125ca6a3ef9"
+checksum = "3fc4bff745c9b4c7fb1e97b25d13153da2bc7796260141df62378998d070207f"
 dependencies = [
  "cookie",
  "document-features",
@@ -1559,18 +1559,18 @@ dependencies = [
 
 [[package]]
 name = "derive_more"
-version = "2.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10b768e943bed7bf2cab53df09f4bc34bfd217cdb57d971e769874c9a6710618"
+checksum = "d751e9e49156b02b44f9c1815bcb94b984cdcc4396ecc32521c739452808b134"
 dependencies = [
  "derive_more-impl",
 ]
 
 [[package]]
 name = "derive_more-impl"
-version = "2.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d286bfdaf75e988b4a78e013ecd79c581e06399ab53fbacd2d916c2f904f30b"
+checksum = "799a97264921d8623a957f6c3b9011f3b5492f557bbb7a5a19b7fa6d06ba8dcb"
 dependencies = [
  "convert_case",
  "proc-macro2",
@@ -1874,10 +1874,11 @@ dependencies = [
 [[package]]
 name = "equihash"
 version = "0.2.2"
-source = "git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331#889ef9f155ab7514ba9928f05236edba898a6331"
+source = "git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a#ff762d28ec841fc23204e853ac98914fac380c1a"
 dependencies = [
  "blake2b_simd",
  "core2",
+ "document-features",
 ]
 
 [[package]]
@@ -1939,7 +1940,7 @@ dependencies = [
 [[package]]
 name = "f4jumble"
 version = "0.1.1"
-source = "git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331#889ef9f155ab7514ba9928f05236edba898a6331"
+source = "git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a#ff762d28ec841fc23204e853ac98914fac380c1a"
 dependencies = [
  "blake2b_simd",
 ]
@@ -2734,9 +2735,9 @@ checksum = "7aedcccd01fc5fe81e6b489c15b247b8b0690feb23304303a9e560f37efc560a"
 
 [[package]]
 name = "icu_properties"
-version = "2.1.1"
+version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e93fcd3157766c0c8da2f8cff6ce651a31f0810eaa1c51ec363ef790bbb5fb99"
+checksum = "020bfc02fe870ec3a66d93e677ccca0562506e5872c650f893269e08615d74ec"
 dependencies = [
  "icu_collections",
  "icu_locale_core",
@@ -2748,9 +2749,9 @@ dependencies = [
 
 [[package]]
 name = "icu_properties_data"
-version = "2.1.1"
+version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02845b3647bb045f1100ecd6480ff52f34c35f82d9880e029d329c21d1054899"
+checksum = "616c294cf8d725c6afcd8f55abc17c56464ef6211f9ed59cccffe534129c77af"
 
 [[package]]
 name = "icu_provider"
@@ -2950,9 +2951,9 @@ dependencies = [
 
 [[package]]
 name = "itoa"
-version = "1.0.15"
+version = "1.0.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
+checksum = "7ee5b5339afb4c41626dde77b7a611bd4f2c202b897852b4bcf5d03eddc61010"
 
 [[package]]
 name = "jobserver"
@@ -3178,13 +3179,13 @@ checksum = "f9fbbcab51052fe104eb5e5d351cf728d30a5be1fe14d9be8a3b097481fb97de"
 
 [[package]]
 name = "libredox"
-version = "0.1.10"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "416f7e718bdb06000964960ffa43b4335ad4012ae8b99060261aa4a8088d5ccb"
+checksum = "df15f6eac291ed1cf25865b1ee60399f57e7c227e7f51bdbd4c5270396a9ed50"
 dependencies = [
  "bitflags 2.10.0",
  "libc",
- "redox_syscall",
+ "redox_syscall 0.6.0",
 ]
 
 [[package]]
@@ -3558,9 +3559,9 @@ checksum = "5e0826a989adedc2a244799e823aece04662b66609d96af8dff7ac6df9a8925d"
 
 [[package]]
 name = "ntapi"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8a3895c6391c39d7fe7ebc444a87eb2991b2a0bc718fdabd071eec617fc68e4"
+checksum = "c70f219e21142367c70c0b30c6a9e3a14d55b4d12a204d897fbec83a0363f081"
 dependencies = [
  "winapi",
 ]
@@ -3909,7 +3910,7 @@ checksum = "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1"
 dependencies = [
  "cfg-if",
  "libc",
- "redox_syscall",
+ "redox_syscall 0.5.18",
  "smallvec",
  "windows-link 0.2.1",
 ]
@@ -3988,14 +3989,14 @@ dependencies = [
  "tokio",
  "tonic",
  "tracing",
- "zcash_address 0.10.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
+ "zcash_address 0.10.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
  "zcash_client_backend",
- "zcash_encoding 0.3.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_keys 0.12.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
+ "zcash_encoding 0.3.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
+ "zcash_keys 0.12.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
  "zcash_note_encryption",
- "zcash_primitives 0.26.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_protocol 0.7.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_transparent 0.6.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
+ "zcash_primitives 0.26.1",
+ "zcash_protocol 0.7.1",
+ "zcash_transparent 0.6.1",
  "zingo-memo",
  "zingo-status",
  "zip32",
@@ -4160,9 +4161,9 @@ dependencies = [
 
 [[package]]
 name = "portable-atomic"
-version = "1.11.1"
+version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f84267b20a16ea918e43c6a88433c2d54fa145c92a811b5b047ccbe153674483"
+checksum = "f59e70c4aef1e55797c2e8fd94a4f2a973fc972cfde0e0b05f683667b0cd39dd"
 
 [[package]]
 name = "portpicker"
@@ -4259,7 +4260,7 @@ version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "219cb19e96be00ab2e37d6e299658a0cfa83e52429179969b0f0121b4ac46983"
 dependencies = [
- "toml_edit 0.23.9",
+ "toml_edit 0.23.10+spec-1.0.0",
 ]
 
 [[package]]
@@ -4705,6 +4706,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "redox_syscall"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec96166dafa0886eb81fe1c0a388bece180fbef2135f97c1e2cf8302e74b43b5"
+dependencies = [
+ "bitflags 2.10.0",
+]
+
+[[package]]
 name = "redox_users"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4786,9 +4796,9 @@ dependencies = [
 
 [[package]]
 name = "reqwest"
-version = "0.12.24"
+version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d0946410b9f7b082a427e4ef5c8ff541a88b357bc6c637c40db3a68ac70a36f"
+checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
  "base64",
  "bytes",
@@ -5131,9 +5141,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-pki-types"
-version = "1.13.1"
+version = "1.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "708c0f9d5f54ba0272468c1d306a52c495b31fa155e91bc25371e6df7996908c"
+checksum = "21e6f2ab2928ca4291b86736a8bd920a277a399bba1589409d72154ff87c1282"
 dependencies = [
  "web-time",
  "zeroize",
@@ -5192,9 +5202,9 @@ dependencies = [
 
 [[package]]
 name = "ryu"
-version = "1.0.20"
+version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
+checksum = "62049b2877bf12821e8f9ad256ee38fdc31db7387ec2d3b3f403024de2034aea"
 
 [[package]]
 name = "safelog"
@@ -5447,9 +5457,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.145"
+version = "1.0.146"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "402a6f66d8c709116cf22f558eab210f5a50187f702eb4d7e5ef38d9a7f1c79c"
+checksum = "217ca874ae0207aac254aa02c957ded05585a90892cc8d87f9e5fa49669dadd8"
 dependencies = [
  "itoa",
  "memchr",
@@ -5469,9 +5479,9 @@ dependencies = [
 
 [[package]]
 name = "serde_spanned"
-version = "1.0.3"
+version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e24345aa0fe688594e73770a5f6d1b216508b4f93484c0026d521acd30134392"
+checksum = "f8bbf91e5a4d6315eee45e704372590b30e260ee83af6639d64557f51b067776"
 dependencies = [
  "serde_core",
 ]
@@ -6133,14 +6143,14 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "0.9.8"
+version = "0.9.10+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0dc8b1fb61449e27716ec0e1bdf0f6b8f3e8f6b05391e8497b8b6d7804ea6d8"
+checksum = "0825052159284a1a8b4d6c0c86cbc801f2da5afd2b225fa548c72f2e74002f48"
 dependencies = [
  "indexmap 2.12.1",
  "serde_core",
- "serde_spanned 1.0.3",
- "toml_datetime 0.7.3",
+ "serde_spanned 1.0.4",
+ "toml_datetime 0.7.5+spec-1.1.0",
  "toml_parser",
  "toml_writer",
  "winnow",
@@ -6157,9 +6167,9 @@ dependencies = [
 
 [[package]]
 name = "toml_datetime"
-version = "0.7.3"
+version = "0.7.5+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2cdb639ebbc97961c51720f858597f7f24c4fc295327923af55b74c3c724533"
+checksum = "92e1cfed4a3038bc5a127e35a2d360f145e1f4b971b551a2ba5fd7aedf7e1347"
 dependencies = [
  "serde_core",
 ]
@@ -6180,21 +6190,21 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
-version = "0.23.9"
+version = "0.23.10+spec-1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d7cbc3b4b49633d57a0509303158ca50de80ae32c265093b24c414705807832"
+checksum = "84c8b9f757e028cee9fa244aea147aab2a9ec09d5325a9b01e0a49730c2b5269"
 dependencies = [
  "indexmap 2.12.1",
- "toml_datetime 0.7.3",
+ "toml_datetime 0.7.5+spec-1.1.0",
  "toml_parser",
  "winnow",
 ]
 
 [[package]]
 name = "toml_parser"
-version = "1.0.4"
+version = "1.0.6+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0cbe268d35bdb4bb5a56a2de88d0ad0eb70af5384a99d648cd4b3d04039800e"
+checksum = "a3198b4b0a8e11f09dd03e133c0280504d0801269e9afa46362ffde1cbeebf44"
 dependencies = [
  "winnow",
 ]
@@ -6207,9 +6217,9 @@ checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "toml_writer"
-version = "1.0.4"
+version = "1.0.6+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df8b2b54733674ad286d16267dcfc7a71ed5c776e4ac7aa3c3e2561f7c637bf2"
+checksum = "ab16f14aed21ee8bfd8ec22513f7287cd4a91aa92e44edfe2c17ddd004e92607"
 
 [[package]]
 name = "tonic"
@@ -6516,7 +6526,7 @@ dependencies = [
  "serde_ignored",
  "strum",
  "thiserror 2.0.17",
- "toml 0.9.8",
+ "toml 0.9.10+spec-1.1.0",
  "tor-basic-utils",
  "tor-error",
  "tor-rtcompat",
@@ -7302,9 +7312,9 @@ checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
 
 [[package]]
 name = "tracing"
-version = "0.1.43"
+version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d15d90a0b5c19378952d479dc858407149d7bb45a14de0142f6c534b16fc647"
+checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
  "log",
  "pin-project-lite",
@@ -7325,9 +7335,9 @@ dependencies = [
 
 [[package]]
 name = "tracing-core"
-version = "0.1.35"
+version = "0.1.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a04e24fab5c89c6a36eb8558c9656f30d81de51dfa4d3b45f26b21d61fa0a6c"
+checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
  "valuable",
@@ -8336,26 +8346,26 @@ dependencies = [
  "core2",
  "f4jumble 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "zcash_encoding 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "zcash_protocol 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zcash_protocol 0.7.2",
 ]
 
 [[package]]
 name = "zcash_address"
 version = "0.10.1"
-source = "git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331#889ef9f155ab7514ba9928f05236edba898a6331"
+source = "git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a#ff762d28ec841fc23204e853ac98914fac380c1a"
 dependencies = [
  "bech32",
  "bs58",
  "core2",
- "f4jumble 0.1.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_encoding 0.3.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_protocol 0.7.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
+ "f4jumble 0.1.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
+ "zcash_encoding 0.3.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
+ "zcash_protocol 0.7.1",
 ]
 
 [[package]]
 name = "zcash_client_backend"
 version = "0.21.0"
-source = "git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331#889ef9f155ab7514ba9928f05236edba898a6331"
+source = "git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a#ff762d28ec841fc23204e853ac98914fac380c1a"
 dependencies = [
  "arti-client",
  "base64",
@@ -8406,14 +8416,14 @@ dependencies = [
  "trait-variant",
  "webpki-roots 1.0.4",
  "which",
- "zcash_address 0.10.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_encoding 0.3.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_keys 0.12.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
+ "zcash_address 0.10.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
+ "zcash_encoding 0.3.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
+ "zcash_keys 0.12.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
  "zcash_note_encryption",
- "zcash_primitives 0.26.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_protocol 0.7.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
+ "zcash_primitives 0.26.1",
+ "zcash_protocol 0.7.1",
  "zcash_script",
- "zcash_transparent 0.6.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
+ "zcash_transparent 0.6.1",
  "zip32",
  "zip321",
 ]
@@ -8431,7 +8441,7 @@ dependencies = [
 [[package]]
 name = "zcash_encoding"
 version = "0.3.0"
-source = "git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331#889ef9f155ab7514ba9928f05236edba898a6331"
+source = "git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a#ff762d28ec841fc23204e853ac98914fac380c1a"
 dependencies = [
  "core2",
  "hex",
@@ -8470,15 +8480,15 @@ dependencies = [
  "tracing",
  "zcash_address 0.10.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "zcash_encoding 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "zcash_protocol 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "zcash_transparent 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zcash_protocol 0.7.2",
+ "zcash_transparent 0.6.3",
  "zip32",
 ]
 
 [[package]]
 name = "zcash_keys"
 version = "0.12.0"
-source = "git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331#889ef9f155ab7514ba9928f05236edba898a6331"
+source = "git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a#ff762d28ec841fc23204e853ac98914fac380c1a"
 dependencies = [
  "bech32",
  "bip32",
@@ -8497,17 +8507,17 @@ dependencies = [
  "secrecy",
  "subtle",
  "tracing",
- "zcash_address 0.10.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_encoding 0.3.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_protocol 0.7.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_transparent 0.6.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
+ "zcash_address 0.10.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
+ "zcash_encoding 0.3.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
+ "zcash_protocol 0.7.1",
+ "zcash_transparent 0.6.1",
  "zip32",
 ]
 
 [[package]]
 name = "zcash_local_net"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/infrastructure.git?branch=dev#ba4d5b22fcf33cc4ea2aed43e7d2b3e719563b19"
+source = "git+https://github.com/zingolabs/infrastructure.git?branch=dev#c55662eed4bbfe6a457f591c9d88eb80dc9393b1"
 dependencies = [
  "getset",
  "hex",
@@ -8519,7 +8529,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
- "zcash_protocol 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zcash_protocol 0.7.2",
  "zebra-chain",
  "zebra-node-services",
  "zebra-rpc",
@@ -8543,8 +8553,52 @@ dependencies = [
 [[package]]
 name = "zcash_primitives"
 version = "0.26.1"
+source = "git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a#ff762d28ec841fc23204e853ac98914fac380c1a"
+dependencies = [
+ "bip32",
+ "blake2b_simd",
+ "block-buffer 0.11.0-rc.3",
+ "bs58",
+ "core2",
+ "crypto-common 0.2.0-rc.1",
+ "document-features",
+ "ed25519-zebra",
+ "equihash 0.2.2 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
+ "ff",
+ "fpe",
+ "getset",
+ "group",
+ "hex",
+ "incrementalmerkletree",
+ "jubjub",
+ "memuse",
+ "nonempty",
+ "orchard",
+ "rand 0.8.5",
+ "rand_core 0.6.4",
+ "redjubjub",
+ "ripemd 0.1.3",
+ "sapling-crypto",
+ "secp256k1",
+ "serde",
+ "sha2 0.10.9",
+ "subtle",
+ "tracing",
+ "zcash_address 0.10.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
+ "zcash_encoding 0.3.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
+ "zcash_note_encryption",
+ "zcash_protocol 0.7.1",
+ "zcash_script",
+ "zcash_spec",
+ "zcash_transparent 0.6.1",
+ "zip32",
+]
+
+[[package]]
+name = "zcash_primitives"
+version = "0.26.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0e6912efdae984166ec0dc580049699026795328dcea4fc8cc077d51fce350c"
+checksum = "3fd9ff256fb298a7e94a73c1adad6c7e0b4b194b902e777ee9f5f2e12c4c4776"
 dependencies = [
  "bip32",
  "blake2b_simd",
@@ -8576,54 +8630,10 @@ dependencies = [
  "zcash_address 0.10.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "zcash_encoding 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "zcash_note_encryption",
- "zcash_protocol 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zcash_protocol 0.7.2",
  "zcash_script",
  "zcash_spec",
- "zcash_transparent 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "zip32",
-]
-
-[[package]]
-name = "zcash_primitives"
-version = "0.26.1"
-source = "git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331#889ef9f155ab7514ba9928f05236edba898a6331"
-dependencies = [
- "bip32",
- "blake2b_simd",
- "block-buffer 0.11.0-rc.3",
- "bs58",
- "core2",
- "crypto-common 0.2.0-rc.1",
- "document-features",
- "ed25519-zebra",
- "equihash 0.2.2 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "ff",
- "fpe",
- "getset",
- "group",
- "hex",
- "incrementalmerkletree",
- "jubjub",
- "memuse",
- "nonempty",
- "orchard",
- "rand 0.8.5",
- "rand_core 0.6.4",
- "redjubjub",
- "ripemd 0.1.3",
- "sapling-crypto",
- "secp256k1",
- "serde",
- "sha2 0.10.9",
- "subtle",
- "tracing",
- "zcash_address 0.10.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_encoding 0.3.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_note_encryption",
- "zcash_protocol 0.7.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_script",
- "zcash_spec",
- "zcash_transparent 0.6.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
+ "zcash_transparent 0.6.3",
  "zip32",
 ]
 
@@ -8648,13 +8658,13 @@ dependencies = [
  "tracing",
  "wagyu-zcash-parameters",
  "xdg 2.5.2",
- "zcash_primitives 0.26.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zcash_primitives 0.26.4",
 ]
 
 [[package]]
 name = "zcash_proofs"
 version = "0.26.1"
-source = "git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331#889ef9f155ab7514ba9928f05236edba898a6331"
+source = "git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a#ff762d28ec841fc23204e853ac98914fac380c1a"
 dependencies = [
  "bellman",
  "blake2b_simd",
@@ -8670,31 +8680,31 @@ dependencies = [
  "sapling-crypto",
  "tracing",
  "xdg 3.0.0",
- "zcash_primitives 0.26.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
+ "zcash_primitives 0.26.1",
 ]
 
 [[package]]
 name = "zcash_protocol"
 version = "0.7.1"
+source = "git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a#ff762d28ec841fc23204e853ac98914fac380c1a"
+dependencies = [
+ "core2",
+ "document-features",
+ "hex",
+ "memuse",
+ "zcash_encoding 0.3.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
+]
+
+[[package]]
+name = "zcash_protocol"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "deb4c8d0530fd7a3d65358010f1e0a1ccfe6cc5f1ad63447af089ccc82ae9edf"
+checksum = "18b1a337bbc9a7d55ae35d31189f03507dbc7934e9a4bee5c1d5c47464860e48"
 dependencies = [
  "core2",
  "document-features",
  "hex",
  "memuse",
-]
-
-[[package]]
-name = "zcash_protocol"
-version = "0.7.1"
-source = "git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331#889ef9f155ab7514ba9928f05236edba898a6331"
-dependencies = [
- "core2",
- "document-features",
- "hex",
- "memuse",
- "zcash_encoding 0.3.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
 ]
 
 [[package]]
@@ -8726,8 +8736,7 @@ dependencies = [
 [[package]]
 name = "zcash_transparent"
 version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91df4a3a377d478f94e4a00ff36a4963dc641ccd8ed2455554b8cb6914721562"
+source = "git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a#ff762d28ec841fc23204e853ac98914fac380c1a"
 dependencies = [
  "bip32",
  "blake2b_simd",
@@ -8740,9 +8749,9 @@ dependencies = [
  "secp256k1",
  "sha2 0.10.9",
  "subtle",
- "zcash_address 0.10.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "zcash_encoding 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "zcash_protocol 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zcash_address 0.10.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
+ "zcash_encoding 0.3.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
+ "zcash_protocol 0.7.1",
  "zcash_script",
  "zcash_spec",
  "zip32",
@@ -8750,8 +8759,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_transparent"
-version = "0.6.1"
-source = "git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331#889ef9f155ab7514ba9928f05236edba898a6331"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a9b7b4bc11d8bb20833d1b8ab6807f4dca941b381f1129e5bbd72a84e391991"
 dependencies = [
  "bip32",
  "blake2b_simd",
@@ -8760,13 +8770,14 @@ dependencies = [
  "document-features",
  "getset",
  "hex",
+ "nonempty",
  "ripemd 0.1.3",
  "secp256k1",
  "sha2 0.10.9",
  "subtle",
- "zcash_address 0.10.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_encoding 0.3.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_protocol 0.7.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
+ "zcash_address 0.10.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zcash_encoding 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zcash_protocol 0.7.2",
  "zcash_script",
  "zcash_spec",
  "zip32",
@@ -8827,10 +8838,10 @@ dependencies = [
  "zcash_encoding 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "zcash_history",
  "zcash_note_encryption",
- "zcash_primitives 0.26.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "zcash_protocol 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zcash_primitives 0.26.4",
+ "zcash_protocol 0.7.2",
  "zcash_script",
- "zcash_transparent 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zcash_transparent 0.6.3",
 ]
 
 [[package]]
@@ -8865,7 +8876,7 @@ dependencies = [
  "tracing",
  "tracing-futures",
  "zcash_proofs 0.26.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "zcash_protocol 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zcash_protocol 0.7.2",
  "zebra-chain",
  "zebra-node-services",
  "zebra-script",
@@ -8963,10 +8974,10 @@ dependencies = [
  "which",
  "zcash_address 0.10.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "zcash_keys 0.12.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "zcash_primitives 0.26.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "zcash_protocol 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zcash_primitives 0.26.4",
+ "zcash_protocol 0.7.2",
  "zcash_script",
- "zcash_transparent 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zcash_transparent 0.6.3",
  "zebra-chain",
  "zebra-consensus",
  "zebra-network",
@@ -8983,7 +8994,7 @@ checksum = "11acd2a4f9077e3698bbc51a3f04c247381f7bf7f77aacc408e5760d3246993b"
 dependencies = [
  "libzcash_script",
  "thiserror 2.0.17",
- "zcash_primitives 0.26.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zcash_primitives 0.26.4",
  "zcash_script",
  "zebra-chain",
 ]
@@ -9138,12 +9149,12 @@ dependencies = [
  "shellwords",
  "tokio",
  "tracing-subscriber",
- "zcash_address 0.10.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
+ "zcash_address 0.10.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
  "zcash_client_backend",
- "zcash_keys 0.12.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
+ "zcash_keys 0.12.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
  "zcash_local_net",
- "zcash_primitives 0.26.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_protocol 0.7.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
+ "zcash_primitives 0.26.1",
+ "zcash_protocol 0.7.1",
  "zingo_common_components",
  "zingolib",
  "zip32",
@@ -9154,12 +9165,12 @@ name = "zingo-memo"
 version = "0.0.1"
 dependencies = [
  "rand 0.8.5",
- "zcash_address 0.10.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
+ "zcash_address 0.10.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
  "zcash_client_backend",
- "zcash_encoding 0.3.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_keys 0.12.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_primitives 0.26.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_protocol 0.7.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
+ "zcash_encoding 0.3.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
+ "zcash_keys 0.12.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
+ "zcash_primitives 0.26.1",
+ "zcash_protocol 0.7.1",
 ]
 
 [[package]]
@@ -9175,7 +9186,7 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "zcash_client_backend",
- "zcash_encoding 0.3.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
+ "zcash_encoding 0.3.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
 ]
 
 [[package]]
@@ -9183,14 +9194,14 @@ name = "zingo-status"
 version = "0.0.1"
 dependencies = [
  "byteorder",
- "zcash_primitives 0.26.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_protocol 0.7.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
+ "zcash_primitives 0.26.1",
+ "zcash_protocol 0.7.1",
 ]
 
 [[package]]
 name = "zingo_common_components"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/zingo-common.git?branch=dev#b64dfd6d6a2a597a5456d1cc7b2bc9b649328187"
+source = "git+https://github.com/zingolabs/zingo-common.git?branch=dev#aeb7f761aad0a04b25426ce44e294413076fec81"
 dependencies = [
  "zebra-chain",
 ]
@@ -9198,7 +9209,7 @@ dependencies = [
 [[package]]
 name = "zingo_test_vectors"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/infrastructure.git?branch=dev#ba4d5b22fcf33cc4ea2aed43e7d2b3e719563b19"
+source = "git+https://github.com/zingolabs/infrastructure.git?branch=dev#c55662eed4bbfe6a457f591c9d88eb80dc9393b1"
 dependencies = [
  "bip0039",
 ]
@@ -9252,15 +9263,15 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "webpki-roots 0.25.4",
- "zcash_address 0.10.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
+ "zcash_address 0.10.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
  "zcash_client_backend",
- "zcash_encoding 0.3.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_keys 0.12.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
+ "zcash_encoding 0.3.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
+ "zcash_keys 0.12.0 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
  "zcash_local_net",
- "zcash_primitives 0.26.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_proofs 0.26.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_protocol 0.7.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_transparent 0.6.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
+ "zcash_primitives 0.26.1",
+ "zcash_proofs 0.26.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
+ "zcash_protocol 0.7.1",
+ "zcash_transparent 0.6.1",
  "zebra-chain",
  "zingo-memo",
  "zingo-price",
@@ -9287,13 +9298,13 @@ dependencies = [
 [[package]]
 name = "zip321"
 version = "0.6.0"
-source = "git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331#889ef9f155ab7514ba9928f05236edba898a6331"
+source = "git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a#ff762d28ec841fc23204e853ac98914fac380c1a"
 dependencies = [
  "base64",
  "nom",
  "percent-encoding",
- "zcash_address 0.10.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
- "zcash_protocol 0.7.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=889ef9f155ab7514ba9928f05236edba898a6331)",
+ "zcash_address 0.10.1 (git+https://github.com/dorianvp/crosslink_monolith.git?rev=ff762d28ec841fc23204e853ac98914fac380c1a)",
+ "zcash_protocol 0.7.1",
 ]
 
 [[package]]
