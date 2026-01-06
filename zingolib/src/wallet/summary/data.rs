@@ -488,20 +488,24 @@ impl From<StakingActionWrapper> for JsonValue {
         }
 
         let kind: String = match value.staking_action.clone().unwrap().kind {
-            StakingActionKind::Add => "add".to_string(),
-            StakingActionKind::Sub => "sub".to_string(),
-            StakingActionKind::Clear => "clear".to_string(),
-            StakingActionKind::Move => "move".to_string(),
-            StakingActionKind::MoveClear => "move_clear".to_string(),
+            StakingActionKind::CreateNewDelegationBond => "create_bond".to_string(),
+            StakingActionKind::WithdrawDelegationBond => "withdraw_bond".to_string(),
+            StakingActionKind::RetargetDelegationBond => "move".to_string(),
+            StakingActionKind::Null => "null".to_string(),
+            StakingActionKind::BeginDelegationUnbonding => "begin_unbonding".to_string(),
+
+            StakingActionKind::RegisterFinalizer => "FINALIZER_register_finalizer".to_string(),
+            StakingActionKind::ConvertFinalizerRewardToDelegationBond => {
+                "FINALIZER_convert_reward_to_bond".to_string()
+            }
+            StakingActionKind::UpdateFinalizerKey => "FINALIZER_update_finalizer_key".to_string(),
         };
 
         json::object! {
             "kind" => kind,
-            "val" => value.staking_action.clone().unwrap().val,
-            "target" => hex::encode(value.staking_action.clone().unwrap().target),
-            "source" => hex::encode(value.staking_action.clone().unwrap().source),
-            "insecure_target_name" => value.staking_action.clone().unwrap().insecure_target_name,
-            "insecure_source_name" => value.staking_action.clone().unwrap().insecure_source_name
+            "val" => value.staking_action.clone().unwrap().amount_zats,
+            "target" => hex::encode(value.staking_action.clone().unwrap().arg32_2),
+            "source" => hex::encode(value.staking_action.clone().unwrap().arg32_0),
         }
     }
 }

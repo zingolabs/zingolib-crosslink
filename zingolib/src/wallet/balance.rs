@@ -192,8 +192,10 @@ impl LightWallet {
         let total_staked = transactions
             .iter()
             .filter(|tx| tx.staking_data().is_some())
-            .filter(|tx| tx.staking_data().unwrap().kind == StakingActionKind::Add)
-            .map(|tx| tx.staking_data().unwrap().val)
+            .filter(|tx| {
+                tx.staking_data().unwrap().kind == StakingActionKind::CreateNewDelegationBond
+            })
+            .map(|tx| tx.staking_data().unwrap().amount_zats)
             .sum::<u64>();
 
         Ok(AccountBalance {

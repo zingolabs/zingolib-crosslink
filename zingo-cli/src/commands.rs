@@ -1169,7 +1169,7 @@ impl StakeCommand {
             return Err(CommandError::InvalidArguments);
         }
 
-        let staking_action_kind = StakingActionKind::Add;
+        let staking_action_kind = StakingActionKind::CreateNewDelegationBond;
 
         let finalizer_address =
             StakeCommand::addr_from_str_bytes(args.first().unwrap().as_bytes()).unwrap();
@@ -1184,15 +1184,20 @@ impl StakeCommand {
             .map_err(CommandError::ParseIntFromString)?;
         let amount = zatoshis_from_u64(amount_u64).map_err(CommandError::ConversionFailed)?;
 
-        let zero_source = [0u8; 32];
-
         let staking_action = StakingAction {
             kind: staking_action_kind,
-            val: amount_u64,
-            target: finalizer_address,
-            source: zero_source,
-            insecure_target_name: String::new(),
-            insecure_source_name: String::new(),
+            amount_zats: amount_u64,
+            // target: finalizer_address,
+            // source: zero_source,
+            // insecure_target_name: String::new(),
+
+            // insecure_source_name: String::new(),
+            arg32_0: [0u8; 32],
+            arg32_1: [0u8; 32],
+            arg32_2: finalizer_address,
+            arg32_3: [0u8; 32],
+            arg64_0: [0u8; 64],
+            arg64_1: [0u8; 64],
         };
 
         let wallet = lightclient.wallet.write().await;
@@ -1208,11 +1213,9 @@ impl StakeCommand {
         let receiver = Receiver {
             recipient_address: miner_address,
             amount,
-            memo: Some(
-                MemoBytes::from(
-                    Memo::from_str(send_back_address.encode(&TEST_NETWORK).as_str()).unwrap(),
-                ),
-            ),
+            memo: Some(MemoBytes::from(
+                Memo::from_str(send_back_address.encode(&TEST_NETWORK).as_str()).unwrap(),
+            )),
         };
         // println!("receiver: {receiver:#?}");
 
@@ -1333,7 +1336,7 @@ impl UnstakeCommand {
             return Err(CommandError::InvalidArguments);
         }
 
-        let sub_action = StakingActionKind::Sub;
+        let sub_action = StakingActionKind::BeginDelegationUnbonding;
 
         let finalizer_address =
             UnstakeCommand::addr_from_str_bytes(args.first().unwrap().as_bytes()).unwrap();
@@ -1363,11 +1366,17 @@ impl UnstakeCommand {
 
         let staking_action = StakingAction {
             kind: sub_action,
-            val: total_zats,
-            target: finalizer_address,
-            source: wanted_txid.into(),
-            insecure_target_name: String::new(),
-            insecure_source_name: String::new(),
+            amount_zats: total_zats,
+            // target: finalizer_address,
+            // source: wanted_txid.into(),
+            // insecure_target_name: String::new(),
+            // insecure_source_name: String::new(),
+            arg32_0: finalizer_address,
+            arg32_1: [0; 32],
+            arg32_2: [0; 32],
+            arg32_3: [0; 32],
+            arg64_0: [0; 64],
+            arg64_1: [0; 64],
         };
 
         let wallet = lightclient.wallet.write().await;
@@ -1383,11 +1392,9 @@ impl UnstakeCommand {
         let receiver = Receiver {
             recipient_address: miner_address,
             amount,
-            memo: Some(
-                MemoBytes::from(
-                    Memo::from_str(send_back_address.encode(&TEST_NETWORK).as_str()).unwrap(),
-                ),
-            ),
+            memo: Some(MemoBytes::from(
+                Memo::from_str(send_back_address.encode(&TEST_NETWORK).as_str()).unwrap(),
+            )),
         };
         // println!("receiver: {receiver:#?}");
 
