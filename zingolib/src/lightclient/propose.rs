@@ -79,6 +79,27 @@ impl LightClient {
         Ok(proposal)
     }
 
+    pub async fn propose_begin_unstake(
+        &mut self,
+        account_id: zip32::AccountId,
+    ) -> Result<StakingProposal, ProposeSendError> {
+        todo!()
+    }
+
+    pub async fn propose_withdraw_stake(
+        &mut self,
+        account_id: zip32::AccountId,
+    ) -> Result<StakingProposal, ProposeSendError> {
+        todo!()
+    }
+
+    pub async fn propose_redelegate(
+        &mut self,
+        account_id: zip32::AccountId,
+    ) -> Result<StakingProposal, ProposeSendError> {
+        todo!()
+    }
+
     /// Creates and stores a proposal for sending all shielded funds from a specified account to a given `address`.
     pub async fn propose_send_all(
         &mut self,
