@@ -1503,6 +1503,8 @@ impl Command for BeginUnstakeCommand {
 
 struct WithdrawStakeCommand {}
 
+struct RedelegateCommand {}
+
 struct SendAllCommand {}
 impl Command for SendAllCommand {
     fn help(&self) -> &'static str {
