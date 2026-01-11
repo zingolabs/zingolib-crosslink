@@ -1321,9 +1321,9 @@ impl Command for StakeCommand {
 }
 
 /// The stake command
-struct UnstakeCommand {}
+struct BeginUnstakeCommand {}
 
-impl UnstakeCommand {
+impl BeginUnstakeCommand {
     /// Parse the following arguments:
     /// - finalizer address
     /// - miner address
@@ -1339,7 +1339,7 @@ impl UnstakeCommand {
         let sub_action = StakingActionKind::BeginDelegationUnbonding;
 
         let finalizer_address =
-            UnstakeCommand::addr_from_str_bytes(args.first().unwrap().as_bytes()).unwrap();
+            BeginUnstakeCommand::addr_from_str_bytes(args.first().unwrap().as_bytes()).unwrap();
 
         let miner_address = ZcashAddress::try_from_encoded(args.get(1).unwrap()).unwrap();
 
@@ -1441,7 +1441,7 @@ impl UnstakeCommand {
     }
 }
 
-impl Command for UnstakeCommand {
+impl Command for BeginUnstakeCommand {
     fn help(&self) -> &'static str {
         indoc! {r#"
             Propose the unstaking of ZEC to the given finalizer.
@@ -1463,7 +1463,9 @@ impl Command for UnstakeCommand {
 
     fn exec(&self, args: &[&str], lightclient: &mut LightClient) -> String {
         RT.block_on(async move {
-            let parsed_stake_command = match UnstakeCommand::parse_args(args, lightclient).await {
+            let parsed_stake_command = match BeginUnstakeCommand::parse_args(args, lightclient)
+                .await
+            {
                 Ok(parsed_stake_command) => parsed_stake_command,
                 Err(e) => {
                     return format!("Error: {e}\nTry 'help stake' for correct usage and examples.");
@@ -1498,6 +1500,8 @@ impl Command for UnstakeCommand {
         })
     }
 }
+
+struct WithdrawStakeCommand {}
 
 struct SendAllCommand {}
 impl Command for SendAllCommand {
@@ -2381,7 +2385,7 @@ pub fn get_commands() -> HashMap<&'static str, Box<dyn Command>> {
         ("current_price", Box::new(CurrentPriceCommand {})),
         ("send", Box::new(SendCommand {})),
         ("stake", Box::new(StakeCommand {})),
-        ("unstake", Box::new(UnstakeCommand {})),
+        ("unstake", Box::new(BeginUnstakeCommand {})),
         ("resend", Box::new(ResendCommand {})),
         ("shield", Box::new(ShieldCommand {})),
         ("save", Box::new(SaveCommand {})),
