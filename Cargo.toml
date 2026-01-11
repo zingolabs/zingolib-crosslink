@@ -20,32 +20,32 @@ orchard = "0.11.0"
 sapling-crypto = "0.5.0"
 incrementalmerkletree = "0.8.2"
 shardtree = "0.6.1"
-zcash_encoding = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "15a3dca953217ce8b54f79881530ff1997e4c7eb", features = [
+zcash_encoding = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "0c2f72d6944a8734ea64e4121dd5af8e6ad324ff", features = [
     "std",
 ] }
-zcash_address = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "15a3dca953217ce8b54f79881530ff1997e4c7eb", features = [
+zcash_address = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "0c2f72d6944a8734ea64e4121dd5af8e6ad324ff", features = [
     "std",
 ] }
-zcash_client_backend = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "15a3dca953217ce8b54f79881530ff1997e4c7eb", features = [
+zcash_client_backend = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "0c2f72d6944a8734ea64e4121dd5af8e6ad324ff", features = [
     "lightwalletd-tonic",
     "orchard",
     "transparent-inputs",
     "tor",
 ] }
-zcash_keys = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "15a3dca953217ce8b54f79881530ff1997e4c7eb", features = [
+zcash_keys = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "0c2f72d6944a8734ea64e4121dd5af8e6ad324ff", features = [
     "transparent-inputs",
     "sapling",
     "orchard",
     "std",
 ] }
-zcash_primitives = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "15a3dca953217ce8b54f79881530ff1997e4c7eb", features = [
+zcash_primitives = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "0c2f72d6944a8734ea64e4121dd5af8e6ad324ff", features = [
     "std",
 ] }
-zcash_proofs = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "15a3dca953217ce8b54f79881530ff1997e4c7eb" }
-zcash_protocol = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "15a3dca953217ce8b54f79881530ff1997e4c7eb", features = [
+zcash_proofs = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "0c2f72d6944a8734ea64e4121dd5af8e6ad324ff" }
+zcash_protocol = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "0c2f72d6944a8734ea64e4121dd5af8e6ad324ff", features = [
     "std",
 ] }
-zcash_transparent = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "15a3dca953217ce8b54f79881530ff1997e4c7eb", features = [
+zcash_transparent = { git = "https://github.com/dorianvp/crosslink_monolith.git", rev = "0c2f72d6944a8734ea64e4121dd5af8e6ad324ff", features = [
     "std",
 ] }
 zcash_note_encryption = "0.4"
