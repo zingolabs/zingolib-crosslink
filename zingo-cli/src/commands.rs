@@ -1449,9 +1449,9 @@ impl Command for BeginUnstakeCommand {
             The 'confirm' command must be called to complete and broadcast the proposed unstaking transaction.
 
             Usage:
-                unstake <finalizer-address> <miner-address> <amount in zatoshis>
+                begin_unstake <finalizer-address> <miner-address> <amount in zatoshis>
             Example:
-                IGNORE THIS: unstake ztestsapling1x65nq4dgp0qfywgxcwk9n0fvm4fysmapgr2q00p85ju252h6l7mmxu2jg9cqqhtvzd69jwhgv8d 200000
+                IGNORE THIS: begin_unstake ztestsapling1x65nq4dgp0qfywgxcwk9n0fvm4fysmapgr2q00p85ju252h6l7mmxu2jg9cqqhtvzd69jwhgv8d 200000
                 confirm
 
         "#}
@@ -1503,7 +1503,35 @@ impl Command for BeginUnstakeCommand {
 
 struct WithdrawStakeCommand {}
 
+impl Command for WithdrawStakeCommand {
+    fn help(&self) -> &'static str {
+        todo!()
+    }
+
+    fn short_help(&self) -> &'static str {
+        todo!()
+    }
+
+    fn exec(&self, _args: &[&str], lightclient: &mut LightClient) -> String {
+        todo!()
+    }
+}
+
 struct RedelegateCommand {}
+
+impl Command for RedelegateCommand {
+    fn help(&self) -> &'static str {
+        todo!()
+    }
+
+    fn short_help(&self) -> &'static str {
+        todo!()
+    }
+
+    fn exec(&self, _args: &[&str], lightclient: &mut LightClient) -> String {
+        todo!()
+    }
+}
 
 struct SendAllCommand {}
 impl Command for SendAllCommand {
@@ -2387,7 +2415,9 @@ pub fn get_commands() -> HashMap<&'static str, Box<dyn Command>> {
         ("current_price", Box::new(CurrentPriceCommand {})),
         ("send", Box::new(SendCommand {})),
         ("stake", Box::new(StakeCommand {})),
-        ("unstake", Box::new(BeginUnstakeCommand {})),
+        ("begin_unstake", Box::new(BeginUnstakeCommand {})),
+        ("withdraw_stake", Box::new(WithdrawStakeCommand {})),
+        ("redelegate_stake", Box::new(RedelegateCommand {})),
         ("resend", Box::new(ResendCommand {})),
         ("shield", Box::new(ShieldCommand {})),
         ("save", Box::new(SaveCommand {})),
