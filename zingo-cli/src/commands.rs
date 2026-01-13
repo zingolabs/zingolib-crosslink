@@ -1533,6 +1533,22 @@ impl Command for RedelegateCommand {
     }
 }
 
+struct GetRosterInfoCommand {}
+
+impl Command for GetRosterInfoCommand {
+    fn help(&self) -> &'static str {
+        todo!()
+    }
+
+    fn short_help(&self) -> &'static str {
+        todo!()
+    }
+
+    fn exec(&self, _args: &[&str], lightclient: &mut LightClient) -> String {
+        todo!()
+    }
+}
+
 struct SendAllCommand {}
 impl Command for SendAllCommand {
     fn help(&self) -> &'static str {
@@ -2418,6 +2434,7 @@ pub fn get_commands() -> HashMap<&'static str, Box<dyn Command>> {
         ("begin_unstake", Box::new(BeginUnstakeCommand {})),
         ("withdraw_stake", Box::new(WithdrawStakeCommand {})),
         ("redelegate_stake", Box::new(RedelegateCommand {})),
+        ("roster_info", Box::new(GetRosterInfoCommand {})),
         ("resend", Box::new(ResendCommand {})),
         ("shield", Box::new(ShieldCommand {})),
         ("save", Box::new(SaveCommand {})),
