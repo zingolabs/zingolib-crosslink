@@ -46,6 +46,47 @@ pub mod save;
 pub mod send;
 pub mod sync;
 
+pub struct RosterMembers {
+    pub members: Vec<RosterMember>,
+}
+
+impl RosterMembers {
+    pub fn from_parts(members: Vec<RosterMember>) -> Self {
+        Self { members }
+    }
+}
+
+impl From<RosterMembers> for JsonValue {
+    fn from(roster_members: RosterMembers) -> Self {
+        let mut members = JsonValue::new_array();
+
+        for member in roster_members.members {
+            let pubkey = hex::encode(member.pub_key);
+
+            let mut txids = JsonValue::new_array();
+            for entry in member.txids {
+                txids
+                    .push(json::object! {
+                        "txid" => hex::encode(entry.txid),
+                        "accumulated_zats" => entry.zats
+                    })
+                    .unwrap();
+            }
+
+            members
+                .push(json::object! {
+                    "pubkey" => pubkey,
+                    "voting_power" => member.voting_power,
+                    "txids" => txids
+                })
+                .unwrap();
+        }
+
+        json::object! {
+            "roster_members" => members
+        }
+    }
+}
 /// Struct which owns and manages the [`crate::wallet::LightWallet`]. Responsible for network operations such as
 /// storing the indexer URI, creating gRPC clients and syncing the wallet to the blockchain.
 ///
@@ -299,7 +340,7 @@ impl LightClient {
         self.wallet.read().await.do_total_value_to_address().await
     }
 
-    pub async fn get_roster(&self) -> Result<Vec<RosterMember>, String> {
+    pub async fn get_roster_info(&self) -> Result<RosterMembers, String> {
         let mut roster: Vec<RosterMember> = Vec::new();
         let uri = self.server_uri();
         let mut zcb_client = get_zcb_client(uri).await.unwrap();
@@ -376,11 +417,11 @@ impl LightClient {
             roster = new_roster;
         }
 
-        Ok(roster)
+        Ok(RosterMembers::from_parts(roster))
     }
 
     pub async fn get_accumulated_stake_for_txid(&self, txid: [u8; 32]) -> u64 {
-        let roster = self.get_roster().await.unwrap();
+        let roster = self.get_roster_info().await.unwrap().members;
 
         let mut accumulated_stake = 0;
         for member in &roster {

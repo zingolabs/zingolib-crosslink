@@ -1545,7 +1545,12 @@ impl Command for GetRosterInfoCommand {
     }
 
     fn exec(&self, _args: &[&str], lightclient: &mut LightClient) -> String {
-        todo!()
+        RT.block_on(async move {
+            match lightclient.get_roster_info().await {
+                Ok(roster_info) => json::JsonValue::from(roster_info).pretty(2),
+                Err(e) => object! { "error" => e.to_string() }.pretty(2),
+            }
+        })
     }
 }
 
