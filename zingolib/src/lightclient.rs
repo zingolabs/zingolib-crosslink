@@ -11,6 +11,7 @@ use std::{
 };
 
 use json::JsonValue;
+use serde::Serialize;
 use tokio::{sync::RwLock, task::JoinHandle};
 
 use zcash_client_backend::{proto::service::Empty, tor};
@@ -46,6 +47,7 @@ pub mod save;
 pub mod send;
 pub mod sync;
 
+#[derive(Debug, Clone, Serialize)]
 pub struct RosterMembers {
     pub members: Vec<RosterMember>,
 }
