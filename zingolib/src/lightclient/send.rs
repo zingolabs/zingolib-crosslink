@@ -24,7 +24,7 @@ pub mod send_with_proposal {
     use zcash_primitives::transaction::fees::zip317;
     use zcash_primitives::transaction::{StakingAction, TxId};
 
-    use crate::data::proposal::ZingoProposal;
+    use crate::data::proposal::{ExtraFee, ZingoProposal};
     use crate::lightclient::LightClient;
     use crate::lightclient::error::{QuickSendError, QuickShieldError, SendError};
     use crate::wallet::error::TransmissionError;
@@ -50,7 +50,7 @@ pub mod send_with_proposal {
 
         async fn stake(
             &mut self,
-            proposal: &Proposal<zip317::FeeRule, OutputRef>,
+            proposal: &Proposal<ExtraFee<zip317::FeeRule>, OutputRef>,
             staking_action: StakingAction,
             sending_account: zip32::AccountId,
         ) -> Result<NonEmpty<TxId>, SendError> {
@@ -112,7 +112,7 @@ pub mod send_with_proposal {
                         proposal,
                         shielding_account,
                     } => self.shield(&proposal, shielding_account).await,
-                    ZingoProposal::Stake {
+                    ZingoProposal::Crosslink {
                         proposal,
                         staking_action,
                         sending_account,

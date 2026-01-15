@@ -8,6 +8,7 @@ use zcash_protocol::value::Zatoshis;
 
 use crate::config::ZENNIES_FOR_ZINGO_AMOUNT;
 use crate::config::get_donation_address_for_chain;
+use crate::data::proposal::ExtraFeeProposal;
 use crate::data::proposal::ProportionalFeeProposal;
 use crate::data::proposal::ProportionalFeeShieldProposal;
 use crate::data::proposal::ZingoProposal;
@@ -60,11 +61,11 @@ impl LightClient {
     /// Creates and stores a stake proposal from a transaction request.
     pub async fn propose_stake(
         &mut self,
-        request: TransactionRequest,
+        request: TransactionRequest, // NOTE: request is an empty BTreeMap!!
         amount: Zatoshis,
         target_finalizer: [u8; 32],
         account_id: zip32::AccountId,
-    ) -> Result<StakingProposal, ProposeSendError> {
+    ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
         let mut unique_pubkey = [0u8; 32];
         rand::RngCore::fill_bytes(&mut OsRng, &mut unique_pubkey);
 
@@ -86,7 +87,7 @@ impl LightClient {
             arg64_1: [0u8; 64],
         };
 
-        self.store_proposal(ZingoProposal::Stake {
+        self.store_proposal(ZingoProposal::Crosslink {
             proposal: proposal.clone().proportional_fee_proposal().clone(),
             staking_action,
             sending_account: account_id,
@@ -99,21 +100,21 @@ impl LightClient {
     pub async fn propose_begin_unstake(
         &mut self,
         account_id: zip32::AccountId,
-    ) -> Result<StakingProposal, ProposeSendError> {
+    ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
         todo!()
     }
 
     pub async fn propose_withdraw_stake(
         &mut self,
         account_id: zip32::AccountId,
-    ) -> Result<StakingProposal, ProposeSendError> {
+    ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
         todo!()
     }
 
     pub async fn propose_redelegate(
         &mut self,
         account_id: zip32::AccountId,
-    ) -> Result<StakingProposal, ProposeSendError> {
+    ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
         todo!()
     }
 

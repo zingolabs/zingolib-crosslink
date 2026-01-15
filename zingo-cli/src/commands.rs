@@ -1162,7 +1162,7 @@ impl StakeCommand {
     /// - amount (in zatoshis)
     pub async fn parse_args(
         args: &[&str],
-        lightclient: &mut LightClient,
+        _lightclient: &mut LightClient,
     ) -> Result<(Receivers, StakingAction), CommandError> {
         if args.len() != 2 {
             return Err(CommandError::InvalidArguments);
@@ -1179,7 +1179,7 @@ impl StakeCommand {
             .trim()
             .parse::<u64>()
             .map_err(CommandError::ParseIntFromString)?;
-        let amount = zatoshis_from_u64(amount_u64).map_err(CommandError::ConversionFailed)?;
+        // let amount = zatoshis_from_u64(amount_u64).map_err(CommandError::ConversionFailed)?;
 
         let staking_action = StakingAction {
             kind: staking_action_kind,
@@ -1197,20 +1197,22 @@ impl StakeCommand {
             arg64_1: [0u8; 64],
         };
 
-        let wallet = lightclient.wallet.write().await;
-        let (_id, addr) = wallet
-            .unified_addresses()
-            .iter()
-            .next()
-            .ok_or(CommandError::InvalidArguments)?;
-        let send_back_address = addr.clone();
+        // let wallet = lightclient.wallet.write().await;
+        // let (_id, addr) = wallet
+        //     .unified_addresses()
+        //     .iter()
+        //     .next()
+        //     .ok_or(CommandError::InvalidArguments)?;
 
-        // println!("send_back_address: {send_back_address:#?}");
-
-        // println!("receiver: {receiver:#?}");
+        // let receiver = Receiver {
+        //     recipient_address: miner_address,
+        //     amount,
+        //     memo: Some(MemoBytes::from(
+        //         Memo::from_str(send_back_address.encode(&TEST_NETWORK).as_str()).unwrap(),
+        //     )),
+        // };
 
         Ok((vec![], staking_action))
-        // Err(CommandError::IncompatibleMemo)
     }
 
     pub fn addr_from_str_bytes(data: &[u8]) -> Option<[u8; 32]> {
@@ -1280,6 +1282,7 @@ impl Command for StakeCommand {
                     return format!("Error: {e}\nTry 'help stake' for correct usage and examples.");
                 }
             };
+            // Receivers IS EMPTY
             let request = match zingolib::data::receivers::transaction_request_from_receivers(
                 parsed_stake_command.0,
             ) {
@@ -1501,11 +1504,19 @@ struct WithdrawStakeCommand {}
 
 impl Command for WithdrawStakeCommand {
     fn help(&self) -> &'static str {
-        todo!()
+        indoc! {r#"
+            Get information about the current roster.
+
+            Usage:
+                roster_info
+
+        "#}
     }
 
     fn short_help(&self) -> &'static str {
-        todo!()
+        indoc! {r#"
+            Get information about the current roster.
+        "#}
     }
 
     fn exec(&self, _args: &[&str], lightclient: &mut LightClient) -> String {
@@ -1517,11 +1528,17 @@ struct RedelegateCommand {}
 
 impl Command for RedelegateCommand {
     fn help(&self) -> &'static str {
-        todo!()
+        indoc! {r#"
+            Get information about the current roster.
+
+            Usage:
+                roster_info
+
+        "#}
     }
 
     fn short_help(&self) -> &'static str {
-        todo!()
+        "Get information about the current roster."
     }
 
     fn exec(&self, _args: &[&str], lightclient: &mut LightClient) -> String {
@@ -1533,11 +1550,17 @@ struct GetRosterInfoCommand {}
 
 impl Command for GetRosterInfoCommand {
     fn help(&self) -> &'static str {
-        todo!()
+        indoc! {r#"
+            Get information about the current roster.
+
+            Usage:
+                roster_info
+
+        "#}
     }
 
     fn short_help(&self) -> &'static str {
-        todo!()
+        "Get information about the current roster."
     }
 
     fn exec(&self, _args: &[&str], lightclient: &mut LightClient) -> String {

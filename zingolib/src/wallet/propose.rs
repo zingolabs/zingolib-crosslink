@@ -3,13 +3,16 @@
 use tracing::instrument;
 use zcash_client_backend::{
     data_api::wallet::{ConfirmationsPolicy, input_selection::GreedyInputSelector},
-    fees::{DustAction, DustOutputPolicy},
+    fees::{DustAction, DustOutputPolicy, zip317::Zip317FeeRule},
     zip321::TransactionRequest,
 };
-use zcash_primitives::transaction::StakingAction;
+use zcash_primitives::transaction::{
+    StakingAction,
+    fees::{FeeRule, transparent::InputSize},
+};
 use zcash_protocol::{
     ShieldedProtocol,
-    consensus::{BlockHeight, Parameters},
+    consensus::{self, BlockHeight, Parameters},
     memo::{Memo, MemoBytes},
     value::Zatoshis,
 };
@@ -19,7 +22,10 @@ use super::{
     LightWallet,
     error::{ProposeSendError, ProposeShieldError, WalletError},
 };
-use crate::{config::ChainType, data::proposal::ProportionalFeeProposal};
+use crate::{
+    config::ChainType,
+    data::proposal::{ExtraFee, ExtraFeeProposal, ProportionalFeeProposal},
+};
 use pepper_sync::{keys::transparent::TransparentScope, sync::ScanPriority};
 
 impl LightWallet {
@@ -147,7 +153,7 @@ impl LightWallet {
         unique_pubkey: [u8; 32],
         target_finalizer: [u8; 32],
         account_id: zip32::AccountId,
-    ) -> Result<StakingProposal, ProposeSendError> {
+    ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
         let refund_address_count = self
             .transparent_addresses
             .keys()
@@ -155,8 +161,15 @@ impl LightWallet {
             .count() as u32;
         let memo = self.change_memo_from_transaction_request(&request, refund_address_count);
         let input_selector = GreedyInputSelector::new();
+
+        let extra = amount;
+        let fee_rule = ExtraFee {
+            base: zcash_primitives::transaction::fees::zip317::FeeRule::standard(),
+            extra,
+        };
         let change_strategy = zcash_client_backend::fees::zip317::SingleOutputChangeStrategy::new(
-            zcash_primitives::transaction::fees::zip317::FeeRule::standard(),
+            // zcash_primitives::transaction::fees::zip317::FeeRule::standard(),
+            fee_rule,
             Some(memo),
             ShieldedProtocol::Orchard,
             DustOutputPolicy::new(DustAction::AddDustToFee, None),
@@ -168,7 +181,7 @@ impl LightWallet {
             ChainType,
             GreedyInputSelector<LightWallet>,
             zcash_client_backend::fees::zip317::SingleOutputChangeStrategy<
-                zcash_primitives::transaction::fees::zip317::FeeRule,
+                ExtraFee<zcash_primitives::transaction::fees::zip317::FeeRule>,
                 LightWallet,
             >,
             WalletError,
@@ -272,22 +285,19 @@ impl LightWallet {
 }
 
 #[derive(Debug, Clone)]
-pub struct StakingProposal {
-    proportional_fee_proposal: crate::data::proposal::ProportionalFeeProposal,
+pub struct StakingProposal<R: Clone> {
+    proportional_fee_proposal: R,
     staking_action: StakingAction,
 }
 
-impl StakingProposal {
-    pub fn new(
-        proportional_fee_proposal: ProportionalFeeProposal,
-        staking_action: StakingAction,
-    ) -> Self {
+impl<R: Clone> StakingProposal<R> {
+    pub fn new(proportional_fee_proposal: R, staking_action: StakingAction) -> Self {
         Self {
             proportional_fee_proposal,
             staking_action,
         }
     }
-    pub fn proportional_fee_proposal(&self) -> &ProportionalFeeProposal {
+    pub fn proportional_fee_proposal(&self) -> &R {
         &self.proportional_fee_proposal
     }
     pub fn staking_action(&self) -> &StakingAction {

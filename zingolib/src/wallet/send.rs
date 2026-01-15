@@ -22,6 +22,8 @@ use pepper_sync::wallet::traits::SyncWallet;
 use zcash_protocol::ShieldedProtocol;
 use zingo_status::confirmation_status::ConfirmationStatus;
 
+use crate::data::proposal::ExtraFee;
+
 use super::LightWallet;
 use super::error::CalculateTransactionError;
 use super::error::KeyError;
@@ -135,7 +137,7 @@ impl LightWallet {
     )]
     pub(crate) async fn calculate_staking_transactions<NoteRef>(
         &mut self,
-        proposal: &Proposal<zip317::FeeRule, NoteRef>,
+        proposal: &Proposal<ExtraFee<zip317::FeeRule>, NoteRef>,
         staking_action: StakingAction,
         sending_account: zip32::AccountId,
     ) -> Result<NonEmpty<TxId>, CalculateTransactionError<NoteRef>> {
@@ -230,7 +232,10 @@ impl LightWallet {
     async fn create_proposed_staking_transactions<NoteRef>(
         &mut self,
         sapling_prover: LocalTxProver,
-        proposal: &Proposal<zcash_primitives::transaction::fees::zip317::FeeRule, NoteRef>,
+        proposal: &Proposal<
+            ExtraFee<zcash_primitives::transaction::fees::zip317::FeeRule>,
+            NoteRef,
+        >,
         staking_action: StakingAction,
         sending_account: zip32::AccountId,
     ) -> Result<NonEmpty<TxId>, CalculateTransactionError<NoteRef>> {

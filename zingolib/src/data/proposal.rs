@@ -2,11 +2,61 @@
 
 use std::convert::Infallible;
 
-use zcash_client_backend::proposal::Proposal;
-use zcash_primitives::transaction::{StakingAction, fees::zip317};
-use zcash_protocol::value::{BalanceError, Zatoshis};
+use zcash_client_backend::{fees::zip317::Zip317FeeRule, proposal::Proposal};
+use zcash_primitives::transaction::{
+    StakingAction,
+    fees::{FeeRule, transparent::InputSize, zip317},
+};
+use zcash_protocol::{
+    consensus::{self, BlockHeight},
+    value::{BalanceError, Zatoshis},
+};
 
 use crate::wallet::output::OutputRef;
+
+#[derive(Clone, Debug)]
+pub struct ExtraFee<R> {
+    pub base: R,
+    pub extra: Zatoshis,
+}
+
+impl<R: FeeRule> FeeRule for ExtraFee<R> {
+    type Error = R::Error;
+
+    fn fee_required<P: consensus::Parameters>(
+        &self,
+        params: &P,
+        target_height: BlockHeight,
+        transparent_input_sizes: impl IntoIterator<Item = InputSize>,
+        transparent_output_sizes: impl IntoIterator<Item = usize>,
+        sapling_input_count: usize,
+        sapling_output_count: usize,
+        orchard_action_count: usize,
+    ) -> Result<Zatoshis, Self::Error> {
+        let base_fee = self.base.fee_required(
+            params,
+            target_height,
+            transparent_input_sizes,
+            transparent_output_sizes,
+            sapling_input_count,
+            sapling_output_count,
+            orchard_action_count,
+        )?;
+
+        // Zatoshis + Zatoshis returns Option<Zatoshis> (checked arithmetic).
+        // See Zatoshis::into_u64/from_u64 + Add impl details. :contentReference[oaicite:2]{index=2}
+        Ok((base_fee + self.extra).expect("fee overflow (base_fee + extra)"))
+    }
+}
+
+impl<R: Zip317FeeRule> Zip317FeeRule for ExtraFee<R> {
+    fn marginal_fee(&self) -> Zatoshis {
+        self.base.marginal_fee()
+    }
+    fn grace_actions(&self) -> usize {
+        self.base.grace_actions()
+    }
+}
 
 /// A proposed send to addresses.
 /// Identifies the notes to spend by txid, pool, and `output_index`.
@@ -16,6 +66,8 @@ use crate::wallet::output::OutputRef;
 /// "Binance Constraint" that t-addresses that only receive from t-addresses be supported.
 /// <https://zips.z.cash/zip-0320>
 pub(crate) type ProportionalFeeProposal = Proposal<zip317::FeeRule, OutputRef>;
+
+pub(crate) type ExtraFeeProposal = Proposal<ExtraFee<zip317::FeeRule>, OutputRef>;
 
 /// A proposed shielding.
 /// The `zcash_client_backend` Proposal type exposes a "`NoteRef`" generic
@@ -37,8 +89,8 @@ pub(crate) enum ZingoProposal {
         shielding_account: zip32::AccountId,
     },
 
-    Stake {
-        proposal: ProportionalFeeProposal,
+    Crosslink {
+        proposal: ExtraFeeProposal,
         staking_action: StakingAction,
         sending_account: zip32::AccountId,
     },
@@ -56,7 +108,7 @@ pub fn total_payment_amount(proposal: &ProportionalFeeProposal) -> Result<Zatosh
 }
 
 /// total sum of all fees in a proposal
-pub fn total_fee(proposal: &ProportionalFeeProposal) -> Result<Zatoshis, BalanceError> {
+pub fn total_fee<R>(proposal: &Proposal<R, OutputRef>) -> Result<Zatoshis, BalanceError> {
     proposal
         .steps()
         .iter()
