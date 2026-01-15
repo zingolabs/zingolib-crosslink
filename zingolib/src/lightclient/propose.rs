@@ -1,5 +1,6 @@
 //! `LightClient` function `do_propose` generates a proposal to send to specified addresses.
 
+use rand::rngs::OsRng;
 use zcash_address::ZcashAddress;
 use zcash_client_backend::zip321::TransactionRequest;
 use zcash_primitives::transaction::StakingAction;
@@ -60,15 +61,31 @@ impl LightClient {
     pub async fn propose_stake(
         &mut self,
         request: TransactionRequest,
-        staking_action: StakingAction,
+        amount: Zatoshis,
+        target_finalizer: [u8; 32],
         account_id: zip32::AccountId,
     ) -> Result<StakingProposal, ProposeSendError> {
+        let mut unique_pubkey = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut OsRng, &mut unique_pubkey);
+
         let proposal = self
             .wallet
             .write()
             .await
-            .create_stake_proposal(request, staking_action.clone(), account_id)
+            .create_stake_proposal(request, amount, unique_pubkey, target_finalizer, account_id)
             .await?;
+
+        let staking_action = StakingAction {
+            kind: zcash_primitives::transaction::StakingActionKind::CreateNewDelegationBond,
+            amount_zats: amount.into(),
+            arg32_0: unique_pubkey,
+            arg32_1: [0u8; 32],
+            arg32_2: target_finalizer,
+            arg32_3: [0u8; 32],
+            arg64_0: [0u8; 64],
+            arg64_1: [0u8; 64],
+        };
+
         self.store_proposal(ZingoProposal::Stake {
             proposal: proposal.clone().proportional_fee_proposal().clone(),
             staking_action,

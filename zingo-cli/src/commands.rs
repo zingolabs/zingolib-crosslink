@@ -1159,13 +1159,12 @@ impl StakeCommand {
     /// Parse the following arguments:
     /// - action (add, sub, clear) -> add
     /// - finalizer address
-    /// - miner address
     /// - amount (in zatoshis)
     pub async fn parse_args(
         args: &[&str],
         lightclient: &mut LightClient,
     ) -> Result<(Receivers, StakingAction), CommandError> {
-        if args.len() != 3 {
+        if args.len() != 2 {
             return Err(CommandError::InvalidArguments);
         }
 
@@ -1174,10 +1173,8 @@ impl StakeCommand {
         let finalizer_address =
             StakeCommand::addr_from_str_bytes(args.first().unwrap().as_bytes()).unwrap();
 
-        let miner_address = ZcashAddress::try_from_encoded(args.get(1).unwrap()).unwrap();
-
         let amount_u64 = args
-            .get(2)
+            .get(1)
             .unwrap()
             .trim()
             .parse::<u64>()
@@ -1210,16 +1207,9 @@ impl StakeCommand {
 
         // println!("send_back_address: {send_back_address:#?}");
 
-        let receiver = Receiver {
-            recipient_address: miner_address,
-            amount,
-            memo: Some(MemoBytes::from(
-                Memo::from_str(send_back_address.encode(&TEST_NETWORK).as_str()).unwrap(),
-            )),
-        };
         // println!("receiver: {receiver:#?}");
 
-        Ok((vec![receiver], staking_action))
+        Ok((vec![], staking_action))
         // Err(CommandError::IncompatibleMemo)
     }
 
@@ -1299,7 +1289,12 @@ impl Command for StakeCommand {
                 }
             };
             match lightclient
-                .propose_stake(request, parsed_stake_command.1, zip32::AccountId::ZERO)
+                .propose_stake(
+                    request.clone(),
+                    request.total().unwrap(),
+                    parsed_stake_command.1.arg32_2,
+                    zip32::AccountId::ZERO,
+                )
                 .await
             {
                 Ok(proposal) => {
@@ -1462,42 +1457,43 @@ impl Command for BeginUnstakeCommand {
     }
 
     fn exec(&self, args: &[&str], lightclient: &mut LightClient) -> String {
-        RT.block_on(async move {
-            let parsed_stake_command = match BeginUnstakeCommand::parse_args(args, lightclient)
-                .await
-            {
-                Ok(parsed_stake_command) => parsed_stake_command,
-                Err(e) => {
-                    return format!("Error: {e}\nTry 'help stake' for correct usage and examples.");
-                }
-            };
-            let request = match zingolib::data::receivers::transaction_request_from_receivers(
-                parsed_stake_command.0,
-            ) {
-                Ok(request) => request,
-                Err(e) => {
-                    return format!("Error: {e}\nTry 'help stake' for correct usage and examples.");
-                }
-            };
-            match lightclient
-                .propose_stake(request, parsed_stake_command.1, zip32::AccountId::ZERO)
-                .await
-            {
-                Ok(proposal) => {
-                    let fee = match zingolib::data::proposal::total_fee(
-                        proposal.proportional_fee_proposal(),
-                    ) {
-                        Ok(fee) => fee,
-                        Err(e) => return object! { "error" => e.to_string() }.pretty(2),
-                    };
-                    object! { "fee" => fee.into_u64() }
-                }
-                Err(e) => {
-                    object! { "error" => e.to_string() }
-                }
-            }
-            .pretty(2)
-        })
+        todo!()
+        // RT.block_on(async move {
+        //     let parsed_stake_command = match BeginUnstakeCommand::parse_args(args, lightclient)
+        //         .await
+        //     {
+        //         Ok(parsed_stake_command) => parsed_stake_command,
+        //         Err(e) => {
+        //             return format!("Error: {e}\nTry 'help stake' for correct usage and examples.");
+        //         }
+        //     };
+        //     let request = match zingolib::data::receivers::transaction_request_from_receivers(
+        //         parsed_stake_command.0,
+        //     ) {
+        //         Ok(request) => request,
+        //         Err(e) => {
+        //             return format!("Error: {e}\nTry 'help stake' for correct usage and examples.");
+        //         }
+        //     };
+        //     match lightclient
+        //         .propose_stake(request, parsed_stake_command.1, zip32::AccountId::ZERO)
+        //         .await
+        //     {
+        //         Ok(proposal) => {
+        //             let fee = match zingolib::data::proposal::total_fee(
+        //                 proposal.proportional_fee_proposal(),
+        //             ) {
+        //                 Ok(fee) => fee,
+        //                 Err(e) => return object! { "error" => e.to_string() }.pretty(2),
+        //             };
+        //             object! { "fee" => fee.into_u64() }
+        //         }
+        //         Err(e) => {
+        //             object! { "error" => e.to_string() }
+        //         }
+        //     }
+        //     .pretty(2)
+        // })
     }
 }
 

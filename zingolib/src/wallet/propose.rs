@@ -140,7 +140,12 @@ impl LightWallet {
     pub(crate) async fn create_stake_proposal(
         &mut self,
         request: TransactionRequest,
-        staking_action: StakingAction,
+        // staking_action: StakingAction,
+        // challenge is not needed here. A simple [0u8; 32] will do
+        // signature is not needed here. A simple [0u8; 32] will do
+        amount: Zatoshis,
+        unique_pubkey: [u8; 32],
+        target_finalizer: [u8; 32],
         account_id: zip32::AccountId,
     ) -> Result<StakingProposal, ProposeSendError> {
         let refund_address_count = self
@@ -181,6 +186,17 @@ impl LightWallet {
         {
             Err(e) => return Err(e),
             Ok(proposal) => proposal,
+        };
+
+        let staking_action = StakingAction {
+            kind: zcash_primitives::transaction::StakingActionKind::CreateNewDelegationBond,
+            amount_zats: amount.into(),
+            arg32_0: unique_pubkey,
+            arg32_1: [0u8; 32],
+            arg32_2: target_finalizer,
+            arg32_3: [0u8; 32],
+            arg64_0: [0u8; 64],
+            arg64_1: [0u8; 64],
         };
 
         Ok(StakingProposal {
