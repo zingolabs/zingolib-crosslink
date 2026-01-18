@@ -99,9 +99,37 @@ impl LightClient {
 
     pub async fn propose_begin_unstake(
         &mut self,
+        request: TransactionRequest, // NOTE: request is an empty BTreeMap!!
+        finalizer: [u8; 32],
+        unique_pubkey: [u8; 32],
         account_id: zip32::AccountId,
     ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
-        todo!()
+        let proposal = self
+            .wallet
+            .write()
+            .await
+            .create_unbonding_start_proposal(request, unique_pubkey, unique_pubkey, account_id)
+            .await?;
+
+        let staking_action = StakingAction {
+            kind: zcash_primitives::transaction::StakingActionKind::BeginDelegationUnbonding,
+            amount_zats: 0,
+            arg32_0: unique_pubkey,
+            arg32_1: [0u8; 32],
+            arg32_2: finalizer,
+            arg32_3: [0u8; 32],
+            arg64_0: [0u8; 64],
+            arg64_1: [0u8; 64],
+        };
+
+        self.store_proposal(ZingoProposal::Crosslink {
+            proposal: proposal.clone().proportional_fee_proposal().clone(),
+            staking_action,
+            sending_account: account_id,
+        })
+        .await;
+
+        Ok(proposal)
     }
 
     pub async fn propose_withdraw_stake(

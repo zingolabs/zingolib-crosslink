@@ -1291,10 +1291,12 @@ impl Command for StakeCommand {
                     return format!("Error: {e}\nTry 'help stake' for correct usage and examples.");
                 }
             };
+
+            let amount = parsed_stake_command.1.amount_zats;
             match lightclient
                 .propose_stake(
                     request.clone(),
-                    request.total().unwrap(),
+                    Zatoshis::const_from_u64(amount),
                     parsed_stake_command.1.arg32_2,
                     zip32::AccountId::ZERO,
                 )
@@ -1323,53 +1325,39 @@ struct BeginUnstakeCommand {}
 
 impl BeginUnstakeCommand {
     /// Parse the following arguments:
-    /// - finalizer address
-    /// - miner address
-    /// - txid
+    /// - finalizer address <- removed
+    /// - original TXID
     pub async fn parse_args(
         args: &[&str],
         lightclient: &mut LightClient,
     ) -> Result<(Receivers, StakingAction), CommandError> {
-        if args.len() != 3 {
+        if args.len() != 1 {
             return Err(CommandError::InvalidArguments);
         }
 
-        let sub_action = StakingActionKind::BeginDelegationUnbonding;
+        let begin_unstake = StakingActionKind::BeginDelegationUnbonding;
 
-        let finalizer_address =
-            BeginUnstakeCommand::addr_from_str_bytes(args.first().unwrap().as_bytes()).unwrap();
+        // let finalizer_address =
+        //     BeginUnstakeCommand::addr_from_str_bytes(args.first().unwrap().as_bytes()).unwrap();
 
-        let miner_address = ZcashAddress::try_from_encoded(args.get(1).unwrap()).unwrap();
+        // let miner_address = ZcashAddress::try_from_encoded(args.get(1).unwrap()).unwrap();
 
-        let txid = args.get(2).unwrap();
+        let txid = args.first().unwrap();
 
         let unfiltered_txs = lightclient.transaction_summaries(false).await.unwrap();
 
-        let wanted_txid = {
-            let bytes = hex::decode(txid).map_err(|_| CommandError::InvalidArguments)?;
-            let arr: [u8; 32] = bytes
-                .try_into()
-                .map_err(|_| CommandError::InvalidArguments)?;
-            TxId::from_bytes(arr)
-        };
-
         let found_tx = unfiltered_txs
             .iter()
-            .find(|tx| tx.txid == wanted_txid)
+            .filter(|tx| tx.staking_action.is_some())
+            .find(|tx| tx.txid.to_string() == *txid)
             .ok_or(CommandError::InvalidArguments)?;
 
-        let total_zats = found_tx.value + found_tx.fee.unwrap_or(0);
-
-        let amount = zatoshis_from_u64(0).map_err(CommandError::ConversionFailed)?;
+        let pubkey = found_tx.staking_action.as_ref().unwrap().arg32_0;
 
         let staking_action = StakingAction {
-            kind: sub_action,
-            amount_zats: total_zats,
-            // target: finalizer_address,
-            // source: wanted_txid.into(),
-            // insecure_target_name: String::new(),
-            // insecure_source_name: String::new(),
-            arg32_0: finalizer_address,
+            kind: begin_unstake,
+            amount_zats: 0, // This one can be 0
+            arg32_0: pubkey,
             arg32_1: [0; 32],
             arg32_2: [0; 32],
             arg32_3: [0; 32],
@@ -1377,27 +1365,7 @@ impl BeginUnstakeCommand {
             arg64_1: [0; 64],
         };
 
-        let wallet = lightclient.wallet.write().await;
-        let (_id, addr) = wallet
-            .unified_addresses()
-            .iter()
-            .next()
-            .ok_or(CommandError::InvalidArguments)?;
-        let send_back_address = addr.clone();
-
-        // println!("send_back_address: {send_back_address:#?}");
-
-        let receiver = Receiver {
-            recipient_address: miner_address,
-            amount,
-            memo: Some(MemoBytes::from(
-                Memo::from_str(send_back_address.encode(&TEST_NETWORK).as_str()).unwrap(),
-            )),
-        };
-        // println!("receiver: {receiver:#?}");
-
-        Ok((vec![receiver], staking_action))
-        // Err(CommandError::IncompatibleMemo)
+        Ok((vec![], staking_action))
     }
 
     pub fn addr_from_str_bytes(data: &[u8]) -> Option<[u8; 32]> {
@@ -1460,43 +1428,49 @@ impl Command for BeginUnstakeCommand {
     }
 
     fn exec(&self, args: &[&str], lightclient: &mut LightClient) -> String {
-        todo!()
-        // RT.block_on(async move {
-        //     let parsed_stake_command = match BeginUnstakeCommand::parse_args(args, lightclient)
-        //         .await
-        //     {
-        //         Ok(parsed_stake_command) => parsed_stake_command,
-        //         Err(e) => {
-        //             return format!("Error: {e}\nTry 'help stake' for correct usage and examples.");
-        //         }
-        //     };
-        //     let request = match zingolib::data::receivers::transaction_request_from_receivers(
-        //         parsed_stake_command.0,
-        //     ) {
-        //         Ok(request) => request,
-        //         Err(e) => {
-        //             return format!("Error: {e}\nTry 'help stake' for correct usage and examples.");
-        //         }
-        //     };
-        //     match lightclient
-        //         .propose_stake(request, parsed_stake_command.1, zip32::AccountId::ZERO)
-        //         .await
-        //     {
-        //         Ok(proposal) => {
-        //             let fee = match zingolib::data::proposal::total_fee(
-        //                 proposal.proportional_fee_proposal(),
-        //             ) {
-        //                 Ok(fee) => fee,
-        //                 Err(e) => return object! { "error" => e.to_string() }.pretty(2),
-        //             };
-        //             object! { "fee" => fee.into_u64() }
-        //         }
-        //         Err(e) => {
-        //             object! { "error" => e.to_string() }
-        //         }
-        //     }
-        //     .pretty(2)
-        // })
+        RT.block_on(async move {
+            let parsed_stake_command = match BeginUnstakeCommand::parse_args(args, lightclient)
+                .await
+            {
+                Ok(parsed_stake_command) => parsed_stake_command,
+                Err(e) => {
+                    return format!("Error: {e}\nTry 'help stake' for correct usage and examples.");
+                }
+            };
+            // Receivers IS EMPTY
+            let request = match zingolib::data::receivers::transaction_request_from_receivers(
+                parsed_stake_command.0,
+            ) {
+                Ok(request) => request,
+                Err(e) => {
+                    return format!("Error: {e}\nTry 'help stake' for correct usage and examples.");
+                }
+            };
+
+            match lightclient
+                .propose_begin_unstake(
+                    request.clone(),
+                    parsed_stake_command.1.arg32_2,
+                    parsed_stake_command.1.arg32_0,
+                    zip32::AccountId::ZERO,
+                )
+                .await
+            {
+                Ok(proposal) => {
+                    let fee = match zingolib::data::proposal::total_fee(
+                        proposal.proportional_fee_proposal(),
+                    ) {
+                        Ok(fee) => fee,
+                        Err(e) => return object! { "error" => e.to_string() }.pretty(2),
+                    };
+                    object! { "fee" => fee.into_u64() }
+                }
+                Err(e) => {
+                    object! { "error" => e.to_string() }
+                }
+            }
+            .pretty(2)
+        })
     }
 }
 

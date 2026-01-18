@@ -195,7 +195,10 @@ impl TransactionSummary {
             OutgoingCoinSummaries(self.outgoing_transparent_coins.clone());
 
         let staking_data = if let Some(staking_action) = &self.staking_action {
-            staking_action.to_string()
+            let display_action = StakingActionWrapper::new(Some(*staking_action));
+            let value = JsonValue::from(display_action);
+
+            value.to_string()
         } else {
             "not available".to_string()
         };
@@ -414,7 +417,10 @@ impl std::fmt::Display for ValueTransfer {
             memos.push_str(&format!("\n\tmemo {}: {}", (index + 1), memo));
         }
         let staking_data = if let Some(staking_action) = &self.staking_action {
-            format!("\n\tstaking action: {}", staking_action)
+            let display_action = StakingActionWrapper::new(Some(*staking_action));
+            let value = JsonValue::from(display_action);
+
+            format!("\n\tstaking action: {}", value.to_string())
         } else {
             "not available".to_string()
         };
@@ -505,7 +511,7 @@ impl From<StakingActionWrapper> for JsonValue {
             "kind" => kind,
             "val" => value.staking_action.clone().unwrap().amount_zats,
             "target" => hex::encode(value.staking_action.clone().unwrap().arg32_2),
-            "source" => hex::encode(value.staking_action.clone().unwrap().arg32_0),
+            "unique_public_key" => hex::encode(value.staking_action.clone().unwrap().arg32_0)
         }
     }
 }
