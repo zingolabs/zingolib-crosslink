@@ -74,7 +74,6 @@ pub(crate) type ExtraFeeProposal = Proposal<ExtraFee<zip317::FeeRule>, OutputRef
 /// parameter to track Shielded inputs to the proposal these are
 /// disallowed in Zingo `ShieldedProposals`
 pub(crate) type ProportionalFeeShieldProposal = Proposal<zip317::FeeRule, Infallible>;
-
 /// The `LightClient` holds one proposal at a time while the user decides whether to accept the fee.
 #[derive(Debug, Clone)]
 pub(crate) enum ZingoProposal {

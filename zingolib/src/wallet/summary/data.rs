@@ -420,7 +420,7 @@ impl std::fmt::Display for ValueTransfer {
             let display_action = StakingActionWrapper::new(Some(*staking_action));
             let value = JsonValue::from(display_action);
 
-            format!("\n\tstaking action: {}", value.to_string())
+            format!("\n\tstaking action: {}", value)
         } else {
             "not available".to_string()
         };
@@ -493,7 +493,7 @@ impl From<StakingActionWrapper> for JsonValue {
             return json::Null;
         }
 
-        let kind: String = match value.staking_action.clone().unwrap().kind {
+        let kind: String = match value.staking_action.unwrap().kind {
             StakingActionKind::CreateNewDelegationBond => "create_bond".to_string(),
             StakingActionKind::WithdrawDelegationBond => "withdraw_bond".to_string(),
             StakingActionKind::RetargetDelegationBond => "move".to_string(),
@@ -509,9 +509,9 @@ impl From<StakingActionWrapper> for JsonValue {
 
         json::object! {
             "kind" => kind,
-            "val" => value.staking_action.clone().unwrap().amount_zats,
-            "target" => hex::encode(value.staking_action.clone().unwrap().arg32_2),
-            "unique_public_key" => hex::encode(value.staking_action.clone().unwrap().arg32_0)
+            "val" => value.staking_action.unwrap().amount_zats,
+            "target" => hex::encode(value.staking_action.unwrap().arg32_2),
+            "unique_public_key" => hex::encode(value.staking_action.unwrap().arg32_0)
         }
     }
 }

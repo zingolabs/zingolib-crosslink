@@ -1,22 +1,30 @@
 //! creating proposals from wallet data
 
-use tracing::instrument;
+use netutils::UnderlyingService;
+use rand::rngs::OsRng;
+use tracing::{info, instrument};
 use zcash_client_backend::{
-    data_api::wallet::{ConfirmationsPolicy, input_selection::GreedyInputSelector},
-    fees::{DustAction, DustOutputPolicy, zip317::Zip317FeeRule},
+    data_api::{
+        WalletRead,
+        wallet::{ConfirmationsPolicy, input_selection::GreedyInputSelector},
+    },
+    fees::{DustAction, DustOutputPolicy},
+    proto::service::{RawTransaction, compact_tx_streamer_client::CompactTxStreamerClient},
     zip321::TransactionRequest,
 };
 use zcash_primitives::transaction::{
-    StakingAction,
-    fees::{FeeRule, transparent::InputSize},
+    StakingAction, StakingAction_WithdrawDelegationBond, StakingActionKind,
+    builder::BuildConfig,
 };
+use zcash_proofs::prover::LocalTxProver;
 use zcash_protocol::{
-    ShieldedProtocol,
-    consensus::{self, BlockHeight, Parameters},
+    ShieldedProtocol, TxId,
+    consensus::{BlockHeight, Parameters},
     memo::{Memo, MemoBytes},
     value::Zatoshis,
 };
-use zcash_transparent::address::TransparentAddress;
+use zcash_transparent::{address::TransparentAddress, builder::TransparentSigningSet};
+use zip32::AccountId;
 
 use super::{
     LightWallet,
@@ -24,9 +32,22 @@ use super::{
 };
 use crate::{
     config::ChainType,
-    data::proposal::{ExtraFee, ExtraFeeProposal, ProportionalFeeProposal},
+    data::proposal::{ExtraFee, ExtraFeeProposal},
 };
-use pepper_sync::{keys::transparent::TransparentScope, sync::ScanPriority};
+use pepper_sync::{
+    keys::transparent::TransparentScope,
+    sync::ScanPriority,
+    wallet::{NoteInterface, OrchardNote},
+};
+use zcash_primitives::transaction::builder::Builder as TxBuilder;
+
+use zcash_primitives::transaction::fees::zip317::FeeError;
+
+const EMPTY_MEMO_BYTES: [u8; 512] = {
+    let mut bytes = [0; 512];
+    bytes[0] = 0xf6;
+    bytes
+};
 
 impl LightWallet {
     /// Creates a proposal from a transaction request.
@@ -292,6 +313,243 @@ impl LightWallet {
             proportional_fee_proposal: proposal,
             staking_action,
         })
+    }
+
+    //create_unbonding_start_proposal
+    /// Creates a proposal from a transaction request.
+    #[instrument(
+        level = "info",
+        name = "create_withdraw_bond_proposal",
+        skip(self, request, unique_pubkey, target_finalizer, amount, account_id),
+        err
+    )]
+    pub(crate) async fn create_withdraw_bond_proposal(
+        &mut self,
+        request: TransactionRequest,
+        // staking_action: StakingAction,
+        // challenge is not needed here. A simple [0u8; 32] will do
+        // signature is not needed here. A simple [0u8; 32] will do
+        // amount: Zatoshis, amount is also not needed.
+        unique_pubkey: [u8; 32],
+        target_finalizer: [u8; 32],
+        amount: Zatoshis,
+        account_id: zip32::AccountId,
+    ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
+        let refund_address_count = self
+            .transparent_addresses
+            .keys()
+            .filter(|&address_id| address_id.scope() == TransparentScope::Refund)
+            .count() as u32;
+        let memo = self.change_memo_from_transaction_request(&request, refund_address_count);
+        let input_selector = GreedyInputSelector::new();
+
+        let fee_rule = ExtraFee {
+            base: zcash_primitives::transaction::fees::zip317::FeeRule::standard(),
+            extra: Zatoshis::const_from_u64(0),
+        };
+
+        let change_strategy = zcash_client_backend::fees::zip317::SingleOutputChangeStrategy::new(
+            fee_rule,
+            Some(memo),
+            ShieldedProtocol::Orchard,
+            DustOutputPolicy::new(DustAction::AddDustToFee, None),
+        );
+        let network = self.network;
+
+        info!("network: {}", network);
+        info!("request: {:#?}", request.to_uri());
+
+        let proposal = match zcash_client_backend::data_api::wallet::propose_transfer::<
+            LightWallet,
+            ChainType,
+            GreedyInputSelector<LightWallet>,
+            zcash_client_backend::fees::zip317::SingleOutputChangeStrategy<
+                ExtraFee<zcash_primitives::transaction::fees::zip317::FeeRule>,
+                LightWallet,
+            >,
+            WalletError,
+        >(
+            self,
+            &network,
+            account_id,
+            &input_selector,
+            &change_strategy,
+            request,
+            // TODO: replace wallet min_confirmations field with confirmation policy to unify for all proposals
+            ConfirmationsPolicy::new_symmetrical(self.wallet_settings.min_confirmations, false),
+        )
+        .map_err(ProposeSendError::Proposal)
+        {
+            Err(e) => return Err(e),
+            Ok(proposal) => proposal,
+        };
+
+        let staking_action = StakingAction {
+            kind: zcash_primitives::transaction::StakingActionKind::WithdrawDelegationBond,
+            amount_zats: amount.into_u64(),
+            arg32_0: unique_pubkey,
+            arg32_1: [0u8; 32],
+            arg32_2: target_finalizer,
+            arg32_3: [0u8; 32],
+            arg64_0: [0u8; 64],
+            arg64_1: [0u8; 64],
+        };
+
+        Ok(StakingProposal {
+            proportional_fee_proposal: proposal,
+            staking_action,
+        })
+    }
+
+    pub async fn withdraw_bond_using_orchard<P: Parameters>(
+        &mut self,
+        network: P,
+        client: &mut CompactTxStreamerClient<UnderlyingService>,
+        bond_key: &[u8; 32],
+    ) -> Option<TxId> {
+        let orchard_tree = &self.shard_trees.orchard;
+
+        let bond_value: u64 = self
+            .wallet_transactions
+            .iter()
+            .filter_map(|(_txid, wtx)| wtx.staking_data())
+            .find(|sa| {
+                sa.kind == StakingActionKind::CreateNewDelegationBond && sa.arg32_0 == *bond_key
+            })
+            .map(|sa| sa.amount_zats)?;
+
+        let ufvks = self.get_unified_full_viewing_keys().unwrap();
+
+        let orchard_fvk = ufvks.get(&AccountId::ZERO).unwrap().orchard().unwrap();
+
+        let orchard_ovk = orchard_fvk.to_ovk(zip32::Scope::External);
+
+        let my_orchard_receiver = self
+            .unified_addresses()
+            .first_key_value()
+            .unwrap()
+            .1
+            .orchard()
+            .unwrap();
+
+        let unified_key_store = self.unified_key_store.first_key_value().unwrap().1;
+
+        let orchard_spending_key = orchard::keys::SpendingKey::try_from(unified_key_store).unwrap();
+
+        let block_h = self.chain_height().unwrap().unwrap() + 1;
+
+        let orchard_anchor_h = &self.chain_height().unwrap().unwrap().saturating_sub(5);
+        let orchard_anchor = match orchard_tree
+            .root_at_checkpoint_id(orchard_anchor_h)
+            .expect("Infallible MemoryShardStore")
+        {
+            Some(root) => orchard::Anchor::from(root),
+            None => return None,
+        };
+
+        let mut txb = TxBuilder::new(
+            network,
+            BlockHeight::from_u32(block_h.0),
+            BuildConfig::Standard {
+                sapling_anchor: None,
+                orchard_anchor: Some(orchard_anchor),
+            },
+        );
+
+        // notes to only cover fee.
+        let mut fee_inputs_sum: u64 = 0;
+        let mut spend_count: usize = 0;
+
+        let mut fee_est: u64 = 10_000;
+
+        let spendable_notes: Vec<&OrchardNote> = self
+            .spendable_notes(*orchard_anchor_h, &[], AccountId::ZERO, false)
+            .unwrap();
+
+        for note in spendable_notes.iter() {
+            let witness = match orchard_tree
+                .witness_at_checkpoint_id(note.position().unwrap(), orchard_anchor_h)
+            {
+                Ok(Some(w)) => w,
+                _ => continue,
+            };
+            let merkle_path = orchard::tree::MerklePath::from(witness);
+
+            if txb
+                .add_orchard_spend::<FeeError>(orchard_fvk.clone(), *note.note(), merkle_path)
+                .is_ok()
+            {
+                fee_inputs_sum += note.note().value().inner();
+                spend_count += 1;
+
+                let orchard_actions = spend_count + 1;
+                fee_est = 5000 * (orchard_actions as u64).max(2);
+                fee_est = fee_est.max(10_000);
+
+                if fee_inputs_sum >= fee_est {
+                    break;
+                }
+            }
+        }
+
+        if fee_inputs_sum < fee_est {
+            return None; // not enough to pay fee
+        }
+
+        txb.put_staking_action(
+            StakingAction_WithdrawDelegationBond {
+                amount_zats: bond_value,
+                unique_pubkey: *bond_key,
+                challenge: [0u8; 32],
+                signature: [0u8; 64],
+            }
+            .to_union(),
+        )
+        .ok()?;
+
+        let out_value = bond_value + (fee_inputs_sum - fee_est);
+
+        txb.add_orchard_output::<FeeError>(
+            Some(orchard_ovk),
+            *my_orchard_receiver,
+            out_value,
+            MemoBytes::from_bytes(&EMPTY_MEMO_BYTES).unwrap(),
+        )
+        .ok()?;
+
+        let signing_set = TransparentSigningSet::new();
+
+        let prover = LocalTxProver::with_default_location()
+            .expect("could not load proving params (zcash-params)");
+
+        let rng = OsRng;
+
+        let orchard_ask: orchard::keys::SpendAuthorizingKey = (&orchard_spending_key).into();
+
+        let tx_res = txb
+            .build(
+                &signing_set,
+                &[],
+                &[orchard_ask],
+                rng,
+                &prover,
+                &prover,
+                &zcash_primitives::transaction::fees::zip317::FeeRule::standard(),
+            )
+            .ok()?;
+
+        let tx = tx_res.transaction();
+        let mut tx_bytes = vec![];
+        tx.write(&mut tx_bytes).ok()?;
+
+        client
+            .send_transaction(RawTransaction {
+                data: tx_bytes,
+                height: 0,
+            })
+            .await
+            .ok()?;
+        Some(tx.txid())
     }
 
     fn change_memo_from_transaction_request(

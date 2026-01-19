@@ -226,7 +226,20 @@ impl WalletRead for LightWallet {
     fn get_unified_full_viewing_keys(
         &self,
     ) -> Result<HashMap<Self::AccountId, UnifiedFullViewingKey>, Self::Error> {
-        unimplemented!()
+        let mut out = HashMap::new();
+
+        for (account_id, uks) in &self.unified_key_store {
+            match UnifiedFullViewingKey::try_from(uks) {
+                Ok(ufvk) => {
+                    out.insert(*account_id, ufvk);
+                }
+                Err(_e) => {
+                    continue;
+                }
+            }
+        }
+
+        Ok(out)
     }
 
     fn get_memo(&self, _note_id: NoteId) -> Result<Option<Memo>, Self::Error> {

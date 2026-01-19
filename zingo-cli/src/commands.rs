@@ -11,22 +11,22 @@ use std::str::FromStr;
 
 use indoc::indoc;
 use json::object;
+use log::info;
 use pepper_sync::config::PerformanceLevel;
 use pepper_sync::keys::transparent;
 use std::sync::LazyLock;
 use tokio::runtime::Runtime;
-use zcash_address::ZcashAddress;
 use zcash_primitives::transaction::{StakingAction, StakingActionKind};
-use zcash_protocol::TxId;
-use zcash_protocol::memo::{Memo, MemoBytes};
+use zcash_protocol::local_consensus::LocalNetwork;
 use zingolib::ConfiguredActivationHeights;
-use zingolib::data::receivers::{Receiver, Receivers};
-use zingolib::utils::conversion::{txid_from_hex_encoded_str, zatoshis_from_u64};
+use zingolib::data::receivers::Receivers;
+use zingolib::grpc_client::get_zcb_client;
+use zingolib::utils::conversion::txid_from_hex_encoded_str;
 
 use zcash_address::unified::{Container, Encoding, Ufvk};
 use zcash_keys::address::Address;
 use zcash_keys::keys::UnifiedFullViewingKey;
-use zcash_protocol::consensus::{NetworkType, TEST_NETWORK};
+use zcash_protocol::consensus::{BlockHeight, NetworkType, TEST_NETWORK};
 use zcash_protocol::value::Zatoshis;
 
 use pepper_sync::wallet::{KeyIdInterface, OrchardNote, SaplingNote, SyncMode};
@@ -1325,7 +1325,6 @@ struct BeginUnstakeCommand {}
 
 impl BeginUnstakeCommand {
     /// Parse the following arguments:
-    /// - finalizer address <- removed
     /// - original TXID
     pub async fn parse_args(
         args: &[&str],
@@ -1336,11 +1335,6 @@ impl BeginUnstakeCommand {
         }
 
         let begin_unstake = StakingActionKind::BeginDelegationUnbonding;
-
-        // let finalizer_address =
-        //     BeginUnstakeCommand::addr_from_str_bytes(args.first().unwrap().as_bytes()).unwrap();
-
-        // let miner_address = ZcashAddress::try_from_encoded(args.get(1).unwrap()).unwrap();
 
         let txid = args.first().unwrap();
 
@@ -1366,44 +1360,6 @@ impl BeginUnstakeCommand {
         };
 
         Ok((vec![], staking_action))
-    }
-
-    pub fn addr_from_str_bytes(data: &[u8]) -> Option<[u8; 32]> {
-        const VALS: [u8; 256] = {
-            let mut v = [0xff; 256];
-            v[b'0' as usize] = 0x0;
-            v[b'1' as usize] = 0x1;
-            v[b'2' as usize] = 0x2;
-            v[b'3' as usize] = 0x3;
-            v[b'4' as usize] = 0x4;
-            v[b'5' as usize] = 0x5;
-            v[b'6' as usize] = 0x6;
-            v[b'7' as usize] = 0x7;
-            v[b'8' as usize] = 0x8;
-            v[b'9' as usize] = 0x9;
-            v[b'a' as usize] = 0xa;
-            v[b'b' as usize] = 0xb;
-            v[b'c' as usize] = 0xc;
-            v[b'd' as usize] = 0xd;
-            v[b'e' as usize] = 0xe;
-            v[b'f' as usize] = 0xf;
-            v
-        };
-        let mut buf = [0u8; 32];
-        for i in 0..32 {
-            let a = data.get(2 * i)?;
-            let b = data.get(2 * i + 1)?;
-            let a = VALS[*a as usize];
-            if a == 0xff {
-                return None;
-            }
-            let b = VALS[*b as usize];
-            if b == 0xff {
-                return None;
-            }
-            buf[31 - i] = (a << 4) | b
-        }
-        Some(buf)
     }
 }
 
@@ -1476,6 +1432,47 @@ impl Command for BeginUnstakeCommand {
 
 struct WithdrawStakeCommand {}
 
+impl WithdrawStakeCommand {
+    /// Parse the following arguments:
+    /// - original TXID
+    pub async fn parse_args(
+        args: &[&str],
+        lightclient: &mut LightClient,
+    ) -> Result<(Receivers, StakingAction), CommandError> {
+        if args.len() != 1 {
+            return Err(CommandError::InvalidArguments);
+        }
+
+        let begin_unstake = StakingActionKind::WithdrawDelegationBond;
+
+        let txid = args.first().unwrap();
+
+        let unfiltered_txs = lightclient.transaction_summaries(false).await.unwrap();
+
+        let found_tx = unfiltered_txs
+            .iter()
+            .filter(|tx| tx.staking_action.is_some())
+            .find(|tx| tx.txid.to_string() == *txid)
+            .ok_or(CommandError::InvalidArguments)?;
+
+        let pubkey = found_tx.staking_action.as_ref().unwrap().arg32_0;
+        let original_amount = found_tx.staking_action.as_ref().unwrap().amount_zats;
+
+        let staking_action = StakingAction {
+            kind: begin_unstake,
+            amount_zats: original_amount,
+            arg32_0: pubkey,
+            arg32_1: [0; 32],
+            arg32_2: [0; 32],
+            arg32_3: [0; 32],
+            arg64_0: [0; 64],
+            arg64_1: [0; 64],
+        };
+
+        Ok((vec![], staking_action))
+    }
+}
+
 impl Command for WithdrawStakeCommand {
     fn help(&self) -> &'static str {
         indoc! {r#"
@@ -1493,8 +1490,123 @@ impl Command for WithdrawStakeCommand {
         "#}
     }
 
-    fn exec(&self, _args: &[&str], lightclient: &mut LightClient) -> String {
-        todo!()
+    fn exec(&self, args: &[&str], lightclient: &mut LightClient) -> String {
+        RT.block_on(async move {
+            let parsed_stake_command = match WithdrawStakeCommand::parse_args(args, lightclient)
+                .await
+            {
+                Ok(parsed_stake_command) => parsed_stake_command,
+                Err(e) => {
+                    return format!("Error: {e}\nTry 'help stake' for correct usage and examples.");
+                }
+            };
+
+            info!("cfg!(feature=\"regtest\") = {}", cfg!(feature = "regtest"));
+
+            let receiver_address = {
+                #[cfg(feature = "regtest")]
+                {
+                    use zcash_protocol::consensus::BlockHeight;
+                    info!("Using regtest network");
+
+                    let network = LocalNetwork {
+                        overwinter: Some(BlockHeight::from_u32(1)),
+                        sapling: Some(BlockHeight::from_u32(1)),
+                        blossom: Some(BlockHeight::from_u32(1)),
+                        heartwood: Some(BlockHeight::from_u32(1)),
+                        canopy: Some(BlockHeight::from_u32(1)),
+                        nu5: Some(BlockHeight::from_u32(1)),
+                        nu6: Some(BlockHeight::from_u32(1)),
+                        nu6_1: None,
+                    };
+
+                    lightclient
+                        .wallet
+                        .read()
+                        .await
+                        .unified_addresses()
+                        .clone()
+                        .first_entry()
+                        .unwrap()
+                        .get()
+                        .encode(&network)
+                }
+                #[cfg(not(feature = "regtest"))]
+                {
+                    let network = TEST_NETWORK;
+
+                    lightclient
+                        .wallet
+                        .read()
+                        .await
+                        .unified_addresses()
+                        .clone()
+                        .first_entry()
+                        .unwrap()
+                        .get()
+                        .encode(&network)
+                }
+            };
+
+            info!("Receiver Address: {}", receiver_address);
+
+            // Receivers IS EMPTY
+            let request =
+                match zingolib::data::receivers::transaction_request_from_receivers(vec![]) {
+                    Ok(request) => request,
+                    Err(e) => {
+                        return format!(
+                            "Error: {e}\nTry 'help stake' for correct usage and examples."
+                        );
+                    }
+                };
+
+            let network = LocalNetwork {
+                overwinter: Some(BlockHeight::from_u32(1)),
+                sapling: Some(BlockHeight::from_u32(1)),
+                blossom: Some(BlockHeight::from_u32(1)),
+                heartwood: Some(BlockHeight::from_u32(1)),
+                canopy: Some(BlockHeight::from_u32(1)),
+                nu5: Some(BlockHeight::from_u32(1)),
+                nu6: Some(BlockHeight::from_u32(1)),
+                nu6_1: None,
+            };
+
+            let mut client = get_zcb_client(lightclient.server_uri()).await.unwrap();
+            let bond_key = parsed_stake_command.1.arg32_0;
+
+            lightclient
+                .wallet
+                .write()
+                .await
+                .withdraw_bond_using_orchard(network, &mut client, &bond_key)
+                .await;
+
+            match lightclient
+                .propose_withdraw_stake(
+                    request.clone(),
+                    parsed_stake_command.1.arg32_2,
+                    parsed_stake_command.1.arg32_0,
+                    Zatoshis::const_from_u64(parsed_stake_command.1.amount_zats),
+                    zip32::AccountId::ZERO,
+                )
+                .await
+            {
+                Ok(proposal) => {
+                    let fee = match zingolib::data::proposal::total_fee(
+                        proposal.proportional_fee_proposal(),
+                    ) {
+                        Ok(fee) => fee,
+                        Err(e) => return object! { "error" => e.to_string() }.pretty(2),
+                    };
+                    object! { "fee" => fee.into_u64() }
+                }
+                Err(e) => {
+                    object! { "error" => e.to_string() }
+                }
+            }
+            .pretty(2)
+        })
     }
 }
 

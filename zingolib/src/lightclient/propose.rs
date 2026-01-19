@@ -1,6 +1,7 @@
 //! `LightClient` function `do_propose` generates a proposal to send to specified addresses.
 
 use rand::rngs::OsRng;
+use tracing::instrument;
 use zcash_address::ZcashAddress;
 use zcash_client_backend::zip321::TransactionRequest;
 use zcash_primitives::transaction::StakingAction;
@@ -132,11 +133,51 @@ impl LightClient {
         Ok(proposal)
     }
 
+    #[instrument(
+        level = "info",
+        name = "propose_withdraw_stake",
+        skip(self, request, finalizer, unique_pubkey, amount, account_id)
+    )]
     pub async fn propose_withdraw_stake(
         &mut self,
+        request: TransactionRequest, // NOTE: request is an empty BTreeMap!!
+        finalizer: [u8; 32],
+        unique_pubkey: [u8; 32],
+        amount: Zatoshis,
         account_id: zip32::AccountId,
     ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
-        todo!()
+        let proposal = self
+            .wallet
+            .write()
+            .await
+            .create_withdraw_bond_proposal(
+                request,
+                unique_pubkey,
+                unique_pubkey,
+                amount,
+                account_id,
+            )
+            .await?;
+
+        let staking_action = StakingAction {
+            kind: zcash_primitives::transaction::StakingActionKind::WithdrawDelegationBond,
+            amount_zats: amount.into_u64(),
+            arg32_0: unique_pubkey,
+            arg32_1: [0u8; 32],
+            arg32_2: finalizer,
+            arg32_3: [0u8; 32],
+            arg64_0: [0u8; 64],
+            arg64_1: [0u8; 64],
+        };
+
+        self.store_proposal(ZingoProposal::Crosslink {
+            proposal: proposal.clone().proportional_fee_proposal().clone(),
+            staking_action,
+            sending_account: account_id,
+        })
+        .await;
+
+        Ok(proposal)
     }
 
     pub async fn propose_redelegate(
