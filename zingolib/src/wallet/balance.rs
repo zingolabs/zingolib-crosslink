@@ -6,11 +6,11 @@ use pepper_sync::wallet::{
     KeyIdInterface, NoteInterface, OrchardNote, OutputInterface, SaplingNote, TransparentCoin,
     WalletTransaction,
 };
-use zcash_client_backend::data_api::WalletRead;
+use zcash_client_backend::{data_api::WalletRead, proto::service::BondInfoRequest};
 use zcash_primitives::transaction::{StakingActionKind, fees::zip317::MARGINAL_FEE};
 use zcash_protocol::{PoolType, value::Zatoshis};
 
-use crate::utils;
+use crate::{config::ZingoConfig, grpc_client::get_zcb_client, utils};
 
 use super::{
     LightWallet,
@@ -140,9 +140,10 @@ fn format_zatoshis(zatoshis: Zatoshis) -> String {
 
 impl LightWallet {
     /// Returns account balance.
-    pub fn account_balance(
+    pub async fn account_balance(
         &self,
         account_id: zip32::AccountId,
+        config: &ZingoConfig,
     ) -> Result<AccountBalance, BalanceError> {
         let confirmed_orchard_balance =
             match self.confirmed_balance_excluding_dust::<OrchardNote>(account_id) {
@@ -198,13 +199,33 @@ impl LightWallet {
             .map(|sa| sa.arg32_0)
             .collect();
 
-        let total_staked: u64 = transactions
+        // This includes rewards with new get_bond_info
+        // Meaning, it is getting a list of all active bonds,
+        // and then fetching info for each of them sequentially :(
+
+        let active_bonds: Vec<[u8; 32]> = transactions
             .iter()
             .filter_map(|tx| tx.staking_data())
             .filter(|sa| sa.kind == StakingActionKind::CreateNewDelegationBond)
             .filter(|sa| !withdrawn_keys.contains(&sa.arg32_0))
-            .map(|sa| sa.amount_zats)
-            .sum();
+            .map(|sa| sa.arg32_0)
+            .collect();
+
+        let mut client = get_zcb_client(config.lightwalletd_uri.read().unwrap().clone())
+            .await
+            .unwrap();
+
+        let mut total_staked: u64 = 0;
+        for pubkey in &active_bonds {
+            if let Ok(resp) = client
+                .get_bond_info(BondInfoRequest {
+                    bond_key: pubkey.to_vec(),
+                })
+                .await
+            {
+                total_staked = total_staked.saturating_add(resp.into_inner().amount);
+            }
+        }
 
         Ok(AccountBalance {
             confirmed_orchard_balance,

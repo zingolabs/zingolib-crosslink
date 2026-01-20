@@ -286,7 +286,11 @@ impl LightClient {
         &self,
         account_id: zip32::AccountId,
     ) -> Result<AccountBalance, BalanceError> {
-        self.wallet.read().await.account_balance(account_id)
+        self.wallet
+            .read()
+            .await
+            .account_balance(account_id, &self.config)
+            .await
     }
 
     /// Wrapper for [`crate::wallet::LightWallet::transaction_summaries`].

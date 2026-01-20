@@ -9,12 +9,13 @@ use zcash_client_backend::{
         wallet::{ConfirmationsPolicy, input_selection::GreedyInputSelector},
     },
     fees::{DustAction, DustOutputPolicy},
-    proto::service::{RawTransaction, compact_tx_streamer_client::CompactTxStreamerClient},
+    proto::service::{
+        BondInfoRequest, RawTransaction, compact_tx_streamer_client::CompactTxStreamerClient,
+    },
     zip321::TransactionRequest,
 };
 use zcash_primitives::transaction::{
-    StakingAction, StakingAction_WithdrawDelegationBond, StakingActionKind,
-    builder::BuildConfig,
+    StakingAction, StakingAction_WithdrawDelegationBond, StakingActionKind, builder::BuildConfig,
 };
 use zcash_proofs::prover::LocalTxProver;
 use zcash_protocol::{
@@ -409,14 +410,14 @@ impl LightWallet {
     ) -> Option<TxId> {
         let orchard_tree = &self.shard_trees.orchard;
 
-        let bond_value: u64 = self
-            .wallet_transactions
-            .iter()
-            .filter_map(|(_txid, wtx)| wtx.staking_data())
-            .find(|sa| {
-                sa.kind == StakingActionKind::CreateNewDelegationBond && sa.arg32_0 == *bond_key
+        let bond_value: u64 = client
+            .get_bond_info(BondInfoRequest {
+                bond_key: bond_key.to_vec(),
             })
-            .map(|sa| sa.amount_zats)?;
+            .await
+            .ok()?
+            .into_inner()
+            .amount;
 
         let ufvks = self.get_unified_full_viewing_keys().unwrap();
 
