@@ -1,5 +1,7 @@
 //! Balance methods and types for `crate::wallet::LightWallet`.
 
+use std::collections::HashSet;
+
 use pepper_sync::wallet::{
     KeyIdInterface, NoteInterface, OrchardNote, OutputInterface, SaplingNote, TransparentCoin,
     WalletTransaction,
@@ -189,14 +191,20 @@ impl LightWallet {
 
         let transactions = self.wallet_transactions.values().collect::<Vec<_>>();
 
-        let total_staked = transactions
+        let withdrawn_keys: HashSet<[u8; 32]> = transactions
             .iter()
-            .filter(|tx| tx.staking_data().is_some())
-            .filter(|tx| {
-                tx.staking_data().unwrap().kind == StakingActionKind::CreateNewDelegationBond
-            })
-            .map(|tx| tx.staking_data().unwrap().amount_zats)
-            .sum::<u64>();
+            .filter_map(|tx| tx.staking_data())
+            .filter(|sa| sa.kind == StakingActionKind::WithdrawDelegationBond)
+            .map(|sa| sa.arg32_0)
+            .collect();
+
+        let total_staked: u64 = transactions
+            .iter()
+            .filter_map(|tx| tx.staking_data())
+            .filter(|sa| sa.kind == StakingActionKind::CreateNewDelegationBond)
+            .filter(|sa| !withdrawn_keys.contains(&sa.arg32_0))
+            .map(|sa| sa.amount_zats)
+            .sum();
 
         Ok(AccountBalance {
             confirmed_orchard_balance,
