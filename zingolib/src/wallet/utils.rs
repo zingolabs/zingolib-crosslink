@@ -1,6 +1,10 @@
 //! TODO: Add Mod Description Here!
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use std::io::{self, Read, Write};
+use std::{
+    fs,
+    io::{self, Read, Write},
+    path::{Path, PathBuf},
+};
 use zcash_primitives::transaction::TxId;
 use zcash_protocol::memo::MemoBytes;
 
@@ -68,4 +72,27 @@ pub(crate) fn read_sapling_params() -> Result<(Vec<u8>, Vec<u8>), String> {
             .as_ref(),
     );
     Ok((sapling_output, sapling_spend))
+}
+
+fn ensure_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create_dir_all: {e}"))?;
+    }
+    fs::write(path, bytes).map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(())
+}
+
+pub fn ensure_sapling_params_on_disk(params_dir: PathBuf) -> Result<(PathBuf, PathBuf), String> {
+    let (output_bytes, spend_bytes) = read_sapling_params()?;
+
+    let output_path = params_dir.join("sapling-output.params");
+    let spend_path = params_dir.join("sapling-spend.params");
+
+    ensure_file(&output_path, &output_bytes)?;
+    ensure_file(&spend_path, &spend_bytes)?;
+
+    Ok((spend_path, output_path))
 }

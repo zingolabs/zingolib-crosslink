@@ -34,6 +34,7 @@ use super::{
 use crate::{
     config::ChainType,
     data::proposal::{ExtraFee, ExtraFeeProposal},
+    wallet::utils::ensure_sapling_params_on_disk,
 };
 use pepper_sync::{
     keys::transparent::TransparentScope,
@@ -520,8 +521,14 @@ impl LightWallet {
 
         let signing_set = TransparentSigningSet::new();
 
-        let prover = LocalTxProver::with_default_location()
-            .expect("could not load proving params (zcash-params)");
+        let params_dir = std::env::temp_dir().join("zingo-params");
+        let (spend, output) = ensure_sapling_params_on_disk(params_dir)
+            .expect("could not materialize embedded zcash params");
+
+        let prover = LocalTxProver::new(&spend, &output);
+
+        // let prover = LocalTxProver::with_default_location()
+        //     .expect("could not load proving params (zcash-params)");
 
         let rng = OsRng;
 
