@@ -272,7 +272,7 @@ impl LightWallet {
         calculated_txids: NonEmpty<TxId>,
     ) -> Result<NonEmpty<TxId>, TransmissionError> {
         match self
-            .transmit_transactions_inner(server_uri, calculated_txids)
+            .transmit_transactions_inner(server_uri, calculated_txids.clone())
             .await
         {
             Ok(txids) => {
@@ -288,6 +288,8 @@ impl LightWallet {
                 Ok(txids)
             }
             Err(e) => {
+                self.remove_unconfirmed_transaction(calculated_txids.head)
+                    .unwrap();
                 self.set_send_result(format!("error: {e}"));
                 Err(e)
             }
