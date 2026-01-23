@@ -1152,6 +1152,32 @@ impl Command for SendCommand {
     }
 }
 
+struct GetBondsCommand {}
+
+impl Command for GetBondsCommand {
+    fn help(&self) -> &'static str {
+        indoc! {r#"
+            Returns the bonds related to the wallet.
+
+            Usage:
+                get_bonds
+        "#}
+    }
+
+    fn short_help(&self) -> &'static str {
+        "Returns the bonds related to the wallet."
+    }
+
+    fn exec(&self, _args: &[&str], lightclient: &mut LightClient) -> String {
+        RT.block_on(async move {
+            match lightclient.get_wallet_bonds().await {
+                Ok(bonds) => json::JsonValue::from(bonds).pretty(2),
+                Err(e) => object! { "error" => e.to_string() }.pretty(2),
+            }
+        })
+    }
+}
+
 /// The stake command
 struct StakeCommand {}
 
@@ -1196,21 +1222,6 @@ impl StakeCommand {
             arg64_0: [0u8; 64],
             arg64_1: [0u8; 64],
         };
-
-        // let wallet = lightclient.wallet.write().await;
-        // let (_id, addr) = wallet
-        //     .unified_addresses()
-        //     .iter()
-        //     .next()
-        //     .ok_or(CommandError::InvalidArguments)?;
-
-        // let receiver = Receiver {
-        //     recipient_address: miner_address,
-        //     amount,
-        //     memo: Some(MemoBytes::from(
-        //         Memo::from_str(send_back_address.encode(&TEST_NETWORK).as_str()).unwrap(),
-        //     )),
-        // };
 
         Ok((vec![], staking_action))
     }
@@ -2545,6 +2556,7 @@ pub fn get_commands() -> HashMap<&'static str, Box<dyn Command>> {
         ("withdraw_stake", Box::new(WithdrawStakeCommand {})),
         ("redelegate_stake", Box::new(RedelegateCommand {})),
         ("roster_info", Box::new(GetRosterInfoCommand {})),
+        ("get_bonds", Box::new(GetBondsCommand {})),
         ("resend", Box::new(ResendCommand {})),
         ("shield", Box::new(ShieldCommand {})),
         ("save", Box::new(SaveCommand {})),

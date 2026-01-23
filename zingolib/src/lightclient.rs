@@ -1,6 +1,7 @@
 //! TODO: Add Mod Description Here!
 
 use std::{
+    collections::HashMap,
     fs::File,
     io::{BufReader, Cursor, Read},
     path::PathBuf,
@@ -11,7 +12,6 @@ use std::{
 };
 
 use json::JsonValue;
-use serde::Serialize;
 use tokio::{sync::RwLock, task::JoinHandle};
 
 use zcash_client_backend::{
@@ -21,16 +21,20 @@ use zcash_client_backend::{
 use zcash_keys::address::UnifiedAddress;
 
 use pepper_sync::{
-    error::SyncError, keys::transparent::TransparentAddressId, sync::SyncResult, wallet::SyncMode,
+    error::SyncError,
+    keys::transparent::TransparentAddressId,
+    sync::SyncResult,
+    wallet::{SyncMode, WalletTransaction, traits::SyncTransactions},
 };
-use zcash_primitives::transaction::{RosterMember, StakeTxId};
-use zcash_protocol::consensus::BlockHeight;
+use zcash_primitives::transaction::{RosterMember, StakeTxId, StakingActionKind};
+use zcash_protocol::{TxId, consensus::BlockHeight};
 use zcash_transparent::address::TransparentAddress;
 
 use crate::{
     config::ZingoConfig,
     data::proposal::ZingoProposal,
     grpc_client::get_zcb_client,
+    lightclient::crosslink::{RosterMembers, WalletBond, WalletBonds},
     wallet::{
         LightWallet, WalletBase,
         balance::AccountBalance,
@@ -44,54 +48,13 @@ use crate::{
 };
 use error::LightClientError;
 
+pub mod crosslink;
 pub mod error;
 pub mod propose;
 pub mod save;
 pub mod send;
 pub mod sync;
 
-#[derive(Debug, Clone, Serialize)]
-pub struct RosterMembers {
-    pub members: Vec<RosterMember>,
-}
-
-impl RosterMembers {
-    pub fn from_parts(members: Vec<RosterMember>) -> Self {
-        Self { members }
-    }
-}
-
-impl From<RosterMembers> for JsonValue {
-    fn from(roster_members: RosterMembers) -> Self {
-        let mut members = JsonValue::new_array();
-
-        for member in roster_members.members {
-            let pubkey = hex::encode(member.pub_key);
-
-            let mut txids = JsonValue::new_array();
-            for entry in member.txids {
-                txids
-                    .push(json::object! {
-                        "txid" => hex::encode(entry.txid),
-                        "accumulated_zats" => entry.zats
-                    })
-                    .unwrap();
-            }
-
-            members
-                .push(json::object! {
-                    "pubkey" => pubkey,
-                    "voting_power" => member.voting_power,
-                    "txids" => txids
-                })
-                .unwrap();
-        }
-
-        json::object! {
-            "roster_members" => members
-        }
-    }
-}
 /// Struct which owns and manages the [`crate::wallet::LightWallet`]. Responsible for network operations such as
 /// storing the indexer URI, creating gRPC clients and syncing the wallet to the blockchain.
 ///
@@ -443,19 +406,107 @@ impl LightClient {
         }
     }
 
-    pub async fn get_accumulated_stake_for_txid(&self, txid: [u8; 32]) -> u64 {
-        let roster = self.get_roster_info().await.unwrap().members;
+    pub async fn get_wallet_bonds(&self) -> Result<WalletBonds, String> {
+        let wallet = self.wallet.read().await;
+        let wallet_txs = wallet
+            .get_wallet_transactions()
+            .map_err(|err| format!("Error getting wallet transactions: {err:?}"))?;
 
-        let mut accumulated_stake = 0;
-        for member in &roster {
-            for stake_txid in &member.txids {
-                if stake_txid.txid == txid {
-                    accumulated_stake += stake_txid.zats;
+        // Bond key -> (bond, last_seen_order)
+        let mut by_bond: HashMap<[u8; 32], (WalletBond, (u32, u32))> = HashMap::new();
+
+        for tx in wallet_txs.values() {
+            let Some(staking_action) = tx.staking_data() else {
+                continue;
+            };
+
+            let txid: TxId = tx.txid();
+
+            let height: u32 = tx.status().get_height().0;
+            let time: u32 = tx.datetime();
+
+            let order = (height, time);
+
+            let bond_key: [u8; 32] = staking_action.arg32_0;
+
+            match staking_action.kind {
+                StakingActionKind::CreateNewDelegationBond => {
+                    let amount_zats: u64 = staking_action.amount_zats;
+                    let new = WalletBond {
+                        created_in_txid: txid,
+                        pubkey: bond_key,
+                        amount_zats,
+                        status: 0,
+                    };
+
+                    LightClient::upsert_latest(&mut by_bond, bond_key, new, order);
+                }
+
+                StakingActionKind::BeginDelegationUnbonding => {
+                    let updated = if let Some((existing, _)) = by_bond.get(&bond_key) {
+                        WalletBond {
+                            status: 1,
+                            ..*existing
+                        }
+                    } else {
+                        WalletBond {
+                            created_in_txid: txid,
+                            pubkey: bond_key,
+                            amount_zats: 0,
+                            status: 1,
+                        }
+                    };
+
+                    LightClient::upsert_latest(&mut by_bond, bond_key, updated, order);
+                }
+
+                StakingActionKind::WithdrawDelegationBond => {
+                    let updated = if let Some((existing, _)) = by_bond.get(&bond_key) {
+                        WalletBond {
+                            status: 2,
+                            ..*existing
+                        }
+                    } else {
+                        WalletBond {
+                            created_in_txid: txid,
+                            pubkey: bond_key,
+                            amount_zats: 0,
+                            status: 2,
+                        }
+                    };
+
+                    LightClient::upsert_latest(&mut by_bond, bond_key, updated, order);
+                }
+
+                _ => {
+                    continue;
                 }
             }
         }
 
-        accumulated_stake
+        let mut bonds: Vec<WalletBond> = by_bond.into_values().map(|(bond, _order)| bond).collect();
+
+        bonds.sort_by_key(|b| b.status);
+
+        Ok(WalletBonds { bonds })
+    }
+
+    fn upsert_latest(
+        map: &mut HashMap<[u8; 32], (WalletBond, (u32, u32))>,
+        bond_key: [u8; 32],
+        candidate: WalletBond,
+        candidate_order: (u32, u32),
+    ) {
+        match map.get(&bond_key) {
+            None => {
+                map.insert(bond_key, (candidate, candidate_order));
+            }
+            Some((_existing, existing_order)) => {
+                if candidate_order >= *existing_order {
+                    map.insert(bond_key, (candidate, candidate_order));
+                }
+            }
+        }
     }
 }
 
