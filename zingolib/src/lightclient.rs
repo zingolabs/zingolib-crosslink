@@ -14,7 +14,10 @@ use json::JsonValue;
 use serde::Serialize;
 use tokio::{sync::RwLock, task::JoinHandle};
 
-use zcash_client_backend::{proto::service::Empty, tor};
+use zcash_client_backend::{
+    proto::service::{BondInfoRequest, BondInfoResponse, Empty},
+    tor,
+};
 use zcash_keys::address::UnifiedAddress;
 
 use pepper_sync::{
@@ -424,6 +427,20 @@ impl LightClient {
         }
 
         Ok(RosterMembers::from_parts(roster))
+    }
+
+    pub async fn get_bond_info(&self, bond_key: [u8; 32]) -> Result<BondInfoResponse, String> {
+        let mut zcb_client = get_zcb_client(self.server_uri()).await.unwrap();
+
+        match zcb_client
+            .get_bond_info(BondInfoRequest {
+                bond_key: bond_key.to_vec(),
+            })
+            .await
+        {
+            Ok(res) => Ok(res.into_inner()),
+            Err(err) => Err(format!("Error getting bond info: {err:?}")),
+        }
     }
 
     pub async fn get_accumulated_stake_for_txid(&self, txid: [u8; 32]) -> u64 {
