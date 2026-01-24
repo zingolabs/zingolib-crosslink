@@ -1,4 +1,4 @@
-use zcash_primitives::transaction::TxId;
+use zcash_primitives::transaction::{StakingActionKind, TxId};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::value::Zatoshis;
 
@@ -120,6 +120,20 @@ impl LightWallet {
         &self,
         transaction: &WalletTransaction,
     ) -> Result<TransactionKind, SpendError> {
+        if let Some(sa) = transaction.staking_data() {
+            let send_type = match sa.kind {
+                StakingActionKind::CreateNewDelegationBond => SendType::Stake,
+                StakingActionKind::BeginDelegationUnbonding => SendType::BeginUnbond,
+                StakingActionKind::WithdrawDelegationBond => SendType::WithdrawBond,
+                StakingActionKind::RetargetDelegationBond => SendType::RetargetDelegationBond,
+                StakingActionKind::Null => SendType::SendToSelf,
+                StakingActionKind::RegisterFinalizer => SendType::SendToSelf,
+                StakingActionKind::ConvertFinalizerRewardToDelegationBond => SendType::SendToSelf,
+                StakingActionKind::UpdateFinalizerKey => SendType::SendToSelf,
+            };
+
+            return Ok(TransactionKind::Sent(send_type));
+        }
         let zfz_address = get_donation_address_for_chain(&self.network);
 
         let transparent_spends = self.find_spends::<TransparentCoin>(transaction, false)?;

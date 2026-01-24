@@ -56,6 +56,12 @@ impl std::fmt::Display for TransactionKind {
             TransactionKind::Sent(SendType::Send) => write!(f, "sent"),
             TransactionKind::Sent(SendType::Shield) => write!(f, "shield"),
             TransactionKind::Sent(SendType::SendToSelf) => write!(f, "send-to-self"),
+            TransactionKind::Sent(SendType::Stake) => write!(f, "stake"),
+            TransactionKind::Sent(SendType::BeginUnbond) => write!(f, "begin-unbond"),
+            TransactionKind::Sent(SendType::WithdrawBond) => write!(f, "withdraw-bond"),
+            TransactionKind::Sent(SendType::RetargetDelegationBond) => {
+                write!(f, "retarget-delegation-bond")
+            }
         }
     }
 }
@@ -65,10 +71,20 @@ impl std::fmt::Display for TransactionKind {
 pub enum SendType {
     /// Transaction is sending funds to recipient other than the creator.
     Send,
+
     /// Transaction is only sending funds from transparent pool to the creator's shielded pool.
     Shield,
+
     /// Transaction is only sending funds to the creator's address(es) and is not a shield.
     SendToSelf,
+
+    Stake,
+
+    BeginUnbond,
+
+    WithdrawBond,
+
+    RetargetDelegationBond,
 }
 
 /// Value transfer kind.
@@ -103,6 +119,11 @@ pub enum SelfSendValueTransfer {
     /// Transferring funds from a shielded pool to one of the wallet's own refund (ephemeral) addresses as the
     /// first step in a TEX transaction.
     Refund,
+
+    Stake,
+    BeginUnbond,
+    WithdrawBond,
+    RetargetDelegationBond,
 }
 
 impl std::fmt::Display for ValueTransferKind {
@@ -116,6 +137,13 @@ impl std::fmt::Display for ValueTransferKind {
                     SelfSendValueTransfer::Shield => write!(f, "shield"),
                     SelfSendValueTransfer::MemoToSelf => write!(f, "memo-to-self"),
                     SelfSendValueTransfer::Refund => write!(f, "rejection"),
+
+                    SelfSendValueTransfer::Stake => write!(f, "stake"),
+                    SelfSendValueTransfer::BeginUnbond => write!(f, "begin-unbond"),
+                    SelfSendValueTransfer::WithdrawBond => write!(f, "withdraw-bond"),
+                    SelfSendValueTransfer::RetargetDelegationBond => {
+                        write!(f, "retarget-delegation-bond")
+                    }
                 },
             },
         }
@@ -149,9 +177,19 @@ impl TransactionSummary {
             TransactionKind::Sent(SendType::Send) => {
                 self.fee.map(|fee| -((self.value + fee) as i64))
             }
-            TransactionKind::Sent(SendType::Shield | SendType::SendToSelf) => {
-                self.fee.map(|fee| -(fee as i64))
-            }
+            TransactionKind::Sent(
+                SendType::Shield
+                | SendType::SendToSelf
+                | SendType::Stake
+                | SendType::BeginUnbond
+                | SendType::RetargetDelegationBond,
+            ) => self.fee.map(|fee| -(fee as i64)),
+            TransactionKind::Sent(SendType::WithdrawBond) => Some(
+                self.outgoing_orchard_notes
+                    .iter()
+                    .map(|note| note.value as i64)
+                    .sum(),
+            ),
             TransactionKind::Received => Some(self.value as i64),
         }
     }

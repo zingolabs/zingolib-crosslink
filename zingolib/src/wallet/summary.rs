@@ -39,19 +39,55 @@ impl LightWallet {
             .wallet_transactions
             .values()
             .map(|transaction| {
+                let fee_paid: Option<u64> = self
+                    .calculate_transaction_fee(transaction)
+                    .ok()
+                    .map(zcash_protocol::value::Zatoshis::into_u64);
+
+                let normal_fee: u64 = 10_000;
+
                 let kind = self.transaction_kind(transaction)?;
+                let staking_action = transaction.staking_data();
+
+                let staking_value_from_fee = fee_paid.unwrap_or(0).saturating_sub(normal_fee);
+
                 let value = match kind {
                     TransactionKind::Received | TransactionKind::Sent(SendType::Shield) => {
                         transaction.total_value_received()
                     }
+
                     TransactionKind::Sent(SendType::Send | SendType::SendToSelf) => {
                         transaction.total_value_sent()
                     }
+
+                    TransactionKind::Sent(SendType::Stake) => {
+                        if let Some(sa) = staking_action {
+                            sa.amount_zats
+                        } else {
+                            staking_value_from_fee
+                        }
+                    }
+
+                    TransactionKind::Sent(SendType::BeginUnbond) => 0,
+
+                    TransactionKind::Sent(SendType::WithdrawBond) => {
+                        staking_action.map(|sa| sa.amount_zats).unwrap_or(0)
+                    }
+
+                    TransactionKind::Sent(SendType::RetargetDelegationBond) => 0,
                 };
-                let fee: Option<u64> = self
+                let normal_fee: Option<u64> = self
                     .calculate_transaction_fee(transaction)
                     .ok()
                     .map(zcash_protocol::value::Zatoshis::into_u64);
+
+                let fee: Option<u64> = match kind {
+                    TransactionKind::Sent(SendType::Stake) => normal_fee,
+                    TransactionKind::Sent(SendType::BeginUnbond) => normal_fee,
+                    TransactionKind::Sent(SendType::WithdrawBond) => normal_fee,
+                    _ => fee_paid,
+                };
+
                 let orchard_notes = transaction
                     .orchard_notes()
                     .iter()
@@ -179,30 +215,6 @@ impl LightWallet {
                         })
                 };
 
-                // add price to transaction summary
-                // takes price from the day of transaction's datetime. otherwise, current price.
-                // TODO: historical prices currently unimplemented
-                // let mut price = None;
-                // for daily_price in self.price_list.daily_prices() {
-                //     if daily_price.time > transaction.datetime() {
-                //         assert!(daily_price.time - transaction.datetime() < 24 * 60 * 60);
-                //         price = Some(daily_price.price_usd);
-                //         break;
-                //     }
-                // }
-                // if price.is_none() {
-                //     price = self.price_list.current_price().and_then(|current_price| {
-                //         if transaction.datetime() <= current_price.time
-                //             && transaction.datetime() > current_price.time - 2 * 24 * 60 * 60
-                //         // exchange APIs may start daily prices 2 days back
-                //         {
-                //             Some(current_price.price_usd)
-                //         } else {
-                //             None
-                //         }
-                //     });
-                // }
-
                 let staking_action = transaction.staking_data();
 
                 Ok(TransactionSummary {
@@ -253,6 +265,43 @@ impl LightWallet {
 
         for transaction in transaction_summaries {
             match transaction.kind {
+                TransactionKind::Sent(
+                    SendType::Stake
+                    | SendType::BeginUnbond
+                    | SendType::WithdrawBond
+                    | SendType::RetargetDelegationBond,
+                ) => {
+                    let (kind, value) = match transaction.kind {
+                        TransactionKind::Sent(SendType::Stake) => {
+                            (SelfSendValueTransfer::Stake, transaction.value)
+                        }
+                        TransactionKind::Sent(SendType::BeginUnbond) => {
+                            (SelfSendValueTransfer::BeginUnbond, 0)
+                        }
+                        TransactionKind::Sent(SendType::WithdrawBond) => {
+                            (SelfSendValueTransfer::WithdrawBond, transaction.value)
+                        }
+                        TransactionKind::Sent(SendType::RetargetDelegationBond) => {
+                            (SelfSendValueTransfer::RetargetDelegationBond, 0)
+                        }
+                        _ => unreachable!("guarded by outer match"),
+                    };
+
+                    value_transfers.push(ValueTransfer {
+                        txid: transaction.txid,
+                        datetime: transaction.datetime,
+                        status: transaction.status,
+                        blockheight: transaction.blockheight,
+                        transaction_fee: transaction.fee,
+                        zec_price: transaction.zec_price,
+                        kind: ValueTransferKind::Sent(SentValueTransfer::SendToSelf(kind)),
+                        value,
+                        recipient_address: None,
+                        pool_received: None,
+                        memos: Vec::new(),
+                        staking_action: transaction.staking_action,
+                    });
+                }
                 TransactionKind::Sent(SendType::Send) => {
                     // create 1 sent value transfer for each non-self recipient address
                     // if recipient_ua is available it overrides recipient_address

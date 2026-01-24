@@ -24,7 +24,7 @@ use pepper_sync::{
     error::SyncError,
     keys::transparent::TransparentAddressId,
     sync::SyncResult,
-    wallet::{SyncMode, WalletTransaction, traits::SyncTransactions},
+    wallet::{SyncMode, traits::SyncTransactions},
 };
 use zcash_primitives::transaction::{RosterMember, StakeTxId, StakingActionKind};
 use zcash_protocol::{TxId, consensus::BlockHeight};
@@ -488,7 +488,26 @@ impl LightClient {
 
         bonds.sort_by_key(|b| b.status);
 
-        Ok(WalletBonds { bonds })
+        let mut enriched: Vec<WalletBond> = Vec::with_capacity(bonds.len());
+
+        for b in bonds.into_iter() {
+            match self.get_bond_info(b.pubkey).await {
+                Ok(bond_info) => {
+                    enriched.push(WalletBond {
+                        amount_zats: bond_info.amount,
+                        created_in_txid: b.created_in_txid,
+                        pubkey: b.pubkey,
+                        status: bond_info.status,
+                    });
+                }
+                Err(err) => {
+                    println!("Error getting bond info: {err}");
+                    enriched.push(b);
+                }
+            }
+        }
+
+        Ok(WalletBonds { bonds: enriched })
     }
 
     fn upsert_latest(
