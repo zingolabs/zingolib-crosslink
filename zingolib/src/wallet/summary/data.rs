@@ -56,7 +56,7 @@ impl std::fmt::Display for TransactionKind {
             TransactionKind::Sent(SendType::Send) => write!(f, "sent"),
             TransactionKind::Sent(SendType::Shield) => write!(f, "shield"),
             TransactionKind::Sent(SendType::SendToSelf) => write!(f, "send-to-self"),
-            TransactionKind::Sent(SendType::CreateBond) => write!(f, "stake"),
+            TransactionKind::Sent(SendType::CreateBond) => write!(f, "create-bond"),
             TransactionKind::Sent(SendType::BeginUnbond) => write!(f, "begin-unbond"),
             TransactionKind::Sent(SendType::WithdrawBond) => write!(f, "withdraw-bond"),
             TransactionKind::Sent(SendType::RetargetDelegationBond) => {
