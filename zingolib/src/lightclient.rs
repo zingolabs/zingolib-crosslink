@@ -412,75 +412,104 @@ impl LightClient {
             .get_wallet_transactions()
             .map_err(|err| format!("Error getting wallet transactions: {err:?}"))?;
 
-        // Bond key -> (bond, last_seen_order)
-        let mut by_bond: HashMap<[u8; 32], (WalletBond, (u32, u32))> = HashMap::new();
+        #[derive(Clone)]
+        struct StkEvt {
+            order: (u32, u32),
+            txid: TxId,
+            bond_key: [u8; 32],
+            kind: StakingActionKind,
+            amount_zats: u64,
+            target: [u8; 32],
+        }
+
+        let mut evts: Vec<StkEvt> = Vec::new();
 
         for tx in wallet_txs.values() {
-            let Some(staking_action) = tx.staking_data() else {
+            let Some(sa) = tx.staking_data() else {
                 continue;
             };
-
-            let txid: TxId = tx.txid();
 
             let height: u32 = tx.status().get_height().0;
             let time: u32 = tx.datetime();
 
-            let order = (height, time);
+            evts.push(StkEvt {
+                order: (height, time),
+                txid: tx.txid(),
+                bond_key: sa.arg32_0,
+                kind: sa.kind,
+                amount_zats: sa.amount_zats,
+                target: sa.arg32_2,
+            });
+        }
 
-            let bond_key: [u8; 32] = staking_action.arg32_0;
+        evts.sort_by_key(|e| e.order);
 
-            match staking_action.kind {
+        // Bond key -> (bond, last_seen_order)
+        let mut by_bond: HashMap<[u8; 32], (WalletBond, (u32, u32))> = HashMap::new();
+
+        for e in evts {
+            match e.kind {
                 StakingActionKind::CreateNewDelegationBond => {
-                    let amount_zats: u64 = staking_action.amount_zats;
                     let new = WalletBond {
-                        created_in_txid: txid,
-                        pubkey: bond_key,
-                        amount_zats,
+                        created_in_txid: e.txid,
+                        pubkey: e.bond_key,
+                        amount_zats: e.amount_zats,
                         status: 0,
+                        finalizer: e.target,
+                    };
+                    LightClient::upsert_latest(&mut by_bond, e.bond_key, new, e.order);
+                }
+
+                StakingActionKind::RetargetDelegationBond => {
+                    let updated = if let Some((existing, _)) = by_bond.get(&e.bond_key) {
+                        WalletBond {
+                            finalizer: e.target,
+                            ..*existing
+                        }
+                    } else {
+                        WalletBond {
+                            created_in_txid: e.txid,
+                            pubkey: e.bond_key,
+                            amount_zats: 0,
+                            status: 0,
+                            finalizer: e.target,
+                        }
                     };
 
-                    LightClient::upsert_latest(&mut by_bond, bond_key, new, order);
+                    LightClient::upsert_latest(&mut by_bond, e.bond_key, updated, e.order);
                 }
 
                 StakingActionKind::BeginDelegationUnbonding => {
-                    let updated = if let Some((existing, _)) = by_bond.get(&bond_key) {
-                        WalletBond {
-                            status: 1,
-                            ..*existing
-                        }
-                    } else {
-                        WalletBond {
-                            created_in_txid: txid,
-                            pubkey: bond_key,
-                            amount_zats: 0,
-                            status: 1,
-                        }
-                    };
+                    let (existing, _) = by_bond.get(&e.bond_key).copied().ok_or_else(|| {
+                    format!(
+                        "Saw BeginDelegationUnbonding for bond_key={} but no prior Create/Retarget in wallet history",
+                        hex::encode(e.bond_key)
+                    )
+                })?;
 
-                    LightClient::upsert_latest(&mut by_bond, bond_key, updated, order);
+                    let updated = WalletBond {
+                        status: 1,
+                        ..existing
+                    };
+                    LightClient::upsert_latest(&mut by_bond, e.bond_key, updated, e.order);
                 }
 
                 StakingActionKind::WithdrawDelegationBond => {
-                    let updated = if let Some((existing, _)) = by_bond.get(&bond_key) {
-                        WalletBond {
-                            status: 2,
-                            ..*existing
-                        }
-                    } else {
-                        WalletBond {
-                            created_in_txid: txid,
-                            pubkey: bond_key,
-                            amount_zats: 0,
-                            status: 2,
-                        }
+                    let (existing, _) = by_bond.get(&e.bond_key).copied().ok_or_else(|| {
+                    format!(
+                        "Saw WithdrawDelegationBond for bond_key={} but no prior Create/Retarget in wallet history",
+                        hex::encode(e.bond_key)
+                    )
+                })?;
+
+                    let updated = WalletBond {
+                        status: 2,
+                        ..existing
                     };
-
-                    LightClient::upsert_latest(&mut by_bond, bond_key, updated, order);
+                    LightClient::upsert_latest(&mut by_bond, e.bond_key, updated, e.order);
                 }
 
-                _ => {
-                    continue;
-                }
+                _ => continue,
             }
         }
 
@@ -489,15 +518,15 @@ impl LightClient {
         bonds.sort_by_key(|b| b.status);
 
         let mut enriched: Vec<WalletBond> = Vec::with_capacity(bonds.len());
-
         for b in bonds.into_iter() {
             match self.get_bond_info(b.pubkey).await {
                 Ok(bond_info) => {
                     enriched.push(WalletBond {
                         amount_zats: bond_info.amount,
+                        status: bond_info.status,
                         created_in_txid: b.created_in_txid,
                         pubkey: b.pubkey,
-                        status: bond_info.status,
+                        finalizer: b.finalizer,
                     });
                 }
                 Err(err) => {

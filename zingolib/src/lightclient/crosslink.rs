@@ -50,6 +50,7 @@ pub struct WalletBonds {
     pub bonds: Vec<WalletBond>,
 }
 
+#[derive(Debug, Copy, Clone)]
 pub struct WalletBond {
     pub created_in_txid: TxId,
 
@@ -59,6 +60,9 @@ pub struct WalletBond {
 
     /// 0 = Active, 1 = Unbonding, 2 = Withdrawn
     pub status: u32,
+
+    /// Finalizer / target this bond is delegated to
+    pub finalizer: [u8; 32],
 }
 
 impl From<WalletBond> for JsonValue {
