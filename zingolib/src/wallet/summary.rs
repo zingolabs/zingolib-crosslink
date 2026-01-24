@@ -60,7 +60,7 @@ impl LightWallet {
                         transaction.total_value_sent()
                     }
 
-                    TransactionKind::Sent(SendType::Stake) => {
+                    TransactionKind::Sent(SendType::CreateBond) => {
                         if let Some(sa) = staking_action {
                             sa.amount_zats
                         } else {
@@ -82,7 +82,7 @@ impl LightWallet {
                     .map(zcash_protocol::value::Zatoshis::into_u64);
 
                 let fee: Option<u64> = match kind {
-                    TransactionKind::Sent(SendType::Stake) => normal_fee,
+                    TransactionKind::Sent(SendType::CreateBond) => normal_fee,
                     TransactionKind::Sent(SendType::BeginUnbond) => normal_fee,
                     TransactionKind::Sent(SendType::WithdrawBond) => normal_fee,
                     _ => fee_paid,
@@ -266,13 +266,13 @@ impl LightWallet {
         for transaction in transaction_summaries {
             match transaction.kind {
                 TransactionKind::Sent(
-                    SendType::Stake
+                    SendType::CreateBond
                     | SendType::BeginUnbond
                     | SendType::WithdrawBond
                     | SendType::RetargetDelegationBond,
                 ) => {
                     let (kind, value) = match transaction.kind {
-                        TransactionKind::Sent(SendType::Stake) => {
+                        TransactionKind::Sent(SendType::CreateBond) => {
                             (SelfSendValueTransfer::Stake, transaction.value)
                         }
                         TransactionKind::Sent(SendType::BeginUnbond) => {

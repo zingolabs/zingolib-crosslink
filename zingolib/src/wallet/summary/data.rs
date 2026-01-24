@@ -56,7 +56,7 @@ impl std::fmt::Display for TransactionKind {
             TransactionKind::Sent(SendType::Send) => write!(f, "sent"),
             TransactionKind::Sent(SendType::Shield) => write!(f, "shield"),
             TransactionKind::Sent(SendType::SendToSelf) => write!(f, "send-to-self"),
-            TransactionKind::Sent(SendType::Stake) => write!(f, "stake"),
+            TransactionKind::Sent(SendType::CreateBond) => write!(f, "stake"),
             TransactionKind::Sent(SendType::BeginUnbond) => write!(f, "begin-unbond"),
             TransactionKind::Sent(SendType::WithdrawBond) => write!(f, "withdraw-bond"),
             TransactionKind::Sent(SendType::RetargetDelegationBond) => {
@@ -78,7 +78,7 @@ pub enum SendType {
     /// Transaction is only sending funds to the creator's address(es) and is not a shield.
     SendToSelf,
 
-    Stake,
+    CreateBond,
 
     BeginUnbond,
 
@@ -138,7 +138,7 @@ impl std::fmt::Display for ValueTransferKind {
                     SelfSendValueTransfer::MemoToSelf => write!(f, "memo-to-self"),
                     SelfSendValueTransfer::Refund => write!(f, "rejection"),
 
-                    SelfSendValueTransfer::Stake => write!(f, "stake"),
+                    SelfSendValueTransfer::Stake => write!(f, "create-bond"),
                     SelfSendValueTransfer::BeginUnbond => write!(f, "begin-unbond"),
                     SelfSendValueTransfer::WithdrawBond => write!(f, "withdraw-bond"),
                     SelfSendValueTransfer::RetargetDelegationBond => {
@@ -180,7 +180,7 @@ impl TransactionSummary {
             TransactionKind::Sent(
                 SendType::Shield
                 | SendType::SendToSelf
-                | SendType::Stake
+                | SendType::CreateBond
                 | SendType::BeginUnbond
                 | SendType::RetargetDelegationBond,
             ) => self.fee.map(|fee| -(fee as i64)),

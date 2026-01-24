@@ -122,7 +122,7 @@ impl LightWallet {
     ) -> Result<TransactionKind, SpendError> {
         if let Some(sa) = transaction.staking_data() {
             let send_type = match sa.kind {
-                StakingActionKind::CreateNewDelegationBond => SendType::Stake,
+                StakingActionKind::CreateNewDelegationBond => SendType::CreateBond,
                 StakingActionKind::BeginDelegationUnbonding => SendType::BeginUnbond,
                 StakingActionKind::WithdrawDelegationBond => SendType::WithdrawBond,
                 StakingActionKind::RetargetDelegationBond => SendType::RetargetDelegationBond,
