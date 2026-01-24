@@ -71,7 +71,8 @@ impl From<WalletBond> for JsonValue {
             "created_in_txid" => wallet_bond.created_in_txid.to_string(),
             "pub_key" => hex::encode(wallet_bond.pubkey),
             "amount_zats" => wallet_bond.amount_zats,
-            "status" => wallet_bond.status
+            "status" => wallet_bond.status,
+            "finalizer" => hex::encode(wallet_bond.finalizer)
         }
     }
 }
