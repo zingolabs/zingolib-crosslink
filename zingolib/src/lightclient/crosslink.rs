@@ -65,7 +65,7 @@ impl From<WalletBond> for JsonValue {
     fn from(wallet_bond: WalletBond) -> Self {
         json::object! {
             "created_in_txid" => wallet_bond.created_in_txid.to_string(),
-            "pubkey" => hex::encode(wallet_bond.pubkey),
+            "pub_key" => hex::encode(wallet_bond.pubkey),
             "amount_zats" => wallet_bond.amount_zats,
             "status" => wallet_bond.status
         }
