@@ -1,5 +1,7 @@
 //! creating proposals from wallet data
 
+use std::num::{NonZero, NonZeroU32};
+
 use netutils::UnderlyingService;
 use rand::rngs::OsRng;
 use tracing::{info, instrument};
@@ -438,11 +440,15 @@ impl LightWallet {
 
         let orchard_spending_key = orchard::keys::SpendingKey::try_from(unified_key_store).unwrap();
 
-        let block_h = self.chain_height().unwrap().unwrap() + 1;
+        let tip = self.chain_height().ok().flatten()?;
 
-        let orchard_anchor_h = &self.chain_height().unwrap().unwrap().saturating_sub(5);
+        let (target_height, latest_orchard_anchor_height) = self
+            .get_target_and_anchor_heights(NonZeroU32::new(3).unwrap())
+            .unwrap()
+            .expect("Orchard action did not exist");
+
         let orchard_anchor = match orchard_tree
-            .root_at_checkpoint_id(orchard_anchor_h)
+            .root_at_checkpoint_id(&latest_orchard_anchor_height.clone())
             .expect("Infallible MemoryShardStore")
         {
             Some(root) => orchard::Anchor::from(root),
@@ -451,7 +457,7 @@ impl LightWallet {
 
         let mut txb = TxBuilder::new(
             network,
-            BlockHeight::from_u32(block_h.0),
+            target_height.into(),
             BuildConfig::Standard {
                 sapling_anchor: None,
                 orchard_anchor: Some(orchard_anchor),
@@ -465,13 +471,19 @@ impl LightWallet {
         let mut fee_est: u64 = 10_000;
 
         let spendable_notes: Vec<&OrchardNote> = self
-            .spendable_notes(*orchard_anchor_h, &[], AccountId::ZERO, false)
+            .spendable_notes(
+                latest_orchard_anchor_height.clone(),
+                &[],
+                AccountId::ZERO,
+                false,
+            )
             .unwrap();
 
         for note in spendable_notes.iter() {
-            let witness = match orchard_tree
-                .witness_at_checkpoint_id(note.position().unwrap(), orchard_anchor_h)
-            {
+            let witness = match orchard_tree.witness_at_checkpoint_id(
+                note.position().unwrap(),
+                &latest_orchard_anchor_height.clone(),
+            ) {
                 Ok(Some(w)) => w,
                 _ => continue,
             };
@@ -498,7 +510,7 @@ impl LightWallet {
             return None; // not enough to pay fee
         }
 
-        txb.put_staking_action(
+        match txb.put_staking_action(
             StakingAction_WithdrawDelegationBond {
                 amount_zats: bond_value,
                 unique_pubkey: *bond_key,
@@ -506,18 +518,28 @@ impl LightWallet {
                 signature: [0u8; 64],
             }
             .to_union(),
-        )
-        .ok()?;
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[withdraw] txb.put_staking_action failed: {e:?}");
+                return None;
+            }
+        };
 
         let out_value = bond_value + (fee_inputs_sum - fee_est);
 
-        txb.add_orchard_output::<FeeError>(
+        match txb.add_orchard_output::<FeeError>(
             Some(orchard_ovk),
             *my_orchard_receiver,
             out_value,
             MemoBytes::from_bytes(&EMPTY_MEMO_BYTES).unwrap(),
-        )
-        .ok()?;
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[withdraw] txb.add_orchard_output failed: {e:?}");
+                return None;
+            }
+        };
 
         let signing_set = TransparentSigningSet::new();
 
@@ -534,17 +556,21 @@ impl LightWallet {
 
         let orchard_ask: orchard::keys::SpendAuthorizingKey = (&orchard_spending_key).into();
 
-        let tx_res = txb
-            .build(
-                &signing_set,
-                &[],
-                &[orchard_ask],
-                rng,
-                &prover,
-                &prover,
-                &zcash_primitives::transaction::fees::zip317::FeeRule::standard(),
-            )
-            .ok()?;
+        let tx_res = match txb.build(
+            &signing_set,
+            &[],
+            &[orchard_ask],
+            rng,
+            &prover,
+            &prover,
+            &zcash_primitives::transaction::fees::zip317::FeeRule::standard(),
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[withdraw] txb.build failed: {e:?}");
+                return None;
+            }
+        };
 
         let tx = tx_res.transaction();
         let mut tx_bytes = vec![];
