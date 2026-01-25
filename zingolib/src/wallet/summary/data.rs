@@ -545,10 +545,14 @@ impl From<StakingActionWrapper> for JsonValue {
             StakingActionKind::UpdateFinalizerKey => "FINALIZER_update_finalizer_key".to_string(),
         };
 
+        let mut reversed_target = value.staking_action.unwrap().arg32_2.clone();
+        reversed_target.reverse();
+        let target = hex::encode(reversed_target);
+
         json::object! {
             "kind" => kind,
             "val" => value.staking_action.unwrap().amount_zats,
-            "target" => hex::encode(value.staking_action.unwrap().arg32_2),
+            "target" => target,
             "unique_public_key" => hex::encode(value.staking_action.unwrap().arg32_0)
         }
     }

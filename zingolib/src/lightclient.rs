@@ -432,13 +432,16 @@ impl LightClient {
             let height: u32 = tx.status().get_height().0;
             let time: u32 = tx.datetime();
 
+            let mut reversed_target = sa.arg32_2.clone();
+            reversed_target.reverse();
+
             evts.push(StkEvt {
                 order: (height, time),
                 txid: tx.txid(),
                 bond_key: sa.arg32_0,
                 kind: sa.kind,
                 amount_zats: sa.amount_zats,
-                target: sa.arg32_2,
+                target: reversed_target,
             });
         }
 
