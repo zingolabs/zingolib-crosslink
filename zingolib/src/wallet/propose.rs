@@ -574,15 +574,27 @@ impl LightWallet {
 
         let tx = tx_res.transaction();
         let mut tx_bytes = vec![];
-        tx.write(&mut tx_bytes).ok()?;
+        match tx.write(&mut tx_bytes) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[withdraw] tx.write failed: {e:?}");
+                return None;
+            }
+        };
 
-        client
+        match client
             .send_transaction(RawTransaction {
                 data: tx_bytes,
                 height: 0,
             })
             .await
-            .ok()?;
+        {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[withdraw] client.send_transaction failed: {e:?}");
+                return None;
+            }
+        };
         Some(tx.txid())
     }
 
