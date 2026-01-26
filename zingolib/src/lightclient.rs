@@ -15,7 +15,7 @@ use json::JsonValue;
 use tokio::{sync::RwLock, task::JoinHandle};
 
 use zcash_client_backend::{
-    proto::service::{BondInfoRequest, BondInfoResponse, Empty},
+    proto::service::{BondInfoRequest, BondInfoResponse, Empty, FaucetRequest},
     tor,
 };
 use zcash_keys::address::UnifiedAddress;
@@ -540,6 +540,17 @@ impl LightClient {
         }
 
         Ok(WalletBonds { bonds: enriched })
+    }
+
+    pub async fn request_faucet_funds(&self, address: String) -> Result<String, String> {
+        let mut zcb_client = get_zcb_client(self.server_uri()).await.unwrap();
+        let res = zcb_client
+            .request_faucet_donation(FaucetRequest { address: address })
+            .await;
+        match res {
+            Ok(res) => Ok(res.into_inner().amount.to_string()),
+            Err(err) => Err(format!("Error requesting faucet funds: {err:?}")),
+        }
     }
 
     fn upsert_latest(

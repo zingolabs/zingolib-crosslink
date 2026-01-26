@@ -2444,6 +2444,80 @@ impl Command for RemoveTransactionCommand {
     }
 }
 
+struct RequestFaucetDonationCommand {}
+impl Command for RequestFaucetDonationCommand {
+    fn help(&self) -> &'static str {
+        indoc! {r#"
+            Request some funds from the faucet.
+        "#}
+    }
+
+    fn short_help(&self) -> &'static str {
+        "Request some funds from the faucet."
+    }
+
+    fn exec(&self, _args: &[&str], lightclient: &mut LightClient) -> String {
+        RT.block_on(async move {
+            info!("cfg!(feature=\"regtest\") = {}", cfg!(feature = "regtest"));
+
+            let receiver_address = {
+                #[cfg(feature = "regtest")]
+                {
+                    use zcash_protocol::consensus::BlockHeight;
+                    info!("Using regtest network");
+
+                    let network = LocalNetwork {
+                        overwinter: Some(BlockHeight::from_u32(1)),
+                        sapling: Some(BlockHeight::from_u32(1)),
+                        blossom: Some(BlockHeight::from_u32(1)),
+                        heartwood: Some(BlockHeight::from_u32(1)),
+                        canopy: Some(BlockHeight::from_u32(1)),
+                        nu5: Some(BlockHeight::from_u32(1)),
+                        nu6: Some(BlockHeight::from_u32(1)),
+                        nu6_1: None,
+                    };
+
+                    lightclient
+                        .wallet
+                        .read()
+                        .await
+                        .unified_addresses()
+                        .clone()
+                        .first_entry()
+                        .unwrap()
+                        .get()
+                        .encode(&network)
+                }
+                #[cfg(not(feature = "regtest"))]
+                {
+                    let network = TEST_NETWORK;
+
+                    lightclient
+                        .wallet
+                        .read()
+                        .await
+                        .unified_addresses()
+                        .clone()
+                        .first_entry()
+                        .unwrap()
+                        .get()
+                        .encode(&network)
+                }
+            };
+
+            match lightclient.request_faucet_funds(receiver_address).await {
+                Ok(request) => {
+                    object! { "request" => request }
+                }
+                Err(e) => {
+                    object! { "error" => e.to_string() }
+                }
+            }
+            .pretty(2)
+        })
+    }
+}
+
 struct SaveCommand {}
 impl Command for SaveCommand {
     fn help(&self) -> &'static str {
@@ -2575,6 +2649,7 @@ pub fn get_commands() -> HashMap<&'static str, Box<dyn Command>> {
         ("wallet_kind", Box::new(WalletKindCommand {})),
         ("delete", Box::new(DeleteCommand {})),
         ("remove_transaction", Box::new(RemoveTransactionCommand {})),
+        ("request_faucet", Box::new(RequestFaucetDonationCommand {})),
     ];
 
     entries.into_iter().collect()
