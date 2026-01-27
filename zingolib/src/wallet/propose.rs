@@ -319,6 +319,80 @@ impl LightWallet {
         })
     }
 
+    pub(crate) async fn create_retarget_proposal(
+        &mut self,
+        request: TransactionRequest,
+        // staking_action: StakingAction,
+        // challenge is not needed here. A simple [0u8; 32] will do
+        // signature is not needed here. A simple [0u8; 32] will do
+        // amount: Zatoshis, amount is also not needed.
+        bond_key: [u8; 32],
+        new_target_finalizer: [u8; 32],
+        account_id: zip32::AccountId,
+    ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
+        let refund_address_count = self
+            .transparent_addresses
+            .keys()
+            .filter(|&address_id| address_id.scope() == TransparentScope::Refund)
+            .count() as u32;
+        let memo = self.change_memo_from_transaction_request(&request, refund_address_count);
+        let input_selector = GreedyInputSelector::new();
+
+        let fee_rule = ExtraFee {
+            base: zcash_primitives::transaction::fees::zip317::FeeRule::standard(),
+            extra: Zatoshis::const_from_u64(0),
+        };
+        let change_strategy = zcash_client_backend::fees::zip317::SingleOutputChangeStrategy::new(
+            // zcash_primitives::transaction::fees::zip317::FeeRule::standard(),
+            fee_rule,
+            Some(memo),
+            ShieldedProtocol::Orchard,
+            DustOutputPolicy::new(DustAction::AddDustToFee, None),
+        );
+        let network = self.network;
+
+        let proposal = match zcash_client_backend::data_api::wallet::propose_transfer::<
+            LightWallet,
+            ChainType,
+            GreedyInputSelector<LightWallet>,
+            zcash_client_backend::fees::zip317::SingleOutputChangeStrategy<
+                ExtraFee<zcash_primitives::transaction::fees::zip317::FeeRule>,
+                LightWallet,
+            >,
+            WalletError,
+        >(
+            self,
+            &network,
+            account_id,
+            &input_selector,
+            &change_strategy,
+            request,
+            // TODO: replace wallet min_confirmations field with confirmation policy to unify for all proposals
+            ConfirmationsPolicy::new_symmetrical(self.wallet_settings.min_confirmations, false),
+        )
+        .map_err(ProposeSendError::Proposal)
+        {
+            Err(e) => return Err(e),
+            Ok(proposal) => proposal,
+        };
+
+        let staking_action = StakingAction {
+            kind: zcash_primitives::transaction::StakingActionKind::RetargetDelegationBond,
+            amount_zats: 0,
+            arg32_0: bond_key,
+            arg32_1: [0u8; 32],
+            arg32_2: new_target_finalizer,
+            arg32_3: [0u8; 32],
+            arg64_0: [0u8; 64],
+            arg64_1: [0u8; 64],
+        };
+
+        Ok(StakingProposal {
+            proportional_fee_proposal: proposal,
+            staking_action,
+        })
+    }
+
     //create_unbonding_start_proposal
     /// Creates a proposal from a transaction request.
     #[instrument(

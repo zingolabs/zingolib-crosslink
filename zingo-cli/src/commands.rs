@@ -1331,7 +1331,6 @@ impl Command for StakeCommand {
     }
 }
 
-/// The stake command
 struct BeginUnstakeCommand {}
 
 impl BeginUnstakeCommand {
@@ -1623,23 +1622,99 @@ impl Command for WithdrawStakeCommand {
 
 struct RedelegateCommand {}
 
+impl RedelegateCommand {
+    /// Parse the following arguments:
+    /// - bond_key
+    /// - new finalizer
+    pub async fn parse_args(
+        args: &[&str],
+        lightclient: &mut LightClient,
+    ) -> Result<(Receivers, StakingAction), CommandError> {
+        if args.len() != 2 {
+            return Err(CommandError::InvalidArguments);
+        }
+
+        let bond_key = args.first().unwrap();
+        let finalizer_address =
+            StakeCommand::addr_from_str_bytes(args.last().unwrap().as_bytes()).unwrap();
+
+        let staking_action = StakingAction {
+            kind: StakingActionKind::RetargetDelegationBond,
+            amount_zats: 0,
+            arg32_0: hex::decode(bond_key).unwrap().try_into().unwrap(),
+            arg32_1: [0; 32],
+            arg32_2: finalizer_address,
+            arg32_3: [0; 32],
+            arg64_0: [0; 64],
+            arg64_1: [0; 64],
+        };
+
+        Ok((vec![], staking_action))
+    }
+}
+
 impl Command for RedelegateCommand {
     fn help(&self) -> &'static str {
         indoc! {r#"
-            Get information about the current roster.
+            Propose the retargeting of a staking bond.
+            The 'confirm' command must be called to complete and broadcast the proposed unstaking transaction.
 
             Usage:
-                roster_info
+                begin_unstake <bond-key> <finalizer-address>
+            Example:
+                IGNORE THIS: begin_unstake ztestsapling1x65nq4dgp0qfywgxcwk9n0fvm4fysmapgr2q00p85ju252h6l7mmxu2jg9cqqhtvzd69jwhgv8d 200000
+                confirm
 
         "#}
     }
 
     fn short_help(&self) -> &'static str {
-        "Get information about the current roster."
+        "Propose the staking of ZEC to the given finalizer and display a proposal for confirmation."
     }
 
-    fn exec(&self, _args: &[&str], lightclient: &mut LightClient) -> String {
-        todo!()
+    fn exec(&self, args: &[&str], lightclient: &mut LightClient) -> String {
+        RT.block_on(async move {
+            let parsed_stake_command = match RedelegateCommand::parse_args(args, lightclient).await
+            {
+                Ok(parsed_stake_command) => parsed_stake_command,
+                Err(e) => {
+                    return format!("Error: {e}\nTry 'help stake' for correct usage and examples.");
+                }
+            };
+            // Receivers IS EMPTY
+            let request = match zingolib::data::receivers::transaction_request_from_receivers(
+                parsed_stake_command.0,
+            ) {
+                Ok(request) => request,
+                Err(e) => {
+                    return format!("Error: {e}\nTry 'help stake' for correct usage and examples.");
+                }
+            };
+
+            match lightclient
+                .propose_retarget_bond(
+                    request.clone(),
+                    parsed_stake_command.1.arg32_2,
+                    parsed_stake_command.1.arg32_0,
+                    zip32::AccountId::ZERO,
+                )
+                .await
+            {
+                Ok(proposal) => {
+                    let fee = match zingolib::data::proposal::total_fee(
+                        proposal.proportional_fee_proposal(),
+                    ) {
+                        Ok(fee) => fee,
+                        Err(e) => return object! { "error" => e.to_string() }.pretty(2),
+                    };
+                    object! { "fee" => fee.into_u64() }
+                }
+                Err(e) => {
+                    object! { "error" => e.to_string() }
+                }
+            }
+            .pretty(2)
+        })
     }
 }
 
