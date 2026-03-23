@@ -14,7 +14,7 @@ use zcash_address::{ZcashAddress, unified::ParseError};
 use zcash_keys::{address::UnifiedAddress, keys::UnifiedFullViewingKey};
 use zcash_note_encryption::Domain;
 use zcash_protocol::consensus;
-use zip32::{AccountId, Scope};
+use zip32::Scope;
 
 use crate::wallet::KeyIdInterface;
 
@@ -27,13 +27,13 @@ pub type AddressIndex = u32;
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct KeyId {
     /// Account ID
-    pub account_id: AccountId,
+    pub account_id: zip32::AccountId,
     /// Scope
     pub scope: Scope,
 }
 
 impl KeyId {
-    pub(crate) fn from_parts(account_id: AccountId, scope: Scope) -> Self {
+    pub(crate) fn from_parts(account_id: zip32::AccountId, scope: Scope) -> Self {
         Self { account_id, scope }
     }
 }
@@ -64,7 +64,7 @@ pub trait ScanningKeyOps<D: Domain, Nf> {
     /// to at most a single unified spending key's worth of spend authority, such that
     /// both received notes and change spendable by that spending authority will be
     /// interpreted as belonging to that account.
-    fn account_id(&self) -> &AccountId;
+    fn account_id(&self) -> &zip32::AccountId;
 
     /// Returns the [`zip32::Scope`] for which this key was derived, if known.
     fn key_scope(&self) -> Option<Scope>;
@@ -80,7 +80,7 @@ impl<D: Domain, Nf, K: ScanningKeyOps<D, Nf>> ScanningKeyOps<D, Nf> for &K {
         (*self).prepare()
     }
 
-    fn account_id(&self) -> &AccountId {
+    fn account_id(&self) -> &zip32::AccountId {
         (*self).account_id()
     }
 
@@ -110,7 +110,7 @@ impl ScanningKeyOps<SaplingDomain, sapling::Nullifier>
         self.nk.as_ref().map(|key| note.nf(key, position.into()))
     }
 
-    fn account_id(&self) -> &AccountId {
+    fn account_id(&self) -> &zip32::AccountId {
         &self.key_id.account_id
     }
 
@@ -134,7 +134,7 @@ impl ScanningKeyOps<OrchardDomain, orchard::note::Nullifier>
         self.nk.as_ref().map(|key| note.nullifier(key))
     }
 
-    fn account_id(&self) -> &AccountId {
+    fn account_id(&self) -> &zip32::AccountId {
         &self.key_id.account_id
     }
 
@@ -153,7 +153,7 @@ impl ScanningKeys {
     /// Constructs a [`ScanningKeys`] from an iterator of [`zcash_keys::keys::UnifiedFullViewingKey`]s,
     /// along with the account identifiers corresponding to those UFVKs.
     pub(crate) fn from_account_ufvks(
-        ufvks: impl IntoIterator<Item = (AccountId, UnifiedFullViewingKey)>,
+        ufvks: impl IntoIterator<Item = (zip32::AccountId, UnifiedFullViewingKey)>,
     ) -> Self {
         #![allow(clippy::type_complexity)]
 

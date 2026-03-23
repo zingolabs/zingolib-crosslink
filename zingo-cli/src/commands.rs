@@ -18,20 +18,18 @@ use std::sync::LazyLock;
 use tokio::runtime::Runtime;
 use zcash_primitives::transaction::{StakingAction, StakingActionKind};
 use zcash_protocol::local_consensus::LocalNetwork;
+use zingo_netutils::get_client;
 use zingolib::ConfiguredActivationHeights;
 use zingolib::data::receivers::Receivers;
-use zingolib::grpc_client::get_zcb_client;
 use zingolib::utils::conversion::txid_from_hex_encoded_str;
 
 use zcash_address::unified::{Container, Encoding, Ufvk};
 use zcash_keys::address::Address;
 use zcash_keys::keys::UnifiedFullViewingKey;
-use zcash_protocol::consensus::{BlockHeight, NetworkType, TEST_NETWORK};
+use zcash_protocol::consensus::{BlockHeight, NetworkType};
 use zcash_protocol::value::Zatoshis;
 
 use pepper_sync::wallet::{KeyIdInterface, OrchardNote, SaplingNote, SyncMode};
-#[cfg(feature = "regtest")]
-use zingo_common_components::protocol::activation_heights::for_test;
 use zingolib::data::{PollReport, proposal};
 use zingolib::lightclient::LightClient;
 use zingolib::wallet::keys::WalletAddressRef;
@@ -240,7 +238,18 @@ impl Command for ParseAddressCommand {
                     nu7: None,
                 }),
                 #[cfg(feature = "regtest")]
-                zingolib::config::ChainType::Regtest(for_test::all_height_one_nus()),
+                zingolib::config::ChainType::Regtest(ConfiguredActivationHeights {
+                    before_overwinter: Some(1),
+                    overwinter: Some(1),
+                    sapling: Some(1),
+                    blossom: Some(1),
+                    heartwood: Some(1),
+                    canopy: Some(1),
+                    nu5: Some(1),
+                    nu6: Some(1),
+                    nu6_1: Some(1),
+                    nu7: None,
+                }),
             ]
             .iter()
             .find_map(|chain| Address::decode(chain, address).zip(Some(*chain)))
@@ -463,28 +472,6 @@ impl Command for SyncCommand {
     }
 }
 
-struct SendProgressCommand {}
-impl Command for SendProgressCommand {
-    fn help(&self) -> &'static str {
-        indoc! {r"
-            Get the progress of any send transactions that are currently computing
-
-            Usage:
-            send_progress
-        "}
-    }
-
-    fn short_help(&self) -> &'static str {
-        "Get the progress of any send transactions that are currently computing"
-    }
-
-    fn exec(&self, _args: &[&str], lightclient: &mut LightClient) -> String {
-        RT.block_on(
-            async move { json::JsonValue::from(lightclient.send_progress().await).pretty(2) },
-        )
-    }
-}
-
 struct RescanCommand {}
 impl Command for RescanCommand {
     fn help(&self) -> &'static str {
@@ -498,8 +485,7 @@ impl Command for RescanCommand {
     }
 
     fn short_help(&self) -> &'static str {
-        "Rescan the wallet, clearing all wallet data obtained from the blockchain and launching sync from the wallet
-        birthday."
+        "Rescan the wallet, clearing all wallet data obtained from the blockchain and launching sync from the wallet birthday."
     }
 
     fn exec(&self, args: &[&str], lightclient: &mut LightClient) -> String {
@@ -1543,6 +1529,8 @@ impl Command for WithdrawStakeCommand {
                 }
                 #[cfg(not(feature = "regtest"))]
                 {
+                    use zcash_protocol::consensus::TEST_NETWORK;
+
                     let network = TEST_NETWORK;
 
                     lightclient
@@ -1582,7 +1570,7 @@ impl Command for WithdrawStakeCommand {
                 nu6_1: None,
             };
 
-            let mut client = get_zcb_client(lightclient.server_uri()).await.unwrap();
+            let mut client = get_client(lightclient.server_uri()).await.unwrap();
             let bond_key = parsed_stake_command.1.arg32_0;
 
             lightclient
@@ -1962,7 +1950,7 @@ struct ConfirmCommand {}
 impl Command for ConfirmCommand {
     fn help(&self) -> &'static str {
         indoc! {r#"
-            Confirms the latest proposal, completing and broadcasting the transaction(s) and resuming the sync task.
+            Confirms the latest proposal, constructing and transmitting the transaction(s) and resuming the sync task.
             Fails if a proposal has not already been created with the 'send', 'send_all' or 'shield' commands.
             Type 'help send', 'help sendall' or 'help shield' for more information on creating proposals.
 
@@ -1976,7 +1964,7 @@ impl Command for ConfirmCommand {
     }
 
     fn short_help(&self) -> &'static str {
-        "Confirms the latest proposal, completing and broadcasting the transaction(s)."
+        "Confirms the latest proposal, constructing and transmitting the transaction(s) and resuming the sync task."
     }
 
     fn exec(&self, args: &[&str], lightclient: &mut LightClient) -> String {
@@ -1999,44 +1987,6 @@ impl Command for ConfirmCommand {
                 }
             }
             .pretty(2)
-        })
-    }
-}
-
-struct ResendCommand {}
-impl Command for ResendCommand {
-    fn help(&self) -> &'static str {
-        indoc! {r#"
-            Re-transmits a calculated transaction from the wallet with the given txid.
-            This is a manual operation so the user has the option to alternatively use the "remove_transaction" command
-            to remove the calculated transaction in the case of send failure.
-
-            usage:
-            resend <txid>
-
-        "#}
-    }
-
-    fn short_help(&self) -> &'static str {
-        "Re-transmits a calculated transaction from the wallet with the given txid."
-    }
-
-    fn exec(&self, args: &[&str], lightclient: &mut LightClient) -> String {
-        if args.len() != 1 {
-            return "Error: resend command expects 1 argument. Type \"help resend\" for usage."
-                .to_string();
-        }
-
-        let txid = match txid_from_hex_encoded_str(args[0]) {
-            Ok(txid) => txid,
-            Err(e) => return format!("Error: {e}"),
-        };
-
-        RT.block_on(async move {
-            match lightclient.resend(txid).await {
-                Ok(()) => "Successfully resent transaction.".to_string(),
-                Err(e) => format!("Error: {e}"),
-            }
         })
     }
 }
@@ -2378,7 +2328,7 @@ impl Command for HeightCommand {
 
     fn exec(&self, _args: &[&str], lightclient: &mut LightClient) -> String {
         RT.block_on(async move {
-            object! { "height" => json::JsonValue::from(lightclient.wallet.read().await.sync_state.wallet_height().map_or(0, u32::from))}.pretty(2)
+            object! { "height" => json::JsonValue::from(lightclient.wallet.read().await.sync_state.last_known_chain_height().map_or(0, u32::from))}.pretty(2)
         })
     }
 }
@@ -2478,11 +2428,9 @@ struct RemoveTransactionCommand {}
 impl Command for RemoveTransactionCommand {
     fn help(&self) -> &'static str {
         indoc! {r#"
-            Removes an unconfirmed transaction from the wallet with the given txid.
-            This is useful when a send fails and the pending spent outputs should be reset to unspent instead of using
-            the "resend" command to attempt to re-transmit.
+            Removes a failed transaction from the wallet with the given txid.
             This is a manual operation so important information such as memos are retained in the case of send failure
-            until the user decides to remove them or resend.
+            until the user decides to remove them.
 
             usage:
             remove_transaction <txid>
@@ -2491,7 +2439,7 @@ impl Command for RemoveTransactionCommand {
     }
 
     fn short_help(&self) -> &'static str {
-        "Removes an unconfirmed transaction from the wallet with the given txid."
+        "Removes a failed transaction from the wallet with the given txid."
     }
 
     fn exec(&self, args: &[&str], lightclient: &mut LightClient) -> String {
@@ -2510,9 +2458,9 @@ impl Command for RemoveTransactionCommand {
                 .wallet
                 .write()
                 .await
-                .remove_unconfirmed_transaction(txid)
+                .remove_failed_transaction(txid)
             {
-                Ok(()) => "Successfully removed transaction.".to_string(),
+                Ok(()) => "Successfully removed failed transaction.".to_string(),
                 Err(e) => format!("Error: {e}"),
             }
         })
@@ -2565,6 +2513,8 @@ impl Command for RequestFaucetDonationCommand {
                 }
                 #[cfg(not(feature = "regtest"))]
                 {
+                    use zcash_protocol::consensus::TEST_NETWORK;
+
                     let network = TEST_NETWORK;
 
                     lightclient
@@ -2686,7 +2636,6 @@ pub fn get_commands() -> HashMap<&'static str, Box<dyn Command>> {
         ("t_addresses", Box::new(TransparentAddressesCommand {})),
         ("check_address", Box::new(CheckAddressCommand {})),
         ("height", Box::new(HeightCommand {})),
-        ("send_progress", Box::new(SendProgressCommand {})),
         ("value_transfers", Box::new(ValueTransfersCommand {})),
         ("transactions", Box::new(TransactionsCommand {})),
         ("value_to_address", Box::new(ValueToAddressCommand {})),
@@ -2700,13 +2649,6 @@ pub fn get_commands() -> HashMap<&'static str, Box<dyn Command>> {
         ("info", Box::new(InfoCommand {})),
         ("current_price", Box::new(CurrentPriceCommand {})),
         ("send", Box::new(SendCommand {})),
-        ("stake", Box::new(StakeCommand {})),
-        ("begin_unstake", Box::new(BeginUnstakeCommand {})),
-        ("withdraw_stake", Box::new(WithdrawStakeCommand {})),
-        ("redelegate_stake", Box::new(RedelegateCommand {})),
-        ("roster_info", Box::new(GetRosterInfoCommand {})),
-        ("get_bonds", Box::new(GetBondsCommand {})),
-        ("resend", Box::new(ResendCommand {})),
         ("shield", Box::new(ShieldCommand {})),
         ("save", Box::new(SaveCommand {})),
         ("settings", Box::new(SettingsCommand {})),

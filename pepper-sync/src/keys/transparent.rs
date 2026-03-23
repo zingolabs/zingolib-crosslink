@@ -2,9 +2,9 @@
 
 use zcash_address::{ToAddress as _, ZcashAddress};
 use zcash_protocol::consensus;
-use zcash_transparent::{
-    address::TransparentAddress,
-    keys::{AccountPubKey, IncomingViewingKey, NonHardenedChildIndex, TransparentKeyScope},
+use zcash_transparent::address::TransparentAddress;
+use zcash_transparent::keys::{
+    AccountPubKey, IncomingViewingKey as _, NonHardenedChildIndex, TransparentKeyScope,
 };
 use zip32::AccountId;
 
@@ -22,7 +22,7 @@ impl TransparentAddressId {
     /// Construct from parts
     #[must_use]
     pub fn new(
-        account_id: AccountId,
+        account_id: zip32::AccountId,
         scope: TransparentScope,
         address_index: NonHardenedChildIndex,
     ) -> Self {

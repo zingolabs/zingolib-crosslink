@@ -1,0 +1,32 @@
+[package]
+name = "zingo-netutils"
+version = "2.0.2"
+description = "network utility crate"
+authors = ["zingo@zingolabs.org"]
+edition.workspace = true
+repository = "https://github.com/zingolabs/zingo-common"
+homepage = "https://github.com/zingolabs/zingo-common"
+license = "MIT"
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+http.workspace = true
+hyper-rustls.workspace = true
+hyper-util.workspace = true
+hyper.workspace = true
+thiserror.workspace = true
+tokio-rustls.workspace = true
+tonic.workspace = true
+
+zcash_client_backend = { workspace = true, features = [
+    "lightwalletd-tonic",
+    "tor",
+] }
+
+[dev-dependencies]
+rustls-pemfile.workspace = true
+tokio.workspace = true
+http-body-util.workspace = true
+x509-parser = { workspace = true }

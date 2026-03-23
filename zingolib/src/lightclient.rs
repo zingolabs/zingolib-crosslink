@@ -19,6 +19,8 @@ use zcash_client_backend::{
     tor,
 };
 use zcash_keys::address::UnifiedAddress;
+use zcash_protocol::consensus::{BlockHeight, Parameters};
+use zcash_transparent::address::TransparentAddress;
 
 use pepper_sync::{
     error::SyncError,
@@ -27,13 +29,11 @@ use pepper_sync::{
     wallet::{SyncMode, traits::SyncTransactions},
 };
 use zcash_primitives::transaction::{RosterMember, StakeTxId, StakingActionKind};
-use zcash_protocol::{TxId, consensus::BlockHeight};
-use zcash_transparent::address::TransparentAddress;
+use zcash_protocol::TxId;
+use zingo_netutils::get_client;
 
 use crate::{
     config::ZingoConfig,
-    data::proposal::ZingoProposal,
-    grpc_client::get_zcb_client,
     lightclient::crosslink::{RosterMembers, WalletBond, WalletBonds},
     wallet::{
         LightWallet, WalletBase,
@@ -70,28 +70,31 @@ pub struct LightClient {
     sync_handle: Option<JoinHandle<Result<SyncResult, SyncError<WalletError>>>>,
     save_active: Arc<AtomicBool>,
     save_handle: Option<JoinHandle<std::io::Result<()>>>,
-    latest_proposal: Option<ZingoProposal>, // TODO: move to wallet
 }
 
 impl LightClient {
-    /// Creates a `LightClient` with a new wallet from fresh entropy and a birthday of `chain_height`.
+    /// Creates a `LightClient` with a new wallet from fresh entropy and a birthday of the higher value between
+    /// [`chain_height` - 100] or sapling activation height.
     /// Will fail if a wallet file already exists in the given data directory unless `overwrite` is `true`.
-    ///
-    /// It is worth considering setting `chain_height` to 100 blocks below current height of block chain to protect
-    /// from re-orgs.
     #[allow(clippy::result_large_err)]
     pub fn new(
         config: ZingoConfig,
         chain_height: BlockHeight,
         overwrite: bool,
     ) -> Result<Self, LightClientError> {
+        let sapling_activation_height = config
+            .chain
+            .activation_height(zcash_protocol::consensus::NetworkUpgrade::Sapling)
+            .expect("should have some sapling activation height");
+        let birthday = sapling_activation_height.max(chain_height - 100);
+
         Self::create_from_wallet(
             LightWallet::new(
                 config.chain,
                 WalletBase::FreshEntropy {
                     no_of_accounts: config.no_of_accounts,
                 },
-                chain_height,
+                birthday,
                 config.wallet_settings.clone(),
             )?,
             config,
@@ -127,7 +130,6 @@ impl LightClient {
             sync_handle: None,
             save_active: Arc::new(AtomicBool::new(false)),
             save_handle: None,
-            latest_proposal: None,
         })
     }
 
@@ -146,9 +148,13 @@ impl LightClient {
             )));
         };
 
-        let buffer = BufReader::new(File::open(wallet_path)?);
+        let buffer = BufReader::new(File::open(wallet_path).map_err(LightClientError::FileError)?);
 
-        Self::create_from_wallet(LightWallet::read(buffer, config.chain)?, config, true)
+        Self::create_from_wallet(
+            LightWallet::read(buffer, config.chain).map_err(LightClientError::FileError)?,
+            config,
+            true,
+        )
     }
 
     /// Returns config used to create lightclient.
@@ -180,7 +186,9 @@ impl LightClient {
     ) -> Result<(), LightClientError> {
         let tor_dir =
             tor_dir.unwrap_or_else(|| self.config.get_zingo_wallet_dir().to_path_buf().join("tor"));
-        tokio::fs::create_dir_all(tor_dir.as_path()).await?;
+        tokio::fs::create_dir_all(tor_dir.as_path())
+            .await
+            .map_err(LightClientError::FileError)?;
         self.tor_client = Some(tor::Client::create(tor_dir.as_path(), |_| {}).await?);
 
         Ok(())
@@ -315,7 +323,7 @@ impl LightClient {
     pub async fn get_roster_info(&self) -> Result<RosterMembers, String> {
         let mut roster: Vec<RosterMember> = Vec::new();
         let uri = self.server_uri();
-        let mut zcb_client = get_zcb_client(uri).await.unwrap();
+        let mut zcb_client = get_client(uri).await.unwrap();
 
         let res = zcb_client.get_roster(Empty {}).await.unwrap();
 
@@ -393,7 +401,7 @@ impl LightClient {
     }
 
     pub async fn get_bond_info(&self, bond_key: [u8; 32]) -> Result<BondInfoResponse, String> {
-        let mut zcb_client = get_zcb_client(self.server_uri()).await.unwrap();
+        let mut zcb_client = get_client(self.server_uri()).await.unwrap();
 
         match zcb_client
             .get_bond_info(BondInfoRequest {
@@ -429,10 +437,10 @@ impl LightClient {
                 continue;
             };
 
-            let height: u32 = tx.status().get_height().0;
+            let height: u32 = tx.status().get_height().into();
             let time: u32 = tx.datetime();
 
-            let mut reversed_target = sa.arg32_2.clone();
+            let mut reversed_target = sa.arg32_2;
             reversed_target.reverse();
 
             evts.push(StkEvt {
@@ -543,9 +551,9 @@ impl LightClient {
     }
 
     pub async fn request_faucet_funds(&self, address: String) -> Result<String, String> {
-        let mut zcb_client = get_zcb_client(self.server_uri()).await.unwrap();
+        let mut zcb_client = get_client(self.server_uri()).await.unwrap();
         let res = zcb_client
-            .request_faucet_donation(FaucetRequest { address: address })
+            .request_faucet_donation(FaucetRequest { address })
             .await;
         match res {
             Ok(res) => Ok(res.into_inner().amount.to_string()),
@@ -581,7 +589,6 @@ impl std::fmt::Debug for LightClient {
                 "save_active",
                 &self.save_active.load(std::sync::atomic::Ordering::Acquire),
             )
-            .field("latest_proposal", &self.latest_proposal)
             .finish()
     }
 }
@@ -594,7 +601,7 @@ mod tests {
     };
     use bip0039::Mnemonic;
     use tempfile::TempDir;
-    use zingo_common_components::protocol::activation_heights::for_test;
+    use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
     use zingo_test_vectors::seeds::CHIMNEY_BETTER_SEED;
 
     use crate::{lightclient::LightClient, wallet::WalletBase};
@@ -602,9 +609,20 @@ mod tests {
     #[tokio::test]
     async fn new_wallet_from_phrase() {
         let temp_dir = TempDir::new().unwrap();
-        let config = ZingoConfig::build(ChainType::Regtest(for_test::all_height_one_nus()))
-            .set_wallet_dir(temp_dir.path().to_path_buf())
-            .create();
+        let config = ZingoConfig::build(ChainType::Regtest(ConfiguredActivationHeights {
+            before_overwinter: Some(1),
+            overwinter: Some(1),
+            sapling: Some(1),
+            blossom: Some(1),
+            heartwood: Some(1),
+            canopy: Some(1),
+            nu5: Some(1),
+            nu6: Some(1),
+            nu6_1: Some(1),
+            nu7: None,
+        }))
+        .set_wallet_dir(temp_dir.path().to_path_buf())
+        .create();
         let mut lc = LightClient::create_from_wallet(
             LightWallet::new(
                 config.chain,
@@ -612,7 +630,7 @@ mod tests {
                     mnemonic: Mnemonic::from_phrase(CHIMNEY_BETTER_SEED.to_string()).unwrap(),
                     no_of_accounts: config.no_of_accounts,
                 },
-                0.into(),
+                1.into(),
                 config.wallet_settings.clone(),
             )
             .unwrap(),
@@ -631,7 +649,7 @@ mod tests {
                     mnemonic: Mnemonic::from_phrase(CHIMNEY_BETTER_SEED.to_string()).unwrap(),
                     no_of_accounts: config.no_of_accounts,
                 },
-                0.into(),
+                1.into(),
                 config.wallet_settings.clone(),
             )
             .unwrap(),

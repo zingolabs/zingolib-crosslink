@@ -21,7 +21,7 @@ use crate::wallet::error::ProposeShieldError;
 use crate::wallet::propose::StakingProposal;
 
 impl LightClient {
-    pub(super) fn append_zingo_zenny_receiver(&self, receivers: &mut Vec<Receiver>) {
+    fn append_zingo_zenny_receiver(&self, receivers: &mut Vec<Receiver>) {
         let zfz_address = get_donation_address_for_chain(&self.config().chain);
         let dev_donation_receiver = Receiver::new(
             crate::utils::conversion::address_from_str(zfz_address).expect("Hard coded str"),
@@ -31,12 +31,6 @@ impl LightClient {
         receivers.push(dev_donation_receiver);
     }
 
-    /// Stores a proposal in the `latest_proposal` field of the `LightClient`.
-    /// This field must be populated in order to then create and transmit a transaction.
-    async fn store_proposal(&mut self, proposal: ZingoProposal) {
-        self.latest_proposal = Some(proposal);
-    }
-
     /// Creates and stores a proposal from a transaction request.
     pub async fn propose_send(
         &mut self,
@@ -44,17 +38,12 @@ impl LightClient {
         account_id: zip32::AccountId,
     ) -> Result<ProportionalFeeProposal, ProposeSendError> {
         let _ignore_error = self.pause_sync();
-        let proposal = self
-            .wallet
-            .write()
-            .await
-            .create_send_proposal(request, account_id)
-            .await?;
-        self.store_proposal(ZingoProposal::Send {
+        let mut wallet = self.wallet.write().await;
+        let proposal = wallet.create_send_proposal(request, account_id)?;
+        wallet.store_proposal(ZingoProposal::Send {
             proposal: proposal.clone(),
             sending_account: account_id,
-        })
-        .await;
+        });
 
         Ok(proposal)
     }
@@ -88,12 +77,13 @@ impl LightClient {
             arg64_1: [0u8; 64],
         };
 
-        self.store_proposal(ZingoProposal::Crosslink {
+        let mut wallet = self.wallet.write().await;
+
+        wallet.store_proposal(ZingoProposal::Crosslink {
             proposal: proposal.clone().proportional_fee_proposal().clone(),
             staking_action,
             sending_account: account_id,
-        })
-        .await;
+        });
 
         Ok(proposal)
     }
@@ -123,12 +113,13 @@ impl LightClient {
             arg64_1: [0u8; 64],
         };
 
-        self.store_proposal(ZingoProposal::Crosslink {
+        let mut wallet = self.wallet.write().await;
+
+        wallet.store_proposal(ZingoProposal::Crosslink {
             proposal: proposal.clone().proportional_fee_proposal().clone(),
             staking_action,
             sending_account: account_id,
-        })
-        .await;
+        });
 
         Ok(proposal)
     }
@@ -158,12 +149,13 @@ impl LightClient {
             arg64_1: [0u8; 64],
         };
 
-        self.store_proposal(ZingoProposal::Crosslink {
+        let mut wallet = self.wallet.write().await;
+
+        wallet.store_proposal(ZingoProposal::Crosslink {
             proposal: proposal.clone().proportional_fee_proposal().clone(),
             staking_action,
             sending_account: account_id,
-        })
-        .await;
+        });
 
         Ok(proposal)
     }
@@ -205,12 +197,12 @@ impl LightClient {
             arg64_1: [0u8; 64],
         };
 
-        self.store_proposal(ZingoProposal::Crosslink {
+        let mut wallet = self.wallet.write().await;
+        wallet.store_proposal(ZingoProposal::Crosslink {
             proposal: proposal.clone().proportional_fee_proposal().clone(),
             staking_action,
             sending_account: account_id,
-        })
-        .await;
+        });
 
         Ok(proposal)
     }
@@ -236,17 +228,12 @@ impl LightClient {
         let request = transaction_request_from_receivers(receivers)
             .map_err(ProposeSendError::TransactionRequestFailed)?;
         let _ignore_error = self.pause_sync();
-        let proposal = self
-            .wallet
-            .write()
-            .await
-            .create_send_proposal(request, account_id)
-            .await?;
-        self.store_proposal(ZingoProposal::Send {
+        let mut wallet = self.wallet.write().await;
+        let proposal = wallet.create_send_proposal(request, account_id)?;
+        wallet.store_proposal(ZingoProposal::Send {
             proposal: proposal.clone(),
             sending_account: account_id,
-        })
-        .await;
+        });
 
         Ok(proposal)
     }
@@ -256,17 +243,12 @@ impl LightClient {
         &mut self,
         account_id: zip32::AccountId,
     ) -> Result<ProportionalFeeShieldProposal, ProposeShieldError> {
-        let proposal = self
-            .wallet
-            .write()
-            .await
-            .create_shield_proposal(account_id)
-            .await?;
-        self.store_proposal(ZingoProposal::Shield {
+        let mut wallet = self.wallet.write().await;
+        let proposal = wallet.create_shield_proposal(account_id).await?;
+        wallet.store_proposal(ZingoProposal::Shield {
             proposal: proposal.clone(),
             shielding_account: account_id,
-        })
-        .await;
+        });
 
         Ok(proposal)
     }
@@ -300,7 +282,7 @@ impl LightClient {
                 self.append_zingo_zenny_receiver(&mut receivers);
             }
             let request = transaction_request_from_receivers(receivers)?;
-            let trial_proposal = wallet.create_send_proposal(request, account_id).await;
+            let trial_proposal = wallet.create_send_proposal(request, account_id);
 
             match trial_proposal {
                 Err(ProposeSendError::Proposal(
@@ -374,7 +356,7 @@ mod shielding {
                         .unwrap(),
                     no_of_accounts: 1.try_into().unwrap(),
                 },
-                0.into(),
+                419200.into(),
                 WalletSettings {
                     sync_config: SyncConfig {
                         transparent_address_discovery:
@@ -420,7 +402,9 @@ mod shielding {
             .values()
             .map(|address| {
                 Ok(zcash_address::ZcashAddress::try_from_encoded(address)?
-                    .convert_if_network::<TransparentAddress>(network.network_type())
+                    .convert_if_network::<zcash_transparent::address::TransparentAddress>(
+                        network.network_type(),
+                    )
                     .expect("incorrect network should be checked on wallet load"))
             })
             .collect::<Result<Vec<_>, zcash_address::ParseError>>()
@@ -428,10 +412,12 @@ mod shielding {
 
         assert_eq!(
             transparent_addresses,
-            [TransparentAddress::PublicKeyHash([
-                161, 138, 222, 242, 254, 121, 71, 105, 93, 131, 177, 31, 59, 185, 120, 148, 255,
-                189, 198, 33
-            ])]
+            [
+                zcash_transparent::address::TransparentAddress::PublicKeyHash([
+                    161, 138, 222, 242, 254, 121, 71, 105, 93, 131, 177, 31, 59, 185, 120, 148,
+                    255, 189, 198, 33
+                ])
+            ]
         );
     }
 }

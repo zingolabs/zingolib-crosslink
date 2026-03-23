@@ -5,7 +5,7 @@ use bytes::Buf;
 use http::Uri;
 use pepper_sync::config::{PerformanceLevel, SyncConfig, TransparentAddressDiscovery};
 use zcash_protocol::{PoolType, ShieldedProtocol};
-use zingo_common_components::protocol::activation_heights::for_test;
+use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
 use zingo_test_vectors::seeds;
 
 use super::super::LightWallet;
@@ -283,7 +283,18 @@ impl NetworkSeedVersion {
                 crate::config::load_clientconfig(
                     lightwalletd_uri,
                     None,
-                    crate::config::ChainType::Regtest(for_test::all_height_one_nus()),
+                    crate::config::ChainType::Regtest(ConfiguredActivationHeights {
+                        before_overwinter: Some(1),
+                        overwinter: Some(1),
+                        sapling: Some(1),
+                        blossom: Some(1),
+                        heartwood: Some(1),
+                        canopy: Some(1),
+                        nu5: Some(1),
+                        nu6: Some(1),
+                        nu6_1: Some(1),
+                        nu7: None,
+                    }),
                     WalletSettings {
                         sync_config: SyncConfig {
                             transparent_address_discovery: TransparentAddressDiscovery::minimal(),

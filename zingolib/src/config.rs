@@ -28,9 +28,6 @@ use zcash_protocol::consensus::{
 };
 use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
 
-#[cfg(feature = "regtest")]
-use zingo_common_components::protocol::activation_heights::for_test::all_height_one_nus;
-
 use crate::wallet::WalletSettings;
 
 /// TODO: Add Doc Comment Here!

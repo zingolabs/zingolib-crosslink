@@ -5,12 +5,12 @@ use std::collections::HashSet;
 use std::{cmp::Ordering, collections::HashMap};
 
 use zcash_protocol::PoolType;
+use zcash_protocol::memo::Memo;
 
 use pepper_sync::keys::transparent;
 use pepper_sync::wallet::{
     KeyIdInterface, NoteInterface, OutgoingNoteInterface, OutputInterface, TransparentCoin,
 };
-use zcash_protocol::memo::Memo;
 
 use super::LightWallet;
 use super::error::{KeyError, SummaryError};

@@ -19,7 +19,7 @@ impl From<RosterMembers> for JsonValue {
         let mut members = JsonValue::new_array();
 
         for member in roster_members.members {
-            let mut reversed_pubkey = member.pub_key.clone();
+            let mut reversed_pubkey = member.pub_key;
             reversed_pubkey.reverse();
             let pubkey = hex::encode(reversed_pubkey);
 

@@ -1,0 +1,15 @@
+[package]
+name = "zingo_common_components"
+description = "Common components for Zingo projects"
+documentation = "https://github.com/zingolabs/zingo-common"
+homepage = "https://github.com/zingolabs/zingo-common"
+repository = "https://github.com/zingolabs/zingo-common.git"
+
+version = "0.3.0"
+edition = "2024"
+license = "MIT"
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]

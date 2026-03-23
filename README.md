@@ -1,6 +1,5 @@
 ## Zingolib
-
-[![license](https://img.shields.io/github/license/zingolabs/zingolib)](LICENSE) [![codecov](https://codecov.io/gh/zingolabs/zingolib/branch/dev/graph/badge.svg?token=WMKTJMQY28)](https://codecov.io/gh/zingolabs/zingolib)
+[![license](https://img.shields.io/github/license/zingolabs/zingolib)](LICENSE) [![coverage](https://img.shields.io/endpoint?url=https://zingolabs.org/zingolib/coverage/badge.json)](https://zingolabs.org/zingolib/coverage/)
 This repo provides both a library for zingo-mobile, as well as an included cli application to interact with zcashd via lightwalletd.
 
 # Security Vulnerability Disclosure
@@ -33,18 +32,14 @@ Zingo-CLI does automatic note and utxo management, which means it doesn't allow 
 ## Compiling from source
 
 #### Pre-requisites
-
-- Rust v1.85 or higher.
-  - Run `rustup update` to get the latest version of Rust if you already have it installed
-- Rustfmt
-  - Run `rustup component add rustfmt` to add rustfmt
-- Build Tools
-  - Please install the build tools for your platform. On Ubuntu `sudo apt install build-essential gcc`
-- Protobuf Compiler
-  - Please install the protobuf compiler for your platform. On Ubuntu `sudo apt install protobuf-compiler`
-- OpenSSL Dev
-  - Please install development packages of openssl. On Ubuntu `sudo apt install libssl-dev`
-
+* Rust v1.90 or higher.
+    * Run `rustup update` to get the latest version of Rust if you already have it installed
+* Rustfmt
+    * Run `rustup component add rustfmt` to add rustfmt
+* Build Tools
+    * Please install the build tools for your platform. On Ubuntu `sudo apt install build-essential gcc libsqlite3-dev`
+* Protobuf Compiler
+    * Please install the protobuf compiler for your platform. On Ubuntu `sudo apt install protobuf-compiler`
 ```
 git clone https://github.com/zingolabs/zingolib.git
 cd zingolib
@@ -55,10 +50,9 @@ cargo build --release --package zingo-cli
 This will launch the interactive prompt. Type `help` to get a list of commands.
 
 ## Notes:
-
-- If you want to run your own server, please see [zingo lightwalletd](https://github.com/zingolabs/lightwalletd), and then run `./zingo-cli --server http://127.0.0.1:9067`
-- The default log file is in `~/.zcash/zingo-wallet.debug.log`. A default wallet is stored in `~/.zcash/zingo-wallet.dat`
-- Currently, the default, hard-coded `lightwalletd` server is https://mainnet.lightwalletd.com:9067/. To change this, you can modify the `DEFAULT_SERVER` const in `config/src/lib.rs`
+* If you want to run your own server, please see [zingo lightwalletd](https://github.com/zingolabs/lightwalletd), and then run `./zingo-cli --server http://127.0.0.1:9067`
+* The default log file is in `~/.zcash/zingo-wallet.debug.log`. A default wallet is stored in `~/.zcash/zingo-wallet.dat`
+* If a server is not specified, the default indexer/lightwallet server is "https://zec.rocks:443".
 
 ## Running in non-interactive mode:
 
@@ -70,27 +64,16 @@ Run `zingo-cli help` to see a list of all commands.
 
 Here are some CLI arguments you can pass to `zingo-cli`. Please run `zingo-cli --help` for the full list.
 
-- `--data-dir`: uses the specified path as data directory. This is required when not using the `--regtest` option.
-  - Example: `./zingo-cli --data-dir /path/to/data_directory/` will use the provided directory to store `zingo-wallet.dat` and logs. If the provided directory does not exist, it will create it.
-- `--waitsync`: Wait for sync before running a command in non-interactive mode
-  - Example: `./zingo-cli --data-dir /path/to/data_directory/ --waitsync balance`
-- `--server`: Connect to a custom zcash lightwalletd server.
-  - Example: `./zingo-cli --data-dir /path/to/data_directory/ --server 127.0.0.1:9067`
-- `--seed`: Restore a wallet from a seed phrase. Note that this will fail if there is an existing wallet. Delete (or move) any existing wallet to restore from the 24-word seed phrase
-- `--birthday`: Specify wallet birthday when restoring from seed. This is the earliest block height where the wallet has a transaction.
-  - Example: `./zingo-cli --data-dir /path/to/data_directory/ --seed "twenty four words seed phrase" --birthday 1234567`
-- `--recover`: Attempt to recover the seed phrase from a corrupted wallet
+* `--data-dir`: uses the specified path as data directory. This is required when not using the `--regtest` option.
+    * Example: `./zingo-cli --data-dir /path/to/data_directory/` will use the provided directory to store `zingo-wallet.dat` and logs. If the provided directory does not exist, it will create it.
+* `--waitsync`: Wait for sync before running a command in non-interactive mode or entering the command prompt in interactive mode.
+    * Example: `./zingo-cli --data-dir /path/to/data_directory/ --waitsync balance`
+* `--server`: Connect to a custom zcash lightwalletd server.
+    * Example: `./zingo-cli --data-dir /path/to/data_directory/ --server 127.0.0.1:9067`
+* `--seed`: Restore a wallet from a seed phrase. Note that this will fail if there is an existing wallet. Delete (or move) any existing wallet to restore from the 24-word seed phrase
+* `--birthday`: Specify wallet birthday when restoring from seed. This is the earliest block height where the wallet has a transaction.
+    * Example: `./zingo-cli --data-dir /path/to/data_directory/ --seed "twenty four words seed phrase" --birthday 1234567`
+* `--recover`: Attempt to recover the seed phrase from a corrupted wallet
 
 ## Regtest
-
-There is an experimental feature flag available with `zingo-cli`, in which the cli works in regtest mode, by also locally running `zcashd` and `lightwalletd`.
-
-For a relatively recent user experience please see: https://free2z.cash/zingo-cli-in-regtest-mode
-
-Please see `docs/TEST_REGTEST.md` for a detailed explanation.
-
-# Extra details
-
-Same as last WS:
-
-create -> random bytes -> remember -> unbond -> withdraw
+Please see `zingo-cli/README.md` for details of running zingo-cli in regtest mode with a local network.

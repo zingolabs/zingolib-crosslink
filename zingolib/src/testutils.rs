@@ -42,7 +42,8 @@ pub fn build_fvks_from_unified_keystore(unified_keystore: &UnifiedKeyStore) -> [
     let orchard_vk: orchard::keys::FullViewingKey = unified_keystore.try_into().unwrap();
     let sapling_vk: sapling_crypto::zip32::DiversifiableFullViewingKey =
         unified_keystore.try_into().unwrap();
-    let transparent_vk: AccountPubKey = unified_keystore.try_into().unwrap();
+    let transparent_vk: zcash_transparent::keys::AccountPubKey =
+        unified_keystore.try_into().unwrap();
 
     let mut transparent_vk_bytes = [0u8; 65];
     transparent_vk_bytes.copy_from_slice(&transparent_vk.serialize());
@@ -68,7 +69,7 @@ pub fn build_fvk_client(fvks: &[&Fvk], config: ZingoConfig) -> LightClient {
         LightWallet::new(
             config.chain,
             WalletBase::Ufvk(ufvk),
-            0.into(),
+            1.into(),
             WalletSettings {
                 sync_config: SyncConfig {
                     transparent_address_discovery: TransparentAddressDiscovery::minimal(),

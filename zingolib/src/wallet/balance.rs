@@ -9,14 +9,20 @@ use pepper_sync::wallet::{
 use zcash_client_backend::{data_api::WalletRead, proto::service::BondInfoRequest};
 use zcash_primitives::transaction::{StakingActionKind, fees::zip317::MARGINAL_FEE};
 use zcash_protocol::{PoolType, value::Zatoshis};
+use zingo_netutils::get_client;
 
-use crate::{config::ZingoConfig, grpc_client::get_zcb_client, utils};
+use crate::{config::ZingoConfig, utils};
 
 use super::{
     LightWallet,
     error::{BalanceError, KeyError},
     keys::unified::UnifiedKeyStore,
 };
+
+/// Minimum number of confirmations required for transparent coinbase outputs.
+/// Per Zcash consensus rules (ZIP-213), transparent coinbase outputs cannot be
+/// spent until they are 100 blocks deep.
+const COINBASE_MATURITY: u32 = 100;
 
 /// Balance for a wallet account.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -139,6 +145,49 @@ fn format_zatoshis(zatoshis: Zatoshis) -> String {
 }
 
 impl LightWallet {
+    /// Checks if a transparent output has reached coinbase maturity.
+    ///
+    /// Returns `true` if the output can be included in balance calculations:
+    /// - For non-transparent outputs: always `true`
+    /// - For regular transparent outputs: always `true`
+    /// - For coinbase transparent outputs: `true` only if >= 100 confirmations
+    fn is_transparent_output_mature<Op: OutputInterface>(
+        &self,
+        transaction: &WalletTransaction,
+    ) -> bool {
+        // Only transparent outputs need coinbase maturity check
+        if Op::POOL_TYPE != PoolType::Transparent {
+            return true;
+        }
+
+        // Check if this is a coinbase transaction
+        let is_coinbase = transaction
+            .transaction()
+            .transparent_bundle()
+            .is_some_and(|bundle| bundle.is_coinbase());
+
+        if is_coinbase {
+            let current_height = self
+                .sync_state
+                .last_known_chain_height()
+                .unwrap_or(self.birthday);
+            let tx_height = transaction.status().get_height();
+
+            // Work with u32 values
+            let current_height_u32: u32 = current_height.into();
+            let tx_height_u32: u32 = tx_height.into();
+
+            if current_height_u32 < tx_height_u32 {
+                return false;
+            }
+
+            let confirmations = current_height_u32 - tx_height_u32;
+            confirmations >= COINBASE_MATURITY
+        } else {
+            true
+        }
+    }
+
     /// Returns account balance.
     pub async fn account_balance(
         &self,
@@ -211,7 +260,7 @@ impl LightWallet {
             .map(|sa| sa.arg32_0)
             .collect();
 
-        let mut client = get_zcb_client(config.lightwalletd_uri.read().unwrap().clone())
+        let mut client = get_client(config.lightwalletd_uri.read().unwrap().clone())
             .await
             .unwrap();
 
@@ -379,7 +428,10 @@ impl LightWallet {
         Op: OutputInterface,
     {
         self.get_filtered_balance::<Op, _>(
-            |_, transaction: &WalletTransaction| transaction.status().is_confirmed(),
+            |_output, transaction: &WalletTransaction| {
+                transaction.status().is_confirmed()
+                    && self.is_transparent_output_mature::<Op>(transaction)
+            },
             account_id,
         )
     }
@@ -401,8 +453,10 @@ impl LightWallet {
         Op: OutputInterface,
     {
         self.get_filtered_balance::<Op, _>(
-            |note, transaction: &WalletTransaction| {
-                Op::value(note) > MARGINAL_FEE.into_u64() && transaction.status().is_confirmed()
+            |output, transaction: &WalletTransaction| {
+                Op::value(output) > MARGINAL_FEE.into_u64()
+                    && transaction.status().is_confirmed()
+                    && self.is_transparent_output_mature::<Op>(transaction)
             },
             account_id,
         )
@@ -425,7 +479,7 @@ impl LightWallet {
         Op: OutputInterface,
     {
         self.get_filtered_balance::<Op, _>(
-            |_, transaction: &WalletTransaction| !transaction.status().is_confirmed(),
+            |_, transaction: &WalletTransaction| transaction.status().is_pending(),
             account_id,
         )
     }
@@ -448,7 +502,7 @@ impl LightWallet {
     {
         self.get_filtered_balance::<Op, _>(
             |note, transaction: &WalletTransaction| {
-                Op::value(note) > MARGINAL_FEE.into_u64() && !transaction.status().is_confirmed()
+                Op::value(note) > MARGINAL_FEE.into_u64() && transaction.status().is_pending()
             },
             account_id,
         )
@@ -461,10 +515,10 @@ impl LightWallet {
     /// - not dust (note value larger than `5_000` zats)
     /// - the wallet can build a witness for the note's commitment
     /// - satisfy the number of minimum confirmations set by the wallet
-    /// - the nullifier derived from the note has not yet been found in a transaction input on chain
+    /// - the nullifier derived from the note does not appear in a transaction input (spend) on chain
     ///
     /// If `include_potentially_spent_notes` is `true`, notes will be included even if the wallet's current sync state
-    /// cannot guarantee the notes are unspent.
+    /// is incomplete and it is unknown if the note has already been spent (the nullifier has not appeared on chain *yet*).
     ///
     /// # Error
     ///
@@ -480,7 +534,7 @@ impl LightWallet {
     where
         N: NoteInterface,
     {
-        let Some(spend_horizon) = self.spend_horizon() else {
+        let Some(spend_horizon) = self.spend_horizon(false) else {
             return Ok(Zatoshis::ZERO);
         };
         let Some((_, anchor_height)) = self
@@ -497,11 +551,12 @@ impl LightWallet {
                     && transaction.status().get_height() <= anchor_height
                     && note.position().is_some()
                     && self.can_build_witness::<N>(transaction.status().get_height(), anchor_height)
-                    && if include_potentially_spent_notes {
-                        true
-                    } else {
-                        transaction.status().get_height() >= spend_horizon
-                    }
+                    && (include_potentially_spent_notes
+                        || self.note_spends_confirmed(
+                            transaction.status().get_height(),
+                            spend_horizon,
+                            note.refetch_nullifier_ranges(),
+                        ))
             },
             account_id,
         )?;
@@ -544,6 +599,7 @@ impl LightWallet {
 
 #[cfg(any(test, feature = "testutils"))]
 mod test {
+
     // FIXME: zingo2 rewrite as an integration test
     // #[tokio::test]
     // async fn confirmed_balance_excluding_dust() {
