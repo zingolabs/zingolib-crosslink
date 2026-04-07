@@ -78,6 +78,33 @@ pub enum WalletError {
     BirthdayBelowSapling(u32, u32),
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum WithdrawError {
+    #[error("missing anchor")]
+    MissingAnchor,
+
+    #[error("not enough funds for fee")]
+    NotEnoughFundsForFee,
+
+    #[error("failed to put staking action")]
+    PutStakingActionFailed,
+
+    #[error("failed to add orchard output")]
+    AddOrchardOutputFailed,
+
+    #[error("failed to build transaction")]
+    BuildError,
+
+    #[error("failed to write transaction")]
+    TxWrite,
+
+    #[error("failed to send transaction")]
+    TxSend,
+
+    #[error("bond not found")]
+    BondNotFound,
+}
+
 /// Price error
 #[derive(Debug, thiserror::Error)]
 pub enum PriceError {

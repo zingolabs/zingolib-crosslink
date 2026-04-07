@@ -36,7 +36,7 @@ use super::{
 use crate::{
     config::ChainType,
     data::proposal::{ExtraFee, ExtraFeeProposal, ProportionalFeeProposal, ZingoProposal},
-    wallet::utils::ensure_sapling_params_on_disk,
+    wallet::{error::WithdrawError, utils::ensure_sapling_params_on_disk},
 };
 use pepper_sync::{
     keys::transparent::TransparentScope,
@@ -476,7 +476,7 @@ impl LightWallet {
         network: P,
         client: &mut CompactTxStreamerClient<Channel>,
         bond_key: &[u8; 32],
-    ) -> Option<TxId> {
+    ) -> Result<TxId, WithdrawError> {
         let orchard_tree = &self.shard_trees.orchard;
 
         let bond_value: u64 = client
@@ -484,7 +484,8 @@ impl LightWallet {
                 bond_key: bond_key.to_vec(),
             })
             .await
-            .ok()?
+            .ok()
+            .expect("bond should exist")
             .into_inner()
             .amount;
 
@@ -506,7 +507,11 @@ impl LightWallet {
 
         let orchard_spending_key = orchard::keys::SpendingKey::try_from(unified_key_store).unwrap();
 
-        let tip = self.chain_height().ok().flatten()?;
+        let tip = self
+            .chain_height()
+            .ok()
+            .flatten()
+            .expect("chain height should already be known");
 
         let (target_height, latest_orchard_anchor_height) = self
             .get_target_and_anchor_heights(NonZeroU32::new(3).unwrap())
@@ -518,7 +523,7 @@ impl LightWallet {
             .expect("Infallible MemoryShardStore")
         {
             Some(root) => orchard::Anchor::from(root),
-            None => return None,
+            None => return Err(WithdrawError::MissingAnchor),
         };
 
         let mut txb = TxBuilder::new(
@@ -537,12 +542,7 @@ impl LightWallet {
         let mut fee_est: u64 = 10_000;
 
         let spendable_notes: Vec<&OrchardNote> = self
-            .spendable_notes(
-                latest_orchard_anchor_height,
-                &[],
-                AccountId::ZERO,
-                false,
-            )
+            .spendable_notes(latest_orchard_anchor_height, &[], AccountId::ZERO, false)
             .unwrap();
 
         for note in spendable_notes.iter() {
@@ -573,7 +573,7 @@ impl LightWallet {
         }
 
         if fee_inputs_sum < fee_est {
-            return None; // not enough to pay fee
+            return Err(WithdrawError::NotEnoughFundsForFee); // not enough to pay fee
         }
 
         match txb.put_staking_action(
@@ -588,7 +588,7 @@ impl LightWallet {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("[withdraw] txb.put_staking_action failed: {e:?}");
-                return None;
+                return Err(WithdrawError::PutStakingActionFailed);
             }
         };
 
@@ -603,7 +603,7 @@ impl LightWallet {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("[withdraw] txb.add_orchard_output failed: {e:?}");
-                return None;
+                return Err(WithdrawError::AddOrchardOutputFailed);
             }
         };
 
@@ -614,9 +614,6 @@ impl LightWallet {
             .expect("could not materialize embedded zcash params");
 
         let prover = LocalTxProver::new(&spend, &output);
-
-        // let prover = LocalTxProver::with_default_location()
-        //     .expect("could not load proving params (zcash-params)");
 
         let rng = OsRng;
 
@@ -634,7 +631,7 @@ impl LightWallet {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("[withdraw] txb.build failed: {e:?}");
-                return None;
+                return Err(WithdrawError::BuildError);
             }
         };
 
@@ -644,7 +641,7 @@ impl LightWallet {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("[withdraw] tx.write failed: {e:?}");
-                return None;
+                return Err(WithdrawError::TxWrite);
             }
         };
 
@@ -658,10 +655,10 @@ impl LightWallet {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("[withdraw] client.send_transaction failed: {e:?}");
-                return None;
+                return Err(WithdrawError::TxSend);
             }
         };
-        Some(tx.txid())
+        Ok(tx.txid())
     }
 
     /// Stores a proposal in the `send_proposal` field.
