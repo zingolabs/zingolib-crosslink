@@ -343,7 +343,7 @@ mod shielding {
     use crate::{
         config::ZingoConfigBuilder,
         lightclient::LightClient,
-        wallet::{LightWallet, WalletBase, WalletSettings, error::ProposeShieldError},
+        wallet::{LightWallet, SeedDerivation, WalletBase, WalletSettings, error::ProposeShieldError},
     };
 
     fn create_basic_client() -> LightClient {
@@ -355,6 +355,7 @@ mod shielding {
                     mnemonic: Mnemonic::from_phrase(seeds::HOSPITAL_MUSEUM_SEED.to_string())
                         .unwrap(),
                     no_of_accounts: 1.try_into().unwrap(),
+                    seed_derivation: SeedDerivation::Zip32Standard,
                 },
                 419200.into(),
                 WalletSettings {

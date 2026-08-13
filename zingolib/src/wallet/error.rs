@@ -236,6 +236,9 @@ pub enum KeyError {
         "Transparent address generation failed. Latest transparent address has not received funds."
     )]
     GapError,
+    /// CrosslinkTruncated32 seed derivation is not permitted on mainnet.
+    #[error("CrosslinkTruncated32 seed derivation is not permitted on mainnet.")]
+    CrosslinkSeedOnMainnet,
 }
 
 impl From<bip32::Error> for KeyError {

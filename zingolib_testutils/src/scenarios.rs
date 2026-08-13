@@ -224,6 +224,7 @@ impl ClientBuilder {
             WalletBase::Mnemonic {
                 mnemonic: Mnemonic::from_phrase(mnemonic_phrase).unwrap(),
                 no_of_accounts: 1.try_into().unwrap(),
+                seed_derivation: zingolib::wallet::SeedDerivation::Zip32Standard,
             },
             (birthday as u32).into(),
             config.wallet_settings.clone(),

@@ -16,7 +16,7 @@ use crate::{
                 NetworkSeedVersion, RegtestSeedVersion, TestnetSeedVersion, VillageTargetVersion,
             },
         },
-        keys::unified::UnifiedKeyStore,
+        keys::unified::{SeedDerivation, UnifiedKeyStore},
     },
 };
 
@@ -252,6 +252,7 @@ async fn reload_wallet_from_buffer() {
         &mid_client_network,
         &expected_mnemonic,
         zip32::AccountId::ZERO,
+        SeedDerivation::Zip32Standard,
     )
     .unwrap();
 

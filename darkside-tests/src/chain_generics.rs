@@ -80,6 +80,7 @@ pub(crate) mod conduct_chain {
                     WalletBase::Mnemonic {
                         mnemonic: Mnemonic::from_phrase(DARKSIDE_SEED.to_string()).unwrap(),
                         no_of_accounts: NonZeroU32::try_from(1).expect("hard-coded integer"),
+                        seed_derivation: zingolib::wallet::SeedDerivation::Zip32Standard,
                     },
                     1.into(),
                     config.wallet_settings.clone(),

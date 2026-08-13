@@ -31,6 +31,35 @@ pub struct UnifiedAddressId {
     pub address_index: u32,
 }
 
+/// How a wallet's spending keys are derived from its BIP-39 seed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SeedDerivation {
+    /// Full 64-byte BIP-39 seed, per ZIP-32. Conforming default.
+    #[default]
+    Zip32Standard,
+    /// First 32 bytes of the 64-byte BIP-39 seed. Matches the zebra-crosslink node.
+    CrosslinkTruncated32,
+}
+
+impl SeedDerivation {
+    pub(crate) fn tag(self) -> u8 {
+        match self {
+            Self::Zip32Standard => 0,
+            Self::CrosslinkTruncated32 => 1,
+        }
+    }
+    pub(crate) fn from_tag(tag: u8) -> std::io::Result<Self> {
+        match tag {
+            0 => Ok(Self::Zip32Standard),
+            1 => Ok(Self::CrosslinkTruncated32),
+            other => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("unknown SeedDerivation tag {other}"),
+            )),
+        }
+    }
+}
+
 /// In-memory store for wallet spending or viewing keys
 #[derive(Debug)]
 pub enum UnifiedKeyStore {
@@ -48,8 +77,18 @@ impl UnifiedKeyStore {
         network: &ChainType,
         seed: &[u8; 64],
         account_index: zip32::AccountId,
+        seed_derivation: SeedDerivation,
     ) -> Result<Self, KeyError> {
-        let usk = UnifiedSpendingKey::from_seed(network, seed, account_index)
+        if seed_derivation == SeedDerivation::CrosslinkTruncated32
+            && matches!(network, ChainType::Mainnet)
+        {
+            return Err(KeyError::CrosslinkSeedOnMainnet);
+        }
+        let seed_slice: &[u8] = match seed_derivation {
+            SeedDerivation::Zip32Standard => &seed[..],
+            SeedDerivation::CrosslinkTruncated32 => &seed[..32],
+        };
+        let usk = UnifiedSpendingKey::from_seed(network, seed_slice, account_index)
             .map_err(KeyError::KeyDerivationError)?;
 
         Ok(UnifiedKeyStore::Spend(Box::new(usk)))
@@ -62,9 +101,10 @@ impl UnifiedKeyStore {
         network: &ChainType,
         mnemonic: &Mnemonic,
         account_index: zip32::AccountId,
+        seed_derivation: SeedDerivation,
     ) -> Result<Self, KeyError> {
         let seed = mnemonic.to_seed("");
-        Self::new_from_seed(network, &seed, account_index)
+        Self::new_from_seed(network, &seed, account_index, seed_derivation)
     }
 
     /// Create a unified key store from unified spending key bytes.
@@ -456,5 +496,116 @@ fn read_write_receiver_selections() {
             .write(receivers_selected_bytes.as_mut_slice(), ())
             .unwrap();
         assert_eq!(i as u8, receivers_selected_bytes[1]);
+    }
+}
+
+#[cfg(test)]
+mod seed_derivation_tests {
+    use super::{ReceiverSelection, SeedDerivation, UnifiedKeyStore};
+    use crate::config::ChainType;
+    use crate::wallet::error::KeyError;
+    use bip0039::Mnemonic;
+    use zip32::AccountId;
+
+    /// Canonical BIP-39 24-word test vector (all-zero entropy, checksum word "art").
+    const TEST_MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon \
+         abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+         abandon abandon abandon abandon art";
+
+    /// A non-mainnet network to exercise crosslink derivation (rejected on mainnet).
+    fn non_mainnet() -> ChainType {
+        crate::config::ZingoConfig::create_testnet().chain
+    }
+
+    /// Derives account 0's first orchard-only unified address, encoded for `network`.
+    fn encoded_unified_address(network: &ChainType, seed_derivation: SeedDerivation) -> String {
+        let mnemonic = Mnemonic::from_phrase(TEST_MNEMONIC.to_string()).unwrap();
+        let key_store =
+            UnifiedKeyStore::new_from_mnemonic(network, &mnemonic, AccountId::ZERO, seed_derivation)
+                .unwrap();
+        key_store
+            .generate_unified_address(0, ReceiverSelection::orchard_only())
+            .unwrap()
+            .encode(network)
+    }
+
+    #[test]
+    fn crosslink_truncation_differs() {
+        let network = non_mainnet();
+        let standard = encoded_unified_address(&network, SeedDerivation::Zip32Standard);
+        let truncated = encoded_unified_address(&network, SeedDerivation::CrosslinkTruncated32);
+        assert_ne!(
+            standard, truncated,
+            "truncated-32 derivation must yield a different address than standard zip32"
+        );
+    }
+
+    #[test]
+    fn crosslink_truncation_is_deterministic() {
+        let network = non_mainnet();
+        let first = encoded_unified_address(&network, SeedDerivation::CrosslinkTruncated32);
+        let second = encoded_unified_address(&network, SeedDerivation::CrosslinkTruncated32);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn crosslink_rejected_on_mainnet() {
+        let mnemonic = Mnemonic::from_phrase(TEST_MNEMONIC.to_string()).unwrap();
+        let result = UnifiedKeyStore::new_from_mnemonic(
+            &ChainType::Mainnet,
+            &mnemonic,
+            AccountId::ZERO,
+            SeedDerivation::CrosslinkTruncated32,
+        );
+        assert!(matches!(result, Err(KeyError::CrosslinkSeedOnMainnet)));
+    }
+
+    /// Golden interop vector: the `(mnemonic -> transparent address, unified address)` triple that a
+    /// real zebra-crosslink node reports for the same seed under crosslink (truncated-32) derivation.
+    #[test]
+    #[ignore = "TODO: paste node-reported addresses; see issue on seed-derivation interop"]
+    fn crosslink_golden_vector_matches_zebra_node() {
+        use pepper_sync::keys::transparent::{self, TransparentScope};
+        use zcash_transparent::keys::NonHardenedChildIndex;
+
+        // The zebra-crosslink faucet MINER wallet uses this canonical 12-word phrase
+        // (hardcoded upstream in zebra-crosslink `wallet/src/lib.rs`, entropy = 16 zero
+        // bytes). It flows through the node's truncating `stuff_from_seed_phrase`, so its
+        // addresses ARE a valid crosslink-truncated golden vector. The node only prints
+        // them at runtime ("MINER WALLET T-ADDRESS:" / "MINER WALLET ADDRESS:") — never in
+        // source — so paste those exact strings below.
+        const GOLDEN_MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon \
+             abandon abandon abandon abandon about";
+        // TODO: paste the addresses a real zebra-crosslink node reports for GOLDEN_MNEMONIC.
+        //       DO NOT invent these; obtain them from the node's MINER WALLET output.
+        const EXPECTED_TRANSPARENT_ADDRESS: &str = "TODO_PASTE_NODE_TRANSPARENT_ADDRESS";
+        const EXPECTED_UNIFIED_ADDRESS: &str = "TODO_PASTE_NODE_UNIFIED_ADDRESS";
+
+        let network = non_mainnet();
+        let mnemonic = Mnemonic::from_phrase(GOLDEN_MNEMONIC.to_string()).unwrap();
+        let key_store = UnifiedKeyStore::new_from_mnemonic(
+            &network,
+            &mnemonic,
+            AccountId::ZERO,
+            SeedDerivation::CrosslinkTruncated32,
+        )
+        .unwrap();
+
+        let unified_address = key_store
+            .generate_unified_address(0, ReceiverSelection::orchard_only())
+            .unwrap()
+            .encode(&network);
+        let transparent_address = transparent::encode_address(
+            &network,
+            key_store
+                .generate_transparent_address(
+                    NonHardenedChildIndex::ZERO,
+                    TransparentScope::External,
+                )
+                .unwrap(),
+        );
+
+        assert_eq!(transparent_address, EXPECTED_TRANSPARENT_ADDRESS);
+        assert_eq!(unified_address, EXPECTED_UNIFIED_ADDRESS);
     }
 }

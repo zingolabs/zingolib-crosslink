@@ -36,7 +36,7 @@ use crate::{
     config::ZingoConfig,
     lightclient::crosslink::{RosterMembers, WalletBond, WalletBonds},
     wallet::{
-        LightWallet, WalletBase,
+        LightWallet, SeedDerivation, WalletBase,
         balance::AccountBalance,
         error::{BalanceError, KeyError, SummaryError, WalletError},
         keys::unified::{ReceiverSelection, UnifiedAddressId},
@@ -81,6 +81,7 @@ impl LightClient {
         config: ZingoConfig,
         chain_height: BlockHeight,
         overwrite: bool,
+        seed_derivation: SeedDerivation,
     ) -> Result<Self, LightClientError> {
         let sapling_activation_height = config
             .chain
@@ -93,6 +94,7 @@ impl LightClient {
                 config.chain,
                 WalletBase::FreshEntropy {
                     no_of_accounts: config.no_of_accounts,
+                    seed_derivation,
                 },
                 birthday,
                 config.wallet_settings.clone(),
@@ -604,7 +606,10 @@ mod tests {
     use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
     use zingo_test_vectors::seeds::CHIMNEY_BETTER_SEED;
 
-    use crate::{lightclient::LightClient, wallet::WalletBase};
+    use crate::{
+        lightclient::LightClient,
+        wallet::{SeedDerivation, WalletBase},
+    };
 
     #[tokio::test]
     async fn new_wallet_from_phrase() {
@@ -629,6 +634,7 @@ mod tests {
                 WalletBase::Mnemonic {
                     mnemonic: Mnemonic::from_phrase(CHIMNEY_BETTER_SEED.to_string()).unwrap(),
                     no_of_accounts: config.no_of_accounts,
+                    seed_derivation: SeedDerivation::Zip32Standard,
                 },
                 1.into(),
                 config.wallet_settings.clone(),
@@ -648,6 +654,7 @@ mod tests {
                 WalletBase::Mnemonic {
                     mnemonic: Mnemonic::from_phrase(CHIMNEY_BETTER_SEED.to_string()).unwrap(),
                     no_of_accounts: config.no_of_accounts,
+                    seed_derivation: SeedDerivation::Zip32Standard,
                 },
                 1.into(),
                 config.wallet_settings.clone(),

@@ -257,7 +257,7 @@ mod test {
         testutils::chain_generics::{
             conduct_chain::ConductChain as _, networked::NetworkedTestEnvironment, with_assertions,
         },
-        wallet::{LightWallet, WalletBase, WalletSettings, disk::testing::examples},
+        wallet::{LightWallet, SeedDerivation, WalletBase, WalletSettings, disk::testing::examples},
     };
 
     #[tokio::test]
@@ -274,6 +274,7 @@ mod test {
                 WalletBase::Mnemonic {
                     mnemonic: Mnemonic::from_phrase(ABANDON_ART_SEED.to_string()).unwrap(),
                     no_of_accounts: 1.try_into().unwrap(),
+                    seed_derivation: SeedDerivation::Zip32Standard,
                 },
                 419_200.into(),
                 WalletSettings {

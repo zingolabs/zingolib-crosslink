@@ -27,7 +27,10 @@ use crate::wallet::{legacy::WalletOptions, traits::ReadableWriteable};
 use crate::{
     config::ChainType,
     wallet::{
-        keys::{legacy::WalletCapability, unified::UnifiedKeyStore},
+        keys::{
+            legacy::WalletCapability,
+            unified::{SeedDerivation, UnifiedKeyStore},
+        },
         legacy::{BlockData, TxMap},
     },
 };
@@ -43,9 +46,12 @@ use pepper_sync::{
 impl LightWallet {
     /// Changes in version 39:
     /// - sync state updated serialized version
+    ///
+    /// Changes in version 40:
+    /// - persist seed_derivation
     #[must_use]
     pub const fn serialized_version() -> u64 {
-        39
+        40
     }
 
     /// Serialize into `writer`
@@ -117,7 +123,8 @@ impl LightWallet {
         self.sync_state.write(&mut writer)?;
         self.wallet_settings.sync_config.write(&mut writer)?;
         writer.write_u32::<LittleEndian>(self.wallet_settings.min_confirmations.into())?;
-        self.price_list.write(&mut writer)
+        self.price_list.write(&mut writer)?;
+        writer.write_u8(self.seed_derivation.tag())
     }
 
     /// Deserialize into `reader`
@@ -127,7 +134,7 @@ impl LightWallet {
         info!("Reading wallet version {version}");
         match version {
             ..32 => Self::read_v0(reader, network, version),
-            32..=39 => Self::read_v32(reader, network, version),
+            32..=40 => Self::read_v32(reader, network, version),
             _ => Err(io::Error::new(
                 ErrorKind::InvalidData,
                 format!(
@@ -318,6 +325,7 @@ impl LightWallet {
             current_version: LightWallet::serialized_version(),
             read_version: version,
             mnemonic,
+            seed_derivation: SeedDerivation::default(),
             birthday,
             unified_key_store,
             price_list: PriceList::new(),
@@ -542,11 +550,18 @@ impl LightWallet {
             PriceList::new()
         };
 
+        let seed_derivation = if version >= 40 {
+            SeedDerivation::from_tag(reader.read_u8()?)?
+        } else {
+            SeedDerivation::default()
+        };
+
         Ok(Self {
             current_version: LightWallet::serialized_version(),
             read_version: version,
             network,
             mnemonic,
+            seed_derivation,
             birthday,
             unified_key_store,
             unified_addresses,
@@ -567,3 +582,40 @@ impl LightWallet {
 
 #[cfg(any(test, feature = "testutils"))]
 pub mod testing;
+
+#[cfg(test)]
+mod seed_derivation_persistence_tests {
+    use super::*;
+    use crate::config::ZingoConfig;
+    use crate::wallet::{SeedDerivation, WalletBase};
+
+    #[test]
+    fn crosslink_seed_derivation_survives_round_trip() {
+        // Crosslink truncation is rejected on mainnet, so exercise persistence on testnet.
+        let config = ZingoConfig::create_testnet();
+        let network = config.chain;
+
+        let mut wallet = LightWallet::new(
+            network,
+            WalletBase::FreshEntropy {
+                no_of_accounts: NonZeroU32::try_from(1).unwrap(),
+                seed_derivation: SeedDerivation::CrosslinkTruncated32,
+            },
+            419_200.into(),
+            config.wallet_settings.clone(),
+        )
+        .unwrap();
+        assert_eq!(wallet.seed_derivation, SeedDerivation::CrosslinkTruncated32);
+
+        let mut bytes = Vec::new();
+        wallet.write(&mut bytes, &network).unwrap();
+
+        let read_back = LightWallet::read(&bytes[..], network).unwrap();
+        assert_eq!(read_back.current_version, 40);
+        assert_eq!(read_back.read_version, 40);
+        assert_eq!(
+            read_back.seed_derivation,
+            SeedDerivation::CrosslinkTruncated32
+        );
+    }
+}

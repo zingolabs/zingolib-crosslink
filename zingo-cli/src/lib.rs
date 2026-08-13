@@ -21,7 +21,7 @@ use pepper_sync::config::{PerformanceLevel, SyncConfig, TransparentAddressDiscov
 use zingolib::config::ChainType;
 use zingolib::lightclient::LightClient;
 
-use zingolib::wallet::{LightWallet, WalletBase, WalletSettings};
+use zingolib::wallet::{LightWallet, SeedDerivation, WalletBase, WalletSettings};
 
 use crate::commands::RT;
 
@@ -58,6 +58,13 @@ pub fn build_clap_app() -> clap::ArgMatches {
                 .value_name("UFVK")
                 .value_parser(parse_ufvk)
                 .help("Create a new wallet with the given encoded unified full viewing key. Will fail if wallet already exists"))
+            .arg(Arg::new("seed-derivation")
+                .long("seed-derivation")
+                .value_name("SCHEME")
+                .value_parser(["zip32", "crosslink"])
+                .default_value("zip32")
+                .conflicts_with("viewkey")
+                .help(r#"How spending keys are derived from the BIP-39 seed. "zip32" (default) uses the full 64-byte seed per ZIP-32. "crosslink" uses only the first 32 bytes to match the zebra-crosslink node (this is non-conforming and rejected on mainnet)."#))
             .arg(Arg::new("birthday")
                 .long("birthday")
                 .value_name("birthday")
@@ -327,6 +334,7 @@ pub struct ConfigTemplate {
     command: Option<String>,
     chaintype: ChainType,
     tor_enabled: bool,
+    seed_derivation: SeedDerivation,
 }
 
 impl ConfigTemplate {
@@ -397,6 +405,14 @@ If you don't remember the block height, you can pass '--birthday 0' to scan from
             ));
         }
 
+        let seed_derivation = match matches
+            .get_one::<String>("seed-derivation")
+            .map(String::as_str)
+        {
+            Some("crosslink") => SeedDerivation::CrosslinkTruncated32,
+            _ => SeedDerivation::Zip32Standard,
+        };
+
         let sync = !matches.get_flag("nosync");
         let waitsync = matches.get_flag("waitsync");
         Ok(Self {
@@ -411,6 +427,7 @@ If you don't remember the block height, you can pass '--birthday 0' to scan from
             command,
             chaintype,
             tor_enabled,
+            seed_derivation,
         })
     }
 }
@@ -455,6 +472,7 @@ pub fn startup(
                         )
                     })?,
                     no_of_accounts: NonZeroU32::try_from(1).expect("hard-coded integer"),
+                    seed_derivation: filled_template.seed_derivation,
                 },
                 (filled_template.birthday as u32).into(),
                 config.wallet_settings.clone(),
@@ -497,8 +515,13 @@ pub fn startup(
             })
             .map_err(|e| std::io::Error::other(format!("Failed to create lightclient. {e}")))?;
 
-        LightClient::new(config.clone(), chain_height, false)
-            .map_err(|e| std::io::Error::other(format!("Failed to create lightclient. {e}")))?
+        LightClient::new(
+            config.clone(),
+            chain_height,
+            false,
+            filled_template.seed_derivation,
+        )
+        .map_err(|e| std::io::Error::other(format!("Failed to create lightclient. {e}")))?
     };
 
     if filled_template.command.is_none() {
