@@ -51,6 +51,7 @@ async fn sync_mainnet_test() {
             WalletBase::Mnemonic {
                 mnemonic: Mnemonic::from_phrase(HOSPITAL_MUSEUM_SEED.to_string()).unwrap(),
                 no_of_accounts: NonZeroU32::try_from(1).expect("hard-coded integer"),
+                seed_derivation: zingolib::wallet::SeedDerivation::Zip32Standard,
             },
             1_500_000.into(),
             config.wallet_settings.clone(),
@@ -121,6 +122,7 @@ async fn sync_status() {
             WalletBase::Mnemonic {
                 mnemonic: Mnemonic::from_phrase(HOSPITAL_MUSEUM_SEED.to_string()).unwrap(),
                 no_of_accounts: NonZeroU32::try_from(1).expect("hard-coded integer"),
+                seed_derivation: zingolib::wallet::SeedDerivation::Zip32Standard,
             },
             2_496_152.into(),
             config.wallet_settings.clone(),

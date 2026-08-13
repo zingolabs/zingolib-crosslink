@@ -7,6 +7,7 @@ use crate::config::ZingoConfig;
 use crate::get_base_address_macro;
 use crate::testutils::lightclient::from_inputs;
 use crate::wallet::keys::unified::ReceiverSelection;
+use crate::wallet::SeedDerivation;
 use crate::{lightclient::LightClient, wallet::LightWallet};
 
 #[allow(async_fn_in_trait)]
@@ -32,7 +33,8 @@ pub trait ConductChain {
     /// builds an empty client
     async fn create_client(&mut self) -> LightClient {
         let config = self.zingo_config().await;
-        let mut lightclient = LightClient::new(config, 1.into(), false).unwrap();
+        let mut lightclient =
+            LightClient::new(config, 1.into(), false, SeedDerivation::Zip32Standard).unwrap();
         lightclient
             .generate_unified_address(ReceiverSelection::sapling_only(), zip32::AccountId::ZERO)
             .await

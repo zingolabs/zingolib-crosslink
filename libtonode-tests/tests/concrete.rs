@@ -4602,6 +4602,7 @@ mod testnet_test {
                 WalletBase::Mnemonic {
                     mnemonic: Mnemonic::from_phrase(HOSPITAL_MUSEUM_SEED).unwrap(),
                     no_of_accounts: config.no_of_accounts,
+                    seed_derivation: zingolib::wallet::SeedDerivation::Zip32Standard,
                 },
                 2_000_000.into(),
                 config.wallet_settings.clone(),

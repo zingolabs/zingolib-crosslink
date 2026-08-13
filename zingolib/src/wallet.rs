@@ -45,6 +45,7 @@ mod zcb_traits;
 pub use pepper_sync::config::{
     PerformanceLevel, SyncConfig, TransparentAddressDiscovery, TransparentAddressDiscoveryScopes,
 };
+pub use crate::wallet::keys::unified::SeedDerivation;
 
 /// Wallet settings.
 #[derive(Debug, Clone)]
@@ -84,11 +85,15 @@ impl std::fmt::Display for RecoveryInfo {
 /// Data used to initialize new instance of `LightWallet`
 pub enum WalletBase {
     /// Generate a wallet with a new seed for a number of accounts.
-    FreshEntropy { no_of_accounts: NonZeroU32 },
+    FreshEntropy {
+        no_of_accounts: NonZeroU32,
+        seed_derivation: SeedDerivation,
+    },
     /// Generate a wallet from a mnemonic (phrase or entropy) for a number of accounts.
     Mnemonic {
         mnemonic: Mnemonic,
         no_of_accounts: NonZeroU32,
+        seed_derivation: SeedDerivation,
     },
     /// Generate a wallet from a unified full viewing key.
     // TODO: take concrete UFVK type
@@ -119,6 +124,8 @@ pub struct LightWallet {
     pub network: ChainType,
     /// The seed for the wallet, stored as a zip339 Mnemonic, and the account index.
     mnemonic: Option<Mnemonic>,
+    /// How this wallet's spending keys are derived from its BIP-39 seed.
+    seed_derivation: SeedDerivation,
     /// The block height at which the wallet was created.
     pub birthday: BlockHeight,
     /// Unified key store
@@ -171,13 +178,17 @@ impl LightWallet {
             ));
         }
 
-        let (unified_key_store, mnemonic) = match wallet_base {
-            WalletBase::FreshEntropy { no_of_accounts } => {
+        let (unified_key_store, mnemonic, seed_derivation) = match wallet_base {
+            WalletBase::FreshEntropy {
+                no_of_accounts,
+                seed_derivation,
+            } => {
                 return Self::new(
                     network,
                     WalletBase::Mnemonic {
                         mnemonic: Mnemonic::generate(bip0039::Count::Words24),
                         no_of_accounts,
+                        seed_derivation,
                     },
                     birthday,
                     wallet_settings,
@@ -186,6 +197,7 @@ impl LightWallet {
             WalletBase::Mnemonic {
                 mnemonic,
                 no_of_accounts,
+                seed_derivation,
             } => {
                 let no_of_accounts = u32::from(no_of_accounts);
                 let unified_key_store = (0..no_of_accounts)
@@ -193,11 +205,16 @@ impl LightWallet {
                         let account_id = zip32::AccountId::try_from(account_index)?;
                         Ok((
                             account_id,
-                            UnifiedKeyStore::new_from_mnemonic(&network, &mnemonic, account_id)?,
+                            UnifiedKeyStore::new_from_mnemonic(
+                                &network,
+                                &mnemonic,
+                                account_id,
+                                seed_derivation,
+                            )?,
                         ))
                     })
                     .collect::<Result<BTreeMap<_, _>, KeyError>>()?;
-                (unified_key_store, Some(mnemonic))
+                (unified_key_store, Some(mnemonic), seed_derivation)
             }
             WalletBase::Ufvk(ufvk_encoded) => {
                 let mut unified_key_store = BTreeMap::new();
@@ -205,7 +222,7 @@ impl LightWallet {
                     zip32::AccountId::ZERO,
                     UnifiedKeyStore::new_from_ufvk(&network, ufvk_encoded)?,
                 );
-                (unified_key_store, None)
+                (unified_key_store, None, SeedDerivation::default())
             }
             WalletBase::Usk(unified_spending_key) => {
                 let mut unified_key_store = BTreeMap::new();
@@ -213,7 +230,7 @@ impl LightWallet {
                     zip32::AccountId::ZERO,
                     UnifiedKeyStore::new_from_usk(unified_spending_key.as_slice())?,
                 );
-                (unified_key_store, None)
+                (unified_key_store, None, SeedDerivation::default())
             }
         };
 
@@ -256,6 +273,7 @@ impl LightWallet {
             read_version: LightWallet::serialized_version(),
             network,
             mnemonic,
+            seed_derivation,
             birthday: BlockHeight::from_u32(birthday.into()),
             unified_key_store,
             unified_addresses,
@@ -376,6 +394,7 @@ impl LightWallet {
                 &self.network,
                 self.mnemonic().ok_or(WalletError::MnemonicNotFound)?,
                 account_id,
+                self.seed_derivation,
             )?,
         );
 

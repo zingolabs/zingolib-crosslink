@@ -200,7 +200,7 @@ mod tests {
 
     use crate::{
         config::ZingoConfigBuilder,
-        wallet::{LightWallet, WalletBase, WalletSettings, error::WalletError},
+        wallet::{LightWallet, SeedDerivation, WalletBase, WalletSettings, error::WalletError},
     };
 
     fn test_wallet() -> LightWallet {
@@ -209,6 +209,7 @@ mod tests {
             config.chain,
             WalletBase::FreshEntropy {
                 no_of_accounts: 1.try_into().unwrap(),
+                seed_derivation: SeedDerivation::Zip32Standard,
             },
             419_200.into(),
             WalletSettings {
