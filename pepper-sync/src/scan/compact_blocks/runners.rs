@@ -7,19 +7,19 @@ use std::sync::atomic::AtomicUsize;
 
 use crossbeam_channel as channel;
 
-use orchard::note_encryption::{CompactAction, OrchardDomain};
+use orchard::note_encryption::{CompactAction, IronwoodDomain, OrchardDomain};
 use sapling_crypto::note_encryption::{CompactOutputDescription, SaplingDomain};
 use zcash_client_backend::proto::compact_formats::CompactBlock;
 use zcash_note_encryption::{BatchDomain, COMPACT_NOTE_SIZE, Domain, ShieldedOutput, batch};
 use zcash_primitives::{
     block::BlockHash, transaction::TxId, transaction::components::sapling::zip212_enforcement,
 };
-use zcash_protocol::{ShieldedProtocol, consensus};
+use zcash_protocol::{ShieldedPool, consensus};
 
 use memuse::DynamicUsage;
 
 use crate::keys::KeyId;
-use crate::keys::ScanningKeyOps as _;
+use crate::keys::ScanningKeyOps;
 use crate::keys::ScanningKeys;
 use crate::wallet::OutputId;
 
@@ -46,15 +46,25 @@ impl<T: Tasks<TaggedSaplingBatch>> SaplingTasks for T {}
 pub(crate) trait OrchardTasks: Tasks<TaggedOrchardBatch> {}
 impl<T: Tasks<TaggedOrchardBatch>> OrchardTasks for T {}
 
-pub(crate) struct BatchRunners<TS: SaplingTasks, TO: OrchardTasks> {
+type TaggedIronwoodBatch =
+    Batch<IronwoodDomain, orchard::note_encryption::CompactAction, CompactDecryptor>;
+type TaggedIronwoodBatchRunner<Tasks> =
+    BatchRunner<IronwoodDomain, orchard::note_encryption::CompactAction, CompactDecryptor, Tasks>;
+
+pub(crate) trait IronwoodTasks: Tasks<TaggedIronwoodBatch> {}
+impl<T: Tasks<TaggedIronwoodBatch>> IronwoodTasks for T {}
+
+pub(crate) struct BatchRunners<TS: SaplingTasks, TO: OrchardTasks, TI: IronwoodTasks> {
     pub(crate) sapling: TaggedSaplingBatchRunner<TS>,
     pub(crate) orchard: TaggedOrchardBatchRunner<TO>,
+    pub(crate) ironwood: TaggedIronwoodBatchRunner<TI>,
 }
 
-impl<TS, TO> BatchRunners<TS, TO>
+impl<TS, TO, TI> BatchRunners<TS, TO, TI>
 where
     TS: SaplingTasks,
     TO: OrchardTasks,
+    TI: IronwoodTasks,
 {
     pub(crate) fn for_keys(batch_size_threshold: usize, scanning_keys: &ScanningKeys) -> Self {
         BatchRunners {
@@ -70,7 +80,14 @@ where
                 scanning_keys
                     .orchard
                     .iter()
-                    .map(|(id, key)| (*id, key.prepare())),
+                    .map(|(id, key)| (*id, ScanningKeyOps::<OrchardDomain, _>::prepare(key))),
+            ),
+            ironwood: BatchRunner::new(
+                batch_size_threshold,
+                scanning_keys
+                    .ironwood
+                    .iter()
+                    .map(|(id, key)| (*id, ScanningKeyOps::<IronwoodDomain, _>::prepare(key))),
             ),
         }
     }
@@ -78,6 +95,7 @@ where
     pub(crate) fn flush(&mut self) {
         self.sapling.flush();
         self.orchard.flush();
+        self.ironwood.flush();
     }
 
     #[tracing::instrument(skip_all, fields(height = block.height), level = "debug")]
@@ -104,11 +122,11 @@ where
                     .iter()
                     .enumerate()
                     .map(|(i, output)| {
-                        CompactOutputDescription::try_from(output).map_err(|()| {
+                        CompactOutputDescription::try_from(output).map_err(|_| {
                             zcash_client_backend::scanning::ScanError::EncodingInvalid {
                                 at_height: block_height,
                                 txid,
-                                pool_type: ShieldedProtocol::Sapling,
+                                pool_type: ShieldedPool::Sapling,
                                 index: i,
                             }
                         })
@@ -124,11 +142,31 @@ where
                     .iter()
                     .enumerate()
                     .map(|(i, action)| {
-                        CompactAction::try_from(action).map_err(|()| {
+                        CompactAction::try_from(action).map_err(|_| {
                             zcash_client_backend::scanning::ScanError::EncodingInvalid {
                                 at_height: block_height,
                                 txid,
-                                pool_type: ShieldedProtocol::Orchard,
+                                pool_type: ShieldedPool::Orchard,
+                                index: i,
+                            }
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+
+            self.ironwood.add_outputs(
+                block_hash,
+                txid,
+                IronwoodDomain::for_compact_action,
+                &tx.ironwood_actions
+                    .iter()
+                    .enumerate()
+                    .map(|(i, action)| {
+                        CompactAction::try_from(action).map_err(|_| {
+                            zcash_client_backend::scanning::ScanError::EncodingInvalid {
+                                at_height: block_height,
+                                txid,
+                                pool_type: ShieldedPool::Ironwood,
                                 index: i,
                             }
                         })

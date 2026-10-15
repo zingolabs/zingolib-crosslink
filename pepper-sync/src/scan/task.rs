@@ -356,8 +356,10 @@ where
                 let mut retry_height = scan_task.scan_range.block_range().start;
                 let mut sapling_output_count = 0;
                 let mut orchard_output_count = 0;
+                let mut ironwood_output_count = 0;
                 let mut sapling_nullifier_count = 0;
                 let mut orchard_nullifier_count = 0;
+                let mut ironwood_nullifier_count = 0;
                 let mut first_batch = true;
 
                 let mut block_stream = {
@@ -461,6 +463,10 @@ where
                             .vtx
                             .iter()
                             .fold(0, |acc, transaction| acc + transaction.actions.len());
+                        ironwood_nullifier_count +=
+                            compact_block.vtx.iter().fold(0, |acc, transaction| {
+                                acc + transaction.ironwood_actions.len()
+                            });
                     } else {
                         if let Some(block) = previous_task_last_block.as_ref()
                             && scan_task.start_seam_block.is_none()
@@ -504,10 +510,18 @@ where
                             .vtx
                             .iter()
                             .fold(0, |acc, transaction| acc + transaction.actions.len());
+                        ironwood_output_count +=
+                            compact_block.vtx.iter().fold(0, |acc, transaction| {
+                                acc + transaction.ironwood_actions.len()
+                            });
                     }
 
-                    if sapling_output_count + orchard_output_count > max_batch_outputs
-                        || sapling_nullifier_count + orchard_nullifier_count > MAX_BATCH_NULLIFIERS
+                    if sapling_output_count + orchard_output_count + ironwood_output_count
+                        > max_batch_outputs
+                        || sapling_nullifier_count
+                            + orchard_nullifier_count
+                            + ironwood_nullifier_count
+                            > MAX_BATCH_NULLIFIERS
                     {
                         let (full_batch, new_batch) = scan_task
                             .clone()
@@ -523,8 +537,10 @@ where
                         scan_task = new_batch;
                         sapling_output_count = 0;
                         orchard_output_count = 0;
+                        ironwood_output_count = 0;
                         sapling_nullifier_count = 0;
                         orchard_nullifier_count = 0;
+                        ironwood_nullifier_count = 0;
                     }
 
                     retry_height = compact_block.height() + 1;

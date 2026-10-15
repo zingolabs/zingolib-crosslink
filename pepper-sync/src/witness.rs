@@ -20,8 +20,10 @@ pub(crate) const SHARD_HEIGHT: u8 = 16;
 pub(crate) struct WitnessData {
     pub(crate) sapling_initial_position: Position,
     pub(crate) orchard_initial_position: Position,
+    pub(crate) ironwood_initial_position: Position,
     pub(crate) sapling_leaves_and_retentions: Vec<(sapling_crypto::Node, Retention<BlockHeight>)>,
     pub(crate) orchard_leaves_and_retentions: Vec<(MerkleHashOrchard, Retention<BlockHeight>)>,
+    pub(crate) ironwood_leaves_and_retentions: Vec<(MerkleHashOrchard, Retention<BlockHeight>)>,
 }
 
 impl WitnessData {
@@ -29,12 +31,15 @@ impl WitnessData {
     pub(crate) fn new(
         sapling_initial_position: Position,
         orchard_initial_position: Position,
+        ironwood_initial_position: Position,
     ) -> Self {
         WitnessData {
             sapling_initial_position,
             orchard_initial_position,
+            ironwood_initial_position,
             sapling_leaves_and_retentions: Vec::new(),
             orchard_leaves_and_retentions: Vec::new(),
+            ironwood_leaves_and_retentions: Vec::new(),
         }
     }
 }

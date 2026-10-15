@@ -16,17 +16,13 @@ use pepper_sync::config::PerformanceLevel;
 use pepper_sync::keys::transparent;
 use std::sync::LazyLock;
 use tokio::runtime::Runtime;
-use zcash_primitives::transaction::{StakingAction, StakingActionKind};
-use zcash_protocol::local_consensus::LocalNetwork;
-use zingo_netutils::get_client;
 use zingolib::ConfiguredActivationHeights;
-use zingolib::data::receivers::Receivers;
 use zingolib::utils::conversion::txid_from_hex_encoded_str;
 
 use zcash_address::unified::{Container, Encoding, Ufvk};
 use zcash_keys::address::Address;
 use zcash_keys::keys::UnifiedFullViewingKey;
-use zcash_protocol::consensus::{BlockHeight, NetworkType};
+use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::value::Zatoshis;
 
 use pepper_sync::wallet::{KeyIdInterface, OrchardNote, SaplingNote, SyncMode};
@@ -225,31 +221,13 @@ impl Command for ParseAddressCommand {
         )> {
             [
                 zingolib::config::ChainType::Mainnet,
-                zingolib::config::ChainType::Testnet(ConfiguredActivationHeights {
-                    before_overwinter: Some(1),
-                    overwinter: Some(1),
-                    sapling: Some(1),
-                    blossom: Some(1),
-                    heartwood: Some(1),
-                    canopy: Some(1),
-                    nu5: Some(1),
-                    nu6: Some(1),
-                    nu6_1: None,
-                    nu7: None,
-                }),
+                zingolib::config::ChainType::Testnet(
+                    ConfiguredActivationHeights::crosslink_featurenet(),
+                ),
                 #[cfg(feature = "regtest")]
-                zingolib::config::ChainType::Regtest(ConfiguredActivationHeights {
-                    before_overwinter: Some(1),
-                    overwinter: Some(1),
-                    sapling: Some(1),
-                    blossom: Some(1),
-                    heartwood: Some(1),
-                    canopy: Some(1),
-                    nu5: Some(1),
-                    nu6: Some(1),
-                    nu6_1: Some(1),
-                    nu7: None,
-                }),
+                zingolib::config::ChainType::Regtest(
+                    ConfiguredActivationHeights::regtest_all_active(),
+                ),
             ]
             .iter()
             .find_map(|chain| Address::decode(chain, address).zip(Some(*chain)))
@@ -258,18 +236,7 @@ impl Command for ParseAddressCommand {
             #[allow(unreachable_patterns)]
             let chain_name_string = match chain_name {
                 zingolib::config::ChainType::Mainnet => "main",
-                zingolib::config::ChainType::Testnet(ConfiguredActivationHeights {
-                    before_overwinter: Some(1),
-                    overwinter: Some(1),
-                    sapling: Some(1),
-                    blossom: Some(1),
-                    heartwood: Some(1),
-                    canopy: Some(1),
-                    nu5: Some(1),
-                    nu6: Some(1),
-                    nu6_1: None,
-                    nu7: None,
-                }) => "test",
+                zingolib::config::ChainType::Testnet(_) => "test",
                 #[cfg(feature = "regtest")]
                 zingolib::config::ChainType::Regtest(_) => "regtest",
                 _ => unreachable!("Invalid chain type"),
@@ -1143,10 +1110,12 @@ struct GetBondsCommand {}
 impl Command for GetBondsCommand {
     fn help(&self) -> &'static str {
         indoc! {r#"
-            Returns the bonds related to the wallet.
+            Returns the bonds this wallet created, with their current amount and status from the node.
 
             Usage:
                 get_bonds
+
+            Status: 0 = active, 1 = unbonding, 2 = withdrawn.
         "#}
     }
 
@@ -1158,159 +1127,93 @@ impl Command for GetBondsCommand {
         RT.block_on(async move {
             match lightclient.get_wallet_bonds().await {
                 Ok(bonds) => json::JsonValue::from(bonds).pretty(2),
-                Err(e) => object! { "error" => e.to_string() }.pretty(2),
+                Err(e) => object! { "error" => e }.pretty(2),
             }
         })
+    }
+}
+
+/// Parses a 32-byte bond key from its hex form as printed by `get_bonds`.
+fn parse_bond_key(arg: &str) -> Result<[u8; 32], CommandError> {
+    hex::decode(arg.trim())
+        .ok()
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+        .ok_or(CommandError::InvalidArguments)
+}
+
+/// Parses and verifies a `zfinv1` finalizer address.
+fn parse_finalizer(arg: &str) -> Result<zingolib::crosslink::FinalizerAddress, String> {
+    zingolib::crosslink::parse_finalizer_address(arg).map_err(|e| e.to_string())
+}
+
+fn staking_proposal_json(
+    proposal: &zingolib::wallet::propose::StakingProposal<proposal::ExtraFeeProposal>,
+) -> json::JsonValue {
+    let action = proposal.staking_action();
+    let fee = match proposal::total_fee(proposal.proportional_fee_proposal()) {
+        Ok(fee) => fee.into_u64(),
+        Err(e) => return object! { "error" => e.to_string() },
+    };
+    let target = zingolib::crosslink::action_target_address(action)
+        .map_or(json::JsonValue::Null, |address| {
+            json::JsonValue::from(zingolib::crosslink::encode_finalizer_address(&address))
+        });
+    object! {
+        "kind" => zingolib::crosslink::staking_action_kind_name(action.kind()),
+        "bond_key" => hex::encode(action.unique_pubkey()),
+        "amount_zats" => action.amount_zats(),
+        "target_finalizer" => target,
+        "fee" => fee,
     }
 }
 
 /// The stake command
 struct StakeCommand {}
 
-impl StakeCommand {
-    /// Parse the following arguments:
-    /// - action (add, sub, clear) -> add
-    /// - finalizer address
-    /// - amount (in zatoshis)
-    pub async fn parse_args(
-        args: &[&str],
-        _lightclient: &mut LightClient,
-    ) -> Result<(Receivers, StakingAction), CommandError> {
-        if args.len() != 2 {
-            return Err(CommandError::InvalidArguments);
-        }
-
-        let staking_action_kind = StakingActionKind::CreateNewDelegationBond;
-
-        let finalizer_address =
-            StakeCommand::addr_from_str_bytes(args.first().unwrap().as_bytes()).unwrap();
-
-        let amount_u64 = args
-            .get(1)
-            .unwrap()
-            .trim()
-            .parse::<u64>()
-            .map_err(CommandError::ParseIntFromString)?;
-        // let amount = zatoshis_from_u64(amount_u64).map_err(CommandError::ConversionFailed)?;
-
-        let staking_action = StakingAction {
-            kind: staking_action_kind,
-            amount_zats: amount_u64,
-            // target: finalizer_address,
-            // source: zero_source,
-            // insecure_target_name: String::new(),
-
-            // insecure_source_name: String::new(),
-            arg32_0: [0u8; 32],
-            arg32_1: [0u8; 32],
-            arg32_2: finalizer_address,
-            arg32_3: [0u8; 32],
-            arg64_0: [0u8; 64],
-            arg64_1: [0u8; 64],
-        };
-
-        Ok((vec![], staking_action))
-    }
-
-    pub fn addr_from_str_bytes(data: &[u8]) -> Option<[u8; 32]> {
-        const VALS: [u8; 256] = {
-            let mut v = [0xff; 256];
-            v[b'0' as usize] = 0x0;
-            v[b'1' as usize] = 0x1;
-            v[b'2' as usize] = 0x2;
-            v[b'3' as usize] = 0x3;
-            v[b'4' as usize] = 0x4;
-            v[b'5' as usize] = 0x5;
-            v[b'6' as usize] = 0x6;
-            v[b'7' as usize] = 0x7;
-            v[b'8' as usize] = 0x8;
-            v[b'9' as usize] = 0x9;
-            v[b'a' as usize] = 0xa;
-            v[b'b' as usize] = 0xb;
-            v[b'c' as usize] = 0xc;
-            v[b'd' as usize] = 0xd;
-            v[b'e' as usize] = 0xe;
-            v[b'f' as usize] = 0xf;
-            v
-        };
-        let mut buf = [0u8; 32];
-        for i in 0..32 {
-            let a = data.get(2 * i)?;
-            let b = data.get(2 * i + 1)?;
-            let a = VALS[*a as usize];
-            if a == 0xff {
-                return None;
-            }
-            let b = VALS[*b as usize];
-            if b == 0xff {
-                return None;
-            }
-            buf[31 - i] = (a << 4) | b
-        }
-        Some(buf)
-    }
-}
-
 impl Command for StakeCommand {
     fn help(&self) -> &'static str {
         indoc! {r#"
-            Propose the staking of ZEC to the given finalizer.
-            The fee required to stake this transaction will be added to the proposal and displayed to the user.
-            The 'confirm' command must be called to complete and broadcast the proposed staking transaction(s).
+            Propose staking ZEC to a finalizer in a new delegation bond.
+            The bond amount plus the fee are taken from the wallet's shielded notes and shown in the proposal.
+            The 'confirm' command must be called to complete and broadcast the proposed staking transaction.
+
+            The finalizer address is the finalizer's self-certifying `zfinv1...` address, as shown by
+            `roster_info`. It is verified before the proposal is built.
+            From FeaturenetUpgrade1 the amount must be a power of 10 zatoshis.
 
             Usage:
-                stake <finalizer-address> <miner-address> <amount in zatoshis>
+                stake <finalizer-address> <amount in zatoshis>
             Example:
-                IGNORE THIS: stake ztestsapling1x65nq4dgp0qfywgxcwk9n0fvm4fysmapgr2q00p85ju252h6l7mmxu2jg9cqqhtvzd69jwhgv8d 200000
+                stake zfinv1... 100000000
                 confirm
-
         "#}
     }
 
     fn short_help(&self) -> &'static str {
-        "Propose the staking of ZEC to the given finalizer and display a proposal for confirmation."
+        "Propose staking ZEC to the given finalizer and display the proposal for confirmation."
     }
 
     fn exec(&self, args: &[&str], lightclient: &mut LightClient) -> String {
         RT.block_on(async move {
-            let parsed_stake_command = match StakeCommand::parse_args(args, lightclient).await {
-                Ok(parsed_stake_command) => parsed_stake_command,
-                Err(e) => {
-                    return format!("Error: {e}\nTry 'help stake' for correct usage and examples.");
-                }
+            if args.len() != 2 {
+                return "Error: expected <finalizer-address> <amount in zatoshis>. Try 'help stake'."
+                    .to_string();
+            }
+            let target_finalizer = match parse_finalizer(args[0]) {
+                Ok(address) => address,
+                Err(e) => return object! { "error" => e }.pretty(2),
             };
-            // Receivers IS EMPTY
-            let request = match zingolib::data::receivers::transaction_request_from_receivers(
-                parsed_stake_command.0,
-            ) {
-                Ok(request) => request,
-                Err(e) => {
-                    return format!("Error: {e}\nTry 'help stake' for correct usage and examples.");
-                }
+            let amount = match args[1].trim().parse::<u64>() {
+                Ok(zats) => Zatoshis::const_from_u64(zats),
+                Err(e) => return object! { "error" => e.to_string() }.pretty(2),
             };
 
-            let amount = parsed_stake_command.1.amount_zats;
             match lightclient
-                .propose_stake(
-                    request.clone(),
-                    Zatoshis::const_from_u64(amount),
-                    parsed_stake_command.1.arg32_2,
-                    zip32::AccountId::ZERO,
-                )
+                .propose_stake(amount, target_finalizer, zip32::AccountId::ZERO)
                 .await
             {
-                Ok(proposal) => {
-                    let fee = match zingolib::data::proposal::total_fee(
-                        proposal.proportional_fee_proposal(),
-                    ) {
-                        Ok(fee) => fee,
-                        Err(e) => return object! { "error" => e.to_string() }.pretty(2),
-                    };
-                    object! { "fee" => fee.into_u64() }
-                }
-                Err(e) => {
-                    object! { "error" => e.to_string() }
-                }
+                Ok(proposal) => staking_proposal_json(&proposal),
+                Err(e) => object! { "error" => e.to_string() },
             }
             .pretty(2)
         })
@@ -1319,107 +1222,43 @@ impl Command for StakeCommand {
 
 struct BeginUnstakeCommand {}
 
-impl BeginUnstakeCommand {
-    /// Parse the following arguments:
-    /// - original TXID
-    pub async fn parse_args(
-        args: &[&str],
-        lightclient: &mut LightClient,
-    ) -> Result<(Receivers, StakingAction), CommandError> {
-        if args.len() != 1 {
-            return Err(CommandError::InvalidArguments);
-        }
-
-        let begin_unstake = StakingActionKind::BeginDelegationUnbonding;
-
-        let txid = args.first().unwrap();
-
-        let unfiltered_txs = lightclient.transaction_summaries(false).await.unwrap();
-
-        let found_tx = unfiltered_txs
-            .iter()
-            .filter(|tx| tx.staking_action.is_some())
-            .find(|tx| tx.txid.to_string() == *txid)
-            .ok_or(CommandError::InvalidArguments)?;
-
-        let pubkey = found_tx.staking_action.as_ref().unwrap().arg32_0;
-
-        let staking_action = StakingAction {
-            kind: begin_unstake,
-            amount_zats: 0, // This one can be 0
-            arg32_0: pubkey,
-            arg32_1: [0; 32],
-            arg32_2: [0; 32],
-            arg32_3: [0; 32],
-            arg64_0: [0; 64],
-            arg64_1: [0; 64],
-        };
-
-        Ok((vec![], staking_action))
-    }
-}
-
 impl Command for BeginUnstakeCommand {
     fn help(&self) -> &'static str {
         indoc! {r#"
-            Propose the unstaking of ZEC to the given finalizer.
-            The fee required to unstaked this transaction will be added to the proposal and displayed to the user.
-            The 'confirm' command must be called to complete and broadcast the proposed unstaking transaction.
+            Propose to begin unbonding one of this wallet's bonds.
+            The 'confirm' command must be called to complete and broadcast the proposed transaction.
+            Once the unbonding period has passed, `withdraw_stake` returns the bond to the wallet.
 
             Usage:
-                begin_unstake <finalizer-address> <miner-address> <amount in zatoshis>
+                begin_unstake <bond-key>
             Example:
-                IGNORE THIS: begin_unstake ztestsapling1x65nq4dgp0qfywgxcwk9n0fvm4fysmapgr2q00p85ju252h6l7mmxu2jg9cqqhtvzd69jwhgv8d 200000
+                begin_unstake 8f3a...   (the bond_key shown by get_bonds)
                 confirm
-
         "#}
     }
 
     fn short_help(&self) -> &'static str {
-        "Propose the staking of ZEC to the given finalizer and display a proposal for confirmation."
+        "Propose to begin unbonding a bond and display the proposal for confirmation."
     }
 
     fn exec(&self, args: &[&str], lightclient: &mut LightClient) -> String {
         RT.block_on(async move {
-            let parsed_stake_command = match BeginUnstakeCommand::parse_args(args, lightclient)
-                .await
-            {
-                Ok(parsed_stake_command) => parsed_stake_command,
-                Err(e) => {
-                    return format!("Error: {e}\nTry 'help stake' for correct usage and examples.");
-                }
-            };
-            // Receivers IS EMPTY
-            let request = match zingolib::data::receivers::transaction_request_from_receivers(
-                parsed_stake_command.0,
-            ) {
-                Ok(request) => request,
-                Err(e) => {
-                    return format!("Error: {e}\nTry 'help stake' for correct usage and examples.");
+            if args.len() != 1 {
+                return "Error: expected <bond-key>. Try 'help begin_unstake'.".to_string();
+            }
+            let bond_key = match parse_bond_key(args[0]) {
+                Ok(key) => key,
+                Err(_) => {
+                    return object! { "error" => "bond key must be 64 hex characters" }.pretty(2);
                 }
             };
 
             match lightclient
-                .propose_begin_unstake(
-                    request.clone(),
-                    parsed_stake_command.1.arg32_2,
-                    parsed_stake_command.1.arg32_0,
-                    zip32::AccountId::ZERO,
-                )
+                .propose_begin_unstake(bond_key, zip32::AccountId::ZERO)
                 .await
             {
-                Ok(proposal) => {
-                    let fee = match zingolib::data::proposal::total_fee(
-                        proposal.proportional_fee_proposal(),
-                    ) {
-                        Ok(fee) => fee,
-                        Err(e) => return object! { "error" => e.to_string() }.pretty(2),
-                    };
-                    object! { "fee" => fee.into_u64() }
-                }
-                Err(e) => {
-                    object! { "error" => e.to_string() }
-                }
+                Ok(proposal) => staking_proposal_json(&proposal),
+                Err(e) => object! { "error" => e.to_string() },
             }
             .pretty(2)
         })
@@ -1428,180 +1267,42 @@ impl Command for BeginUnstakeCommand {
 
 struct WithdrawStakeCommand {}
 
-impl WithdrawStakeCommand {
-    /// Parse the following arguments:
-    /// - original TXID
-    pub async fn parse_args(
-        args: &[&str],
-        lightclient: &mut LightClient,
-    ) -> Result<(Receivers, StakingAction), CommandError> {
-        if args.len() != 1 {
-            return Err(CommandError::InvalidArguments);
-        }
-
-        let begin_unstake = StakingActionKind::WithdrawDelegationBond;
-
-        let txid = args.first().unwrap();
-
-        let unfiltered_txs = lightclient.transaction_summaries(false).await.unwrap();
-
-        let found_tx = unfiltered_txs
-            .iter()
-            .filter(|tx| tx.staking_action.is_some())
-            .find(|tx| tx.txid.to_string() == *txid)
-            .ok_or(CommandError::InvalidArguments)?;
-
-        let pubkey = found_tx.staking_action.as_ref().unwrap().arg32_0;
-        let original_amount = found_tx.staking_action.as_ref().unwrap().amount_zats;
-
-        let staking_action = StakingAction {
-            kind: begin_unstake,
-            amount_zats: original_amount,
-            arg32_0: pubkey,
-            arg32_1: [0; 32],
-            arg32_2: [0; 32],
-            arg32_3: [0; 32],
-            arg64_0: [0; 64],
-            arg64_1: [0; 64],
-        };
-
-        Ok((vec![], staking_action))
-    }
-}
-
 impl Command for WithdrawStakeCommand {
     fn help(&self) -> &'static str {
         indoc! {r#"
-            Get information about the current roster.
+            Withdraw an unbonded bond back into this wallet's Ironwood pool.
+
+            Unlike the other staking commands this builds and broadcasts the transaction at once,
+            because the bond's value enters the transaction from the staking pool rather than from a
+            note. The wallet pays the fee from its Ironwood notes.
 
             Usage:
-                roster_info
-
+                withdraw_stake <bond-key>
         "#}
     }
 
     fn short_help(&self) -> &'static str {
-        indoc! {r#"
-            Get information about the current roster.
-        "#}
+        "Withdraw an unbonded bond into the wallet and broadcast the transaction."
     }
 
     fn exec(&self, args: &[&str], lightclient: &mut LightClient) -> String {
         RT.block_on(async move {
-            let parsed_stake_command = match WithdrawStakeCommand::parse_args(args, lightclient)
-                .await
-            {
-                Ok(parsed_stake_command) => parsed_stake_command,
-                Err(e) => {
-                    return format!("Error: {e}\nTry 'help stake' for correct usage and examples.");
+            if args.len() != 1 {
+                return "Error: expected <bond-key>. Try 'help withdraw_stake'.".to_string();
+            }
+            let bond_key = match parse_bond_key(args[0]) {
+                Ok(key) => key,
+                Err(_) => {
+                    return object! { "error" => "bond key must be 64 hex characters" }.pretty(2);
                 }
             };
-
-            info!("cfg!(feature=\"regtest\") = {}", cfg!(feature = "regtest"));
-
-            let receiver_address = {
-                #[cfg(feature = "regtest")]
-                {
-                    use zcash_protocol::consensus::BlockHeight;
-                    info!("Using regtest network");
-
-                    let network = LocalNetwork {
-                        overwinter: Some(BlockHeight::from_u32(1)),
-                        sapling: Some(BlockHeight::from_u32(1)),
-                        blossom: Some(BlockHeight::from_u32(1)),
-                        heartwood: Some(BlockHeight::from_u32(1)),
-                        canopy: Some(BlockHeight::from_u32(1)),
-                        nu5: Some(BlockHeight::from_u32(1)),
-                        nu6: Some(BlockHeight::from_u32(1)),
-                        nu6_1: None,
-                    };
-
-                    lightclient
-                        .wallet
-                        .read()
-                        .await
-                        .unified_addresses()
-                        .clone()
-                        .first_entry()
-                        .unwrap()
-                        .get()
-                        .encode(&network)
-                }
-                #[cfg(not(feature = "regtest"))]
-                {
-                    use zcash_protocol::consensus::TEST_NETWORK;
-
-                    let network = TEST_NETWORK;
-
-                    lightclient
-                        .wallet
-                        .read()
-                        .await
-                        .unified_addresses()
-                        .clone()
-                        .first_entry()
-                        .unwrap()
-                        .get()
-                        .encode(&network)
-                }
-            };
-
-            info!("Receiver Address: {}", receiver_address);
-
-            // Receivers IS EMPTY
-            let request =
-                match zingolib::data::receivers::transaction_request_from_receivers(vec![]) {
-                    Ok(request) => request,
-                    Err(e) => {
-                        return format!(
-                            "Error: {e}\nTry 'help stake' for correct usage and examples."
-                        );
-                    }
-                };
-
-            let network = LocalNetwork {
-                overwinter: Some(BlockHeight::from_u32(1)),
-                sapling: Some(BlockHeight::from_u32(1)),
-                blossom: Some(BlockHeight::from_u32(1)),
-                heartwood: Some(BlockHeight::from_u32(1)),
-                canopy: Some(BlockHeight::from_u32(1)),
-                nu5: Some(BlockHeight::from_u32(1)),
-                nu6: Some(BlockHeight::from_u32(1)),
-                nu6_1: None,
-            };
-
-            let mut client = get_client(lightclient.server_uri()).await.unwrap();
-            let bond_key = parsed_stake_command.1.arg32_0;
-
-            lightclient
-                .wallet
-                .write()
-                .await
-                .withdraw_bond_using_orchard(network, &mut client, &bond_key)
-                .await;
 
             match lightclient
-                .propose_withdraw_stake(
-                    request.clone(),
-                    parsed_stake_command.1.arg32_2,
-                    parsed_stake_command.1.arg32_0,
-                    Zatoshis::const_from_u64(parsed_stake_command.1.amount_zats),
-                    zip32::AccountId::ZERO,
-                )
+                .withdraw_bond(bond_key, zip32::AccountId::ZERO)
                 .await
             {
-                Ok(proposal) => {
-                    let fee = match zingolib::data::proposal::total_fee(
-                        proposal.proportional_fee_proposal(),
-                    ) {
-                        Ok(fee) => fee,
-                        Err(e) => return object! { "error" => e.to_string() }.pretty(2),
-                    };
-                    object! { "fee" => fee.into_u64() }
-                }
-                Err(e) => {
-                    object! { "error" => e.to_string() }
-                }
+                Ok(txid) => object! { "txid" => txid.to_string() },
+                Err(e) => object! { "error" => e.to_string() },
             }
             .pretty(2)
         })
@@ -1610,96 +1311,168 @@ impl Command for WithdrawStakeCommand {
 
 struct RedelegateCommand {}
 
-impl RedelegateCommand {
-    /// Parse the following arguments:
-    /// - bond_key
-    /// - new finalizer
-    pub async fn parse_args(
-        args: &[&str],
-        lightclient: &mut LightClient,
-    ) -> Result<(Receivers, StakingAction), CommandError> {
-        if args.len() != 2 {
-            return Err(CommandError::InvalidArguments);
-        }
-
-        let bond_key = args.first().unwrap();
-        let finalizer_address =
-            StakeCommand::addr_from_str_bytes(args.last().unwrap().as_bytes()).unwrap();
-
-        let staking_action = StakingAction {
-            kind: StakingActionKind::RetargetDelegationBond,
-            amount_zats: 0,
-            arg32_0: hex::decode(bond_key).unwrap().try_into().unwrap(),
-            arg32_1: [0; 32],
-            arg32_2: finalizer_address,
-            arg32_3: [0; 32],
-            arg64_0: [0; 64],
-            arg64_1: [0; 64],
-        };
-
-        Ok((vec![], staking_action))
-    }
-}
-
 impl Command for RedelegateCommand {
     fn help(&self) -> &'static str {
         indoc! {r#"
-            Propose the retargeting of a staking bond.
-            The 'confirm' command must be called to complete and broadcast the proposed unstaking transaction.
+            Propose to move one of this wallet's bonds to another finalizer.
+            The 'confirm' command must be called to complete and broadcast the proposed transaction.
 
             Usage:
-                begin_unstake <bond-key> <finalizer-address>
+                redelegate <bond-key> <finalizer-address>
             Example:
-                IGNORE THIS: begin_unstake ztestsapling1x65nq4dgp0qfywgxcwk9n0fvm4fysmapgr2q00p85ju252h6l7mmxu2jg9cqqhtvzd69jwhgv8d 200000
+                redelegate 8f3a... zfinv1...
                 confirm
-
         "#}
     }
 
     fn short_help(&self) -> &'static str {
-        "Propose the staking of ZEC to the given finalizer and display a proposal for confirmation."
+        "Propose to retarget a bond to another finalizer and display the proposal for confirmation."
     }
 
     fn exec(&self, args: &[&str], lightclient: &mut LightClient) -> String {
         RT.block_on(async move {
-            let parsed_stake_command = match RedelegateCommand::parse_args(args, lightclient).await
-            {
-                Ok(parsed_stake_command) => parsed_stake_command,
-                Err(e) => {
-                    return format!("Error: {e}\nTry 'help stake' for correct usage and examples.");
+            if args.len() != 2 {
+                return "Error: expected <bond-key> <finalizer-address>. Try 'help redelegate'."
+                    .to_string();
+            }
+            let bond_key = match parse_bond_key(args[0]) {
+                Ok(key) => key,
+                Err(_) => {
+                    return object! { "error" => "bond key must be 64 hex characters" }.pretty(2);
                 }
             };
-            // Receivers IS EMPTY
-            let request = match zingolib::data::receivers::transaction_request_from_receivers(
-                parsed_stake_command.0,
-            ) {
-                Ok(request) => request,
-                Err(e) => {
-                    return format!("Error: {e}\nTry 'help stake' for correct usage and examples.");
-                }
+            let to_finalizer = match parse_finalizer(args[1]) {
+                Ok(address) => address,
+                Err(e) => return object! { "error" => e }.pretty(2),
             };
 
             match lightclient
-                .propose_retarget_bond(
-                    request.clone(),
-                    parsed_stake_command.1.arg32_2,
-                    parsed_stake_command.1.arg32_0,
-                    zip32::AccountId::ZERO,
-                )
+                .propose_retarget_bond(bond_key, to_finalizer, zip32::AccountId::ZERO)
+                .await
+            {
+                Ok(proposal) => staking_proposal_json(&proposal),
+                Err(e) => object! { "error" => e.to_string() },
+            }
+            .pretty(2)
+        })
+    }
+}
+
+struct DecodeFinalizerAddressCommand {}
+
+impl Command for DecodeFinalizerAddressCommand {
+    fn help(&self) -> &'static str {
+        indoc! {r#"
+            Decode and verify a `zfinv1` finalizer address.
+
+            A finalizer address is the finalizer's public key plus its signature over a fixed message.
+            The address is valid only if that signature verifies; consensus rejects stakes to any other.
+
+            Usage:
+                decode_finalizer_address <finalizer-address>
+        "#}
+    }
+
+    fn short_help(&self) -> &'static str {
+        "Decode and verify a zfinv1 finalizer address."
+    }
+
+    fn exec(&self, args: &[&str], _lightclient: &mut LightClient) -> String {
+        if args.len() != 1 {
+            return "Error: expected <finalizer-address>. Try 'help decode_finalizer_address'."
+                .to_string();
+        }
+        match zingolib::crosslink::parse_finalizer_address(args[0]) {
+            Ok(address) => object! {
+                "valid" => true,
+                "pubkey" => zingolib::crosslink::finalizer_pubkey_hex(&address.pub_key.0),
+                "pubkey_raw" => hex::encode(address.pub_key.0),
+                "address" => zingolib::crosslink::encode_finalizer_address(&address),
+            },
+            Err(e) => object! { "valid" => false, "error" => e.to_string() },
+        }
+        .pretty(2)
+    }
+}
+
+struct TransferPoolCommand {}
+
+fn parse_shielded_pool(arg: &str) -> Option<zcash_protocol::ShieldedPool> {
+    match arg.trim().to_ascii_lowercase().as_str() {
+        "sapling" => Some(zcash_protocol::ShieldedPool::Sapling),
+        "orchard" => Some(zcash_protocol::ShieldedPool::Orchard),
+        "ironwood" => Some(zcash_protocol::ShieldedPool::Ironwood),
+        _ => None,
+    }
+}
+
+fn parse_pool(arg: &str) -> Option<zcash_protocol::PoolType> {
+    match arg.trim().to_ascii_lowercase().as_str() {
+        "transparent" => Some(zcash_protocol::PoolType::Transparent),
+        other => parse_shielded_pool(other).map(zcash_protocol::PoolType::Shielded),
+    }
+}
+
+impl Command for TransferPoolCommand {
+    fn help(&self) -> &'static str {
+        indoc! {r#"
+            Propose moving ZEC from one of this wallet's pools into another of its pools.
+            The 'confirm' command must be called to complete and broadcast the proposed transaction.
+
+            Inputs are taken only from <from-pool>; change returns to it, so exactly <amount>
+            crosses into <to-pool>. Where the Ironwood pool is active, payments to the Orchard
+            receiver are built in the Ironwood bundle, so `orchard` and `ironwood` destinations both
+            land in Ironwood: `transfer_pool orchard ironwood <amount>` migrates Orchard funds.
+            To move transparent funds into a shielded pool use `shield` instead.
+
+            Usage:
+                transfer_pool <from-pool> <to-pool> <amount in zatoshis>
+                from-pool: sapling | orchard | ironwood
+                to-pool:   transparent | sapling | orchard | ironwood
+            Example:
+                transfer_pool orchard ironwood 50000000
+                confirm
+        "#}
+    }
+
+    fn short_help(&self) -> &'static str {
+        "Propose moving ZEC between two of the wallet's own pools (e.g. orchard -> ironwood)."
+    }
+
+    fn exec(&self, args: &[&str], lightclient: &mut LightClient) -> String {
+        RT.block_on(async move {
+            if args.len() != 3 {
+                return "Error: expected <from-pool> <to-pool> <amount in zatoshis>. Try 'help transfer_pool'."
+                    .to_string();
+            }
+            let Some(from) = parse_shielded_pool(args[0]) else {
+                return object! { "error" => "from-pool must be sapling, orchard or ironwood" }.pretty(2);
+            };
+            let Some(to) = parse_pool(args[1]) else {
+                return object! { "error" => "to-pool must be transparent, sapling, orchard or ironwood" }.pretty(2);
+            };
+            let amount = match args[2].trim().parse::<u64>() {
+                Ok(zats) => Zatoshis::const_from_u64(zats),
+                Err(e) => return object! { "error" => e.to_string() }.pretty(2),
+            };
+
+            match lightclient
+                .propose_pool_transfer(from, to, amount, zip32::AccountId::ZERO)
                 .await
             {
                 Ok(proposal) => {
-                    let fee = match zingolib::data::proposal::total_fee(
-                        proposal.proportional_fee_proposal(),
-                    ) {
-                        Ok(fee) => fee,
+                    let fee = match proposal::total_fee(&proposal) {
+                        Ok(fee) => fee.into_u64(),
                         Err(e) => return object! { "error" => e.to_string() }.pretty(2),
                     };
-                    object! { "fee" => fee.into_u64() }
+                    object! {
+                        "from" => format!("{from:?}").to_ascii_lowercase(),
+                        "to" => format!("{to:?}").to_ascii_lowercase(),
+                        "amount_zats" => amount.into_u64(),
+                        "fee" => fee,
+                    }
                 }
-                Err(e) => {
-                    object! { "error" => e.to_string() }
-                }
+                Err(e) => object! { "error" => e.to_string() },
             }
             .pretty(2)
         })
@@ -1711,11 +1484,11 @@ struct GetRosterInfoCommand {}
 impl Command for GetRosterInfoCommand {
     fn help(&self) -> &'static str {
         indoc! {r#"
-            Get information about the current roster.
+            Get information about the current finalizer roster, including each finalizer's
+            `zfinv1` address when the node reports one. Pass that address to `stake`.
 
             Usage:
                 roster_info
-
         "#}
     }
 
@@ -2484,50 +2257,17 @@ impl Command for RequestFaucetDonationCommand {
             info!("cfg!(feature=\"regtest\") = {}", cfg!(feature = "regtest"));
 
             let receiver_address = {
-                #[cfg(feature = "regtest")]
-                {
-                    use zcash_protocol::consensus::BlockHeight;
-                    info!("Using regtest network");
-
-                    let network = LocalNetwork {
-                        overwinter: Some(BlockHeight::from_u32(1)),
-                        sapling: Some(BlockHeight::from_u32(1)),
-                        blossom: Some(BlockHeight::from_u32(1)),
-                        heartwood: Some(BlockHeight::from_u32(1)),
-                        canopy: Some(BlockHeight::from_u32(1)),
-                        nu5: Some(BlockHeight::from_u32(1)),
-                        nu6: Some(BlockHeight::from_u32(1)),
-                        nu6_1: None,
-                    };
-
-                    lightclient
-                        .wallet
-                        .read()
-                        .await
-                        .unified_addresses()
-                        .clone()
-                        .first_entry()
-                        .unwrap()
-                        .get()
-                        .encode(&network)
-                }
-                #[cfg(not(feature = "regtest"))]
-                {
-                    use zcash_protocol::consensus::TEST_NETWORK;
-
-                    let network = TEST_NETWORK;
-
-                    lightclient
-                        .wallet
-                        .read()
-                        .await
-                        .unified_addresses()
-                        .clone()
-                        .first_entry()
-                        .unwrap()
-                        .get()
-                        .encode(&network)
-                }
+                let chain = lightclient.config().chain;
+                lightclient
+                    .wallet
+                    .read()
+                    .await
+                    .unified_addresses()
+                    .clone()
+                    .first_entry()
+                    .unwrap()
+                    .get()
+                    .encode(&chain)
             };
 
             match lightclient.request_faucet_funds(receiver_address).await {
@@ -2667,6 +2407,17 @@ pub fn get_commands() -> HashMap<&'static str, Box<dyn Command>> {
         ("delete", Box::new(DeleteCommand {})),
         ("remove_transaction", Box::new(RemoveTransactionCommand {})),
         ("request_faucet", Box::new(RequestFaucetDonationCommand {})),
+        ("roster_info", Box::new(GetRosterInfoCommand {})),
+        ("get_bonds", Box::new(GetBondsCommand {})),
+        ("stake", Box::new(StakeCommand {})),
+        ("begin_unstake", Box::new(BeginUnstakeCommand {})),
+        ("withdraw_stake", Box::new(WithdrawStakeCommand {})),
+        ("redelegate", Box::new(RedelegateCommand {})),
+        ("transfer_pool", Box::new(TransferPoolCommand {})),
+        (
+            "decode_finalizer_address",
+            Box::new(DecodeFinalizerAddressCommand {}),
+        ),
     ];
 
     entries.into_iter().collect()

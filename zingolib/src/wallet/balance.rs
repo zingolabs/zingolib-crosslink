@@ -244,8 +244,8 @@ impl LightWallet {
         let withdrawn_keys: HashSet<[u8; 32]> = transactions
             .iter()
             .filter_map(|tx| tx.staking_data())
-            .filter(|sa| sa.kind == StakingActionKind::WithdrawDelegationBond)
-            .map(|sa| sa.arg32_0)
+            .filter(|sa| sa.kind() == StakingActionKind::WithdrawDelegationBond)
+            .map(|sa| sa.bond_key())
             .collect();
 
         // This includes rewards with new get_bond_info
@@ -255,9 +255,9 @@ impl LightWallet {
         let active_bonds: Vec<[u8; 32]> = transactions
             .iter()
             .filter_map(|tx| tx.staking_data())
-            .filter(|sa| sa.kind == StakingActionKind::CreateNewDelegationBond)
-            .filter(|sa| !withdrawn_keys.contains(&sa.arg32_0))
-            .map(|sa| sa.arg32_0)
+            .filter(|sa| sa.kind() == StakingActionKind::CreateNewDelegationBond)
+            .filter(|sa| !withdrawn_keys.contains(&sa.bond_key()))
+            .map(|sa| sa.bond_key())
             .collect();
 
         let mut client = get_client(config.lightwalletd_uri.read().unwrap().clone())
@@ -325,7 +325,8 @@ impl LightWallet {
                         return Err(KeyError::NoViewCapability.into());
                     }
                 }
-                PoolType::ORCHARD => {
+                // Ironwood notes are viewed with the Orchard viewing key.
+                PoolType::ORCHARD | PoolType::IRONWOOD => {
                     if ufvk.orchard().is_none() {
                         return Err(KeyError::NoViewCapability.into());
                     }
@@ -386,7 +387,8 @@ impl LightWallet {
                         return Err(KeyError::NoViewCapability.into());
                     }
                 }
-                PoolType::ORCHARD => {
+                // Ironwood notes are viewed with the Orchard viewing key.
+                PoolType::ORCHARD | PoolType::IRONWOOD => {
                     if ufvk.orchard().is_none() {
                         return Err(KeyError::NoViewCapability.into());
                     }

@@ -321,6 +321,14 @@ impl LightWallet {
                 .collect::<Vec<_>>(),
         );
 
+        // Legacy keys were decoded with a placeholder bond root; the seed-derived one is canonical.
+        let unified_key_store = super::keys::unified::with_seed_derived_bond_roots(
+            &network,
+            mnemonic.as_ref(),
+            SeedDerivation::default(),
+            unified_key_store,
+        );
+
         let lw = Self {
             current_version: LightWallet::serialized_version(),
             read_version: version,
@@ -555,6 +563,15 @@ impl LightWallet {
         } else {
             SeedDerivation::default()
         };
+
+        // A key written before the bond spending key existed was decoded with a placeholder bond
+        // root; the seed-derived one is canonical and matches a node wallet restored from the seed.
+        let unified_key_store = super::keys::unified::with_seed_derived_bond_roots(
+            &network,
+            mnemonic.as_ref(),
+            seed_derivation,
+            unified_key_store,
+        );
 
         Ok(Self {
             current_version: LightWallet::serialized_version(),

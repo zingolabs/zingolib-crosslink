@@ -16,7 +16,7 @@ use zcash_client_backend::proto::service::RawTransaction;
 use zcash_client_backend::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
 use zcash_keys::keys::UnifiedFullViewingKey;
 use zcash_primitives::transaction::{Transaction, TxId};
-use zcash_protocol::ShieldedProtocol;
+use zcash_protocol::ShieldedPool;
 use zcash_protocol::consensus::{self, BlockHeight};
 use zip32::AccountId;
 
@@ -70,6 +70,8 @@ pub struct SyncStatus {
     pub total_sapling_outputs_scanned: u32,
     pub session_orchard_outputs_scanned: u32,
     pub total_orchard_outputs_scanned: u32,
+    pub session_ironwood_outputs_scanned: u32,
+    pub total_ironwood_outputs_scanned: u32,
     pub percentage_session_outputs_scanned: f32,
     pub percentage_total_outputs_scanned: f32,
 }
@@ -110,6 +112,8 @@ impl From<SyncStatus> for json::JsonValue {
             "total_sapling_outputs_scanned" => value.total_sapling_outputs_scanned,
             "session_orchard_outputs_scanned" => value.session_orchard_outputs_scanned,
             "total_orchard_outputs_scanned" => value.total_orchard_outputs_scanned,
+            "session_ironwood_outputs_scanned" => value.session_ironwood_outputs_scanned,
+            "total_ironwood_outputs_scanned" => value.total_ironwood_outputs_scanned,
             "percentage_session_outputs_scanned" => value.percentage_session_outputs_scanned,
             "percentage_total_outputs_scanned" => value.percentage_total_outputs_scanned,
         }
@@ -125,6 +129,7 @@ pub struct SyncResult {
     pub blocks_scanned: u32,
     pub sapling_outputs_scanned: u32,
     pub orchard_outputs_scanned: u32,
+    pub ironwood_outputs_scanned: u32,
     pub percentage_total_outputs_scanned: f32,
 }
 
@@ -139,6 +144,7 @@ impl std::fmt::Display for SyncResult {
     blocks scanned: {}
     sapling outputs scanned: {}
     orchard outputs scanned: {}
+    ironwood outputs scanned: {}
     percentage total outputs scanned: {}
 }}",
             self.sync_start_height,
@@ -146,6 +152,7 @@ impl std::fmt::Display for SyncResult {
             self.blocks_scanned,
             self.sapling_outputs_scanned,
             self.orchard_outputs_scanned,
+            self.ironwood_outputs_scanned,
             self.percentage_total_outputs_scanned,
         )
     }
@@ -159,6 +166,7 @@ impl From<SyncResult> for json::JsonValue {
             "blocks_scanned" => value.blocks_scanned,
             "sapling_outputs_scanned" => value.sapling_outputs_scanned,
             "orchard_outputs_scanned" => value.orchard_outputs_scanned,
+            "ironwood_outputs_scanned" => value.ironwood_outputs_scanned,
             "percentage_total_outputs_scanned" => value.percentage_total_outputs_scanned,
         }
     }
@@ -506,6 +514,8 @@ where
                             blocks_scanned: sync_status.session_blocks_scanned,
                             sapling_outputs_scanned: sync_status.session_sapling_outputs_scanned,
                             orchard_outputs_scanned: sync_status.session_orchard_outputs_scanned,
+                            ironwood_outputs_scanned: sync_status
+                                .session_ironwood_outputs_scanned,
                             percentage_total_outputs_scanned: sync_status.percentage_total_outputs_scanned,
                         });
                     }
@@ -552,6 +562,9 @@ where
         for note in transaction.orchard_notes.as_mut_slice() {
             note.refetch_nullifier_ranges = Vec::new();
         }
+        for note in transaction.ironwood_notes.as_mut_slice() {
+            note.refetch_nullifier_ranges = Vec::new();
+        }
     }
     wallet_guard
         .set_save_flag()
@@ -580,6 +593,7 @@ where
         blocks_scanned: sync_status.session_blocks_scanned,
         sapling_outputs_scanned: sync_status.session_sapling_outputs_scanned,
         orchard_outputs_scanned: sync_status.session_orchard_outputs_scanned,
+        ironwood_outputs_scanned: sync_status.session_ironwood_outputs_scanned,
         percentage_total_outputs_scanned: sync_status.percentage_total_outputs_scanned,
     })
 }
@@ -662,9 +676,14 @@ pub async fn sync_status<W>(wallet: &W) -> Result<SyncStatus, SyncStatusError<W:
 where
     W: SyncWallet + SyncBlocks,
 {
-    let (total_sapling_outputs_scanned, total_orchard_outputs_scanned) =
-        state::calculate_scanned_outputs(wallet).map_err(SyncStatusError::WalletError)?;
-    let total_outputs_scanned = total_sapling_outputs_scanned + total_orchard_outputs_scanned;
+    let (
+        total_sapling_outputs_scanned,
+        total_orchard_outputs_scanned,
+        total_ironwood_outputs_scanned,
+    ) = state::calculate_scanned_outputs(wallet).map_err(SyncStatusError::WalletError)?;
+    let total_outputs_scanned = total_sapling_outputs_scanned
+        + total_orchard_outputs_scanned
+        + total_ironwood_outputs_scanned;
 
     let sync_state = wallet
         .get_sync_state()
@@ -679,8 +698,10 @@ where
             percentage_total_blocks_scanned: 0.0,
             session_sapling_outputs_scanned: 0,
             session_orchard_outputs_scanned: 0,
+            session_ironwood_outputs_scanned: 0,
             total_sapling_outputs_scanned: 0,
             total_orchard_outputs_scanned: 0,
+            total_ironwood_outputs_scanned: 0,
             percentage_session_outputs_scanned: 0.0,
             percentage_total_outputs_scanned: 0.0,
         });
@@ -710,7 +731,15 @@ where
             .initial_sync_state
             .wallet_tree_bounds
             .orchard_initial_tree_size;
-    let total_outputs = total_sapling_outputs + total_orchard_outputs;
+    let total_ironwood_outputs = sync_state
+        .initial_sync_state
+        .wallet_tree_bounds
+        .ironwood_final_tree_size
+        - sync_state
+            .initial_sync_state
+            .wallet_tree_bounds
+            .ironwood_initial_tree_size;
+    let total_outputs = total_sapling_outputs + total_orchard_outputs + total_ironwood_outputs;
 
     let session_blocks_scanned =
         total_blocks_scanned - sync_state.initial_sync_state.previously_scanned_blocks;
@@ -729,13 +758,22 @@ where
         - sync_state
             .initial_sync_state
             .previously_scanned_orchard_outputs;
-    let session_outputs_scanned = session_sapling_outputs_scanned + session_orchard_outputs_scanned;
+    let session_ironwood_outputs_scanned = total_ironwood_outputs_scanned
+        - sync_state
+            .initial_sync_state
+            .previously_scanned_ironwood_outputs;
+    let session_outputs_scanned = session_sapling_outputs_scanned
+        + session_orchard_outputs_scanned
+        + session_ironwood_outputs_scanned;
     let previously_scanned_outputs = sync_state
         .initial_sync_state
         .previously_scanned_sapling_outputs
         + sync_state
             .initial_sync_state
-            .previously_scanned_orchard_outputs;
+            .previously_scanned_orchard_outputs
+        + sync_state
+            .initial_sync_state
+            .previously_scanned_ironwood_outputs;
     let mut percentage_session_outputs_scanned = ((session_outputs_scanned as f32
         / (total_outputs - previously_scanned_outputs) as f32)
         * 100.0)
@@ -772,6 +810,8 @@ where
         total_sapling_outputs_scanned,
         session_orchard_outputs_scanned,
         total_orchard_outputs_scanned,
+        session_ironwood_outputs_scanned,
+        total_ironwood_outputs_scanned,
         percentage_session_outputs_scanned,
         percentage_total_outputs_scanned,
     })
@@ -827,23 +867,28 @@ where
         &mut pending_transaction_outpoints,
         transparent_output_ids,
     );
-    let (sapling_derived_nullifiers, orchard_derived_nullifiers) =
+    let (sapling_derived_nullifiers, orchard_derived_nullifiers, ironwood_derived_nullifiers) =
         spend::collect_derived_nullifiers(wallet_transactions);
-    let (sapling_spend_scan_targets, orchard_spend_scan_targets) = spend::detect_shielded_spends(
-        &mut pending_transaction_nullifiers,
-        sapling_derived_nullifiers,
-        orchard_derived_nullifiers,
-    );
+    let (sapling_spend_scan_targets, orchard_spend_scan_targets, ironwood_spend_scan_targets) =
+        spend::detect_shielded_spends(
+            &mut pending_transaction_nullifiers,
+            sapling_derived_nullifiers,
+            orchard_derived_nullifiers,
+            ironwood_derived_nullifiers,
+        );
 
     // return if transaction is not relevant to the wallet
     if pending_transaction.transparent_coins().is_empty()
         && pending_transaction.sapling_notes().is_empty()
         && pending_transaction.orchard_notes().is_empty()
+        && pending_transaction.ironwood_notes().is_empty()
         && pending_transaction.outgoing_orchard_notes().is_empty()
+        && pending_transaction.outgoing_ironwood_notes().is_empty()
         && pending_transaction.outgoing_sapling_notes().is_empty()
         && transparent_spend_scan_targets.is_empty()
         && sapling_spend_scan_targets.is_empty()
         && orchard_spend_scan_targets.is_empty()
+        && ironwood_spend_scan_targets.is_empty()
     {
         return Ok(());
     }
@@ -861,6 +906,7 @@ where
         wallet,
         sapling_spend_scan_targets,
         orchard_spend_scan_targets,
+        ironwood_spend_scan_targets,
         false,
     )
     .map_err(SyncError::WalletError)?;
@@ -893,6 +939,17 @@ pub fn reset_spends(
     wallet_transactions: &mut HashMap<TxId, WalletTransaction>,
     invalid_txids: Vec<TxId>,
 ) {
+    wallet_transactions
+        .values_mut()
+        .flat_map(|transaction| transaction.ironwood_notes_mut())
+        .filter(|output| {
+            output
+                .spending_transaction
+                .is_some_and(|spending_txid| invalid_txids.contains(&spending_txid))
+        })
+        .for_each(|output| {
+            output.set_spending_transaction(None);
+        });
     wallet_transactions
         .values_mut()
         .flat_map(|transaction| transaction.orchard_notes_mut())
@@ -993,6 +1050,7 @@ where
                 wallet_transactions,
                 sapling_located_trees,
                 orchard_located_trees,
+                ironwood_located_trees,
             } = results;
 
             if scan_range.priority() == ScanPriority::ScannedWithoutMapping {
@@ -1105,8 +1163,10 @@ where
                     let nullifier_map = wallet.get_nullifiers().map_err(SyncError::WalletError)?;
                     if max_nullifier_map_size(performance_level).is_some_and(|max| {
                         nullifier_map.orchard.len()
+                            + nullifier_map.ironwood.len()
                             + nullifier_map.sapling.len()
                             + nullifiers.orchard.len()
+                            + nullifiers.ironwood.len()
                             + nullifiers.sapling.len()
                             > max
                     }) {
@@ -1170,6 +1230,7 @@ where
                     wallet_transactions,
                     sapling_located_trees,
                     orchard_located_trees,
+                    ironwood_located_trees,
                 )
                 .await?;
                 spend::update_transparent_spends(
@@ -1439,6 +1500,7 @@ async fn update_wallet_data<W>(
     mut transactions: HashMap<TxId, WalletTransaction>,
     sapling_located_trees: Vec<LocatedTreeData<sapling_crypto::Node>>,
     orchard_located_trees: Vec<LocatedTreeData<MerkleHashOrchard>>,
+    ironwood_located_trees: Vec<LocatedTreeData<MerkleHashOrchard>>,
 ) -> Result<(), SyncError<W::Error>>
 where
     W: SyncBlocks + SyncTransactions + SyncNullifiers + SyncOutPoints + SyncShardTrees + Send,
@@ -1453,13 +1515,19 @@ where
         state::update_found_note_shard_priority(
             consensus_parameters,
             sync_state,
-            ShieldedProtocol::Sapling,
+            ShieldedPool::Sapling,
             transaction,
         );
         state::update_found_note_shard_priority(
             consensus_parameters,
             sync_state,
-            ShieldedProtocol::Orchard,
+            ShieldedPool::Orchard,
+            transaction,
+        );
+        state::update_found_note_shard_priority(
+            consensus_parameters,
+            sync_state,
+            ShieldedPool::Ironwood,
             transaction,
         );
     }
@@ -1492,6 +1560,9 @@ where
         for note in transaction.orchard_notes.as_mut_slice() {
             note.refetch_nullifier_ranges = refetch_nullifier_ranges.clone();
         }
+        for note in transaction.ironwood_notes.as_mut_slice() {
+            note.refetch_nullifier_ranges = refetch_nullifier_ranges.clone();
+        }
     }
     for transaction in transactions.values() {
         discover_unified_addresses(wallet, ufvks, transaction).map_err(SyncError::WalletError)?;
@@ -1517,6 +1588,7 @@ where
             highest_scanned_height,
             sapling_located_trees,
             orchard_located_trees,
+            ironwood_located_trees,
         )
         .await?;
 
@@ -1533,6 +1605,26 @@ where
 {
     for note in transaction
         .orchard_notes()
+        .iter()
+        .filter(|&note| note.key_id().scope == zip32::Scope::External)
+    {
+        let ivk = ufvks
+            .get(&note.key_id().account_id())
+            .expect("ufvk must exist to decrypt this note")
+            .orchard()
+            .expect("fvk must exist to decrypt this note")
+            .to_ivk(zip32::Scope::External);
+
+        wallet.add_orchard_address(
+            note.key_id().account_id(),
+            note.note().recipient(),
+            ivk.diversifier_index(&note.note().recipient())
+                .expect("must be key used to create this address"),
+        )?;
+    }
+    // Ironwood notes are received at Orchard receivers, so they discover Orchard addresses too.
+    for note in transaction
+        .ironwood_notes()
         .iter()
         .filter(|&note| note.key_id().scope == zip32::Scope::External)
     {
@@ -1592,6 +1684,10 @@ where
     wallet
         .get_nullifiers_mut()?
         .orchard
+        .retain(|_, scan_target| scan_target.block_height > fully_scanned_height);
+    wallet
+        .get_nullifiers_mut()?
+        .ironwood
         .retain(|_, scan_target| scan_target.block_height > fully_scanned_height);
     wallet
         .get_sync_state_mut()?
@@ -1696,28 +1792,44 @@ where
         .get_shard_roots()
         .expect("infallible")
         .len() as u32;
-    let (sapling_subtree_roots, orchard_subtree_roots) = futures::join!(
+    let ironwood_start_index = wallet
+        .get_shard_trees()
+        .map_err(SyncError::WalletError)?
+        .ironwood
+        .store()
+        .get_shard_roots()
+        .expect("infallible")
+        .len() as u32;
+    let (sapling_subtree_roots, orchard_subtree_roots, ironwood_subtree_roots) = futures::join!(
         client::get_subtree_roots(fetch_request_sender.clone(), sapling_start_index, 0, 0),
-        client::get_subtree_roots(fetch_request_sender, orchard_start_index, 1, 0)
+        client::get_subtree_roots(fetch_request_sender.clone(), orchard_start_index, 1, 0),
+        client::get_subtree_roots(fetch_request_sender, ironwood_start_index, 2, 0)
     );
 
     let sapling_subtree_roots = sapling_subtree_roots?;
     let orchard_subtree_roots = orchard_subtree_roots?;
+    let ironwood_subtree_roots = ironwood_subtree_roots?;
 
     let sync_state = wallet
         .get_sync_state_mut()
         .map_err(SyncError::WalletError)?;
     state::add_shard_ranges(
         consensus_parameters,
-        ShieldedProtocol::Sapling,
+        ShieldedPool::Sapling,
         sync_state,
         &sapling_subtree_roots,
     );
     state::add_shard_ranges(
         consensus_parameters,
-        ShieldedProtocol::Orchard,
+        ShieldedPool::Orchard,
         sync_state,
         &orchard_subtree_roots,
+    );
+    state::add_shard_ranges(
+        consensus_parameters,
+        ShieldedPool::Ironwood,
+        sync_state,
+        &ironwood_subtree_roots,
     );
 
     let shard_trees = wallet
@@ -1725,6 +1837,7 @@ where
         .map_err(SyncError::WalletError)?;
     witness::add_subtree_roots(sapling_subtree_roots, &mut shard_trees.sapling)?;
     witness::add_subtree_roots(orchard_subtree_roots, &mut shard_trees.orchard)?;
+    witness::add_subtree_roots(ironwood_subtree_roots, &mut shard_trees.ironwood)?;
 
     Ok(())
 }
@@ -1773,6 +1886,16 @@ where
             .orchard
             .insert_frontier(
                 frontiers.final_orchard_tree().clone(),
+                Retention::Checkpoint {
+                    id: birthday,
+                    marking: Marking::None,
+                },
+            )
+            .expect("infallible");
+        shard_trees
+            .ironwood
+            .insert_frontier(
+                frontiers.final_ironwood_tree().clone(),
                 Retention::Checkpoint {
                     id: birthday,
                     marking: Marking::None,
@@ -1904,6 +2027,8 @@ mod test {
             nu5: Some(BlockHeight::from_u32(3)),
             nu6: Some(BlockHeight::from_u32(3)),
             nu6_1: Some(BlockHeight::from_u32(3)),
+            nu6_2: Some(BlockHeight::from_u32(3)),
+            nu6_3: Some(BlockHeight::from_u32(3)),
         };
         use crate::{error::SyncError, mocks::MockWalletError, sync::checked_wallet_height};
         // It's possible an error from an implementor's get_sync_state could bubble up to checked_wallet_height

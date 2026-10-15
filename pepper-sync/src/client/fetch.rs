@@ -224,6 +224,8 @@ async fn get_block_range(
             height: u64::from(block_range.end) - 1,
             hash: vec![],
         }),
+        // Empty means the server's default pool selection, which includes every shielded pool.
+        pool_types: vec![],
     });
 
     request.set_timeout(HEAVY_UNARY_TIMEOUT);
@@ -251,6 +253,8 @@ async fn get_block_range_nullifiers(
             height: u64::from(block_range.end) - 1,
             hash: vec![],
         }),
+        // Empty means the server's default pool selection, which includes every shielded pool.
+        pool_types: vec![],
     });
 
     request.set_timeout(HEAVY_UNARY_TIMEOUT);
@@ -371,6 +375,8 @@ async fn get_taddress_txs(
             height: u64::from(block_range.end) - 1,
             hash: vec![],
         }),
+        // Empty means the server's default pool selection, which includes every shielded pool.
+        pool_types: vec![],
     });
 
     let mut request = tonic::Request::new(TransparentAddressBlockFilter { address, range });

@@ -10,7 +10,7 @@ use zcash_address::unified::{Encoding as _, Ufvk};
 use zcash_client_backend::address::UnifiedAddress;
 use zcash_client_backend::keys::{Era, UnifiedSpendingKey};
 use zcash_encoding::CompactSize;
-use zcash_keys::keys::UnifiedFullViewingKey;
+use zcash_keys::keys::{BondSpendingKey, UnifiedFullViewingKey};
 use zcash_protocol::consensus::{NetworkConstants, Parameters};
 use zcash_transparent::address::TransparentAddress;
 use zcash_transparent::keys::{IncomingViewingKey, NonHardenedChildIndex};
@@ -23,6 +23,62 @@ use crate::wallet::traits::ReadableWriteable;
 pub(crate) const KEY_TYPE_EMPTY: u8 = 0;
 pub(crate) const KEY_TYPE_VIEW: u8 = 1;
 pub(crate) const KEY_TYPE_SPEND: u8 = 2;
+
+/// Typecode under which the Crosslink unified spending key encoding carries the bond spending key.
+/// Mirrors the (private) constant in `zcash_keys`.
+const CROSSLINK_BOND_TYPECODE: u32 = 0x0200_0000;
+
+/// Decodes unified spending key bytes, accepting bytes written before the bond component existed.
+///
+/// The Crosslink node's decoder refuses a key without a bond spending key. For such legacy bytes a
+/// bond root key is derived from a hash of the bytes themselves, so the result is deterministic for
+/// a given key, and appended under the bond typecode before decoding again. A wallet that still
+/// holds its mnemonic replaces this placeholder with the seed-derived bond root on load (see
+/// [`with_seed_derived_bond_roots`]), so its bond keys match a node wallet restored from the same
+/// seed. A wallet imported from bare spending key bytes keeps the placeholder.
+pub(crate) fn usk_from_bytes_with_legacy_fallback(bytes: &[u8]) -> Option<UnifiedSpendingKey> {
+    if let Ok(usk) = UnifiedSpendingKey::from_bytes(Era::Orchard, bytes) {
+        return Some(usk);
+    }
+    let seed = ring::digest::digest(&ring::digest::SHA512, bytes);
+    let bond = BondSpendingKey::from_seed(seed.as_ref(), 0)?;
+    let mut extended = bytes.to_vec();
+    CompactSize::write(&mut extended, CROSSLINK_BOND_TYPECODE as usize).ok()?;
+    CompactSize::write(&mut extended, bond.as_bytes().len()).ok()?;
+    extended.extend_from_slice(bond.as_bytes());
+    UnifiedSpendingKey::from_bytes(Era::Orchard, &extended).ok()
+}
+
+/// Replaces every stored spending key whose pool keys match the ones derived from `mnemonic` but
+/// whose bytes differ (a legacy key given a placeholder bond root) with the seed-derived key.
+///
+/// Keys that fail to derive, or whose pool keys differ from the derived ones, are kept as stored.
+pub(crate) fn with_seed_derived_bond_roots(
+    network: &ChainType,
+    mnemonic: Option<&Mnemonic>,
+    seed_derivation: SeedDerivation,
+    mut key_stores: std::collections::BTreeMap<AccountId, UnifiedKeyStore>,
+) -> std::collections::BTreeMap<AccountId, UnifiedKeyStore> {
+    let Some(mnemonic) = mnemonic else {
+        return key_stores;
+    };
+    for (account_id, store) in key_stores.iter_mut() {
+        let UnifiedKeyStore::Spend(stored) = store else {
+            continue;
+        };
+        let Ok(UnifiedKeyStore::Spend(derived)) =
+            UnifiedKeyStore::new_from_mnemonic(network, mnemonic, *account_id, seed_derivation)
+        else {
+            continue;
+        };
+        let same_pool_keys = stored.to_unified_full_viewing_key().encode(network)
+            == derived.to_unified_full_viewing_key().encode(network);
+        if same_pool_keys && stored.to_bytes(Era::Orchard) != derived.to_bytes(Era::Orchard) {
+            *store = UnifiedKeyStore::Spend(derived);
+        }
+    }
+    key_stores
+}
 
 /// Unique ID for unified addresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -109,8 +165,7 @@ impl UnifiedKeyStore {
 
     /// Create a unified key store from unified spending key bytes.
     pub fn new_from_usk(usk: &[u8]) -> Result<Self, KeyError> {
-        let usk = UnifiedSpendingKey::from_bytes(Era::Orchard, usk)
-            .map_err(|_| KeyError::KeyDecodingError)?;
+        let usk = usk_from_bytes_with_legacy_fallback(usk).ok_or(KeyError::KeyDecodingError)?;
 
         Ok(UnifiedKeyStore::Spend(Box::new(usk)))
     }
@@ -319,8 +374,8 @@ impl ReadableWriteable for UnifiedSpendingKey {
         let mut usk = vec![0u8; len as usize];
         reader.read_exact(&mut usk)?;
 
-        UnifiedSpendingKey::from_bytes(Era::Orchard, &usk)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "USK bytes are invalid"))
+        usk_from_bytes_with_legacy_fallback(&usk)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "USK bytes are invalid"))
     }
 
     fn write<W: Write>(&self, mut writer: W, _input: ()) -> io::Result<()> {
@@ -520,9 +575,13 @@ mod seed_derivation_tests {
     /// Derives account 0's first orchard-only unified address, encoded for `network`.
     fn encoded_unified_address(network: &ChainType, seed_derivation: SeedDerivation) -> String {
         let mnemonic = Mnemonic::from_phrase(TEST_MNEMONIC.to_string()).unwrap();
-        let key_store =
-            UnifiedKeyStore::new_from_mnemonic(network, &mnemonic, AccountId::ZERO, seed_derivation)
-                .unwrap();
+        let key_store = UnifiedKeyStore::new_from_mnemonic(
+            network,
+            &mnemonic,
+            AccountId::ZERO,
+            seed_derivation,
+        )
+        .unwrap();
         key_store
             .generate_unified_address(0, ReceiverSelection::orchard_only())
             .unwrap()

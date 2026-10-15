@@ -62,7 +62,7 @@ impl LightWallet {
 
                     TransactionKind::Sent(SendType::CreateBond) => {
                         if let Some(sa) = staking_action {
-                            sa.amount_zats
+                            sa.amount_zats()
                         } else {
                             staking_value_from_fee
                         }
@@ -71,7 +71,7 @@ impl LightWallet {
                     TransactionKind::Sent(SendType::BeginUnbond) => 0,
 
                     TransactionKind::Sent(SendType::WithdrawBond) => {
-                        staking_action.map(|sa| sa.amount_zats).unwrap_or(0)
+                        staking_action.map(|sa| sa.amount_zats()).unwrap_or(0)
                     }
 
                     TransactionKind::Sent(SendType::RetargetDelegationBond) => 0,

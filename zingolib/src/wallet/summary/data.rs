@@ -531,29 +531,34 @@ impl From<StakingActionWrapper> for JsonValue {
             return json::Null;
         }
 
-        let kind: String = match value.staking_action.unwrap().kind {
+        let staking_action = value.staking_action.unwrap();
+        let kind: String = match staking_action.kind() {
             StakingActionKind::CreateNewDelegationBond => "create_bond".to_string(),
             StakingActionKind::WithdrawDelegationBond => "withdraw_bond".to_string(),
             StakingActionKind::RetargetDelegationBond => "move".to_string(),
             StakingActionKind::Null => "null".to_string(),
             StakingActionKind::BeginDelegationUnbonding => "begin_unbonding".to_string(),
-
-            StakingActionKind::RegisterFinalizer => "FINALIZER_register_finalizer".to_string(),
             StakingActionKind::ConvertFinalizerRewardToDelegationBond => {
                 "FINALIZER_convert_reward_to_bond".to_string()
             }
-            StakingActionKind::UpdateFinalizerKey => "FINALIZER_update_finalizer_key".to_string(),
         };
 
-        let mut reversed_target = value.staking_action.unwrap().arg32_2;
+        // The finalizer public key in the byte order the node prints (reversed hex).
+        let mut reversed_target = staking_action.target_finalizer_pk();
         reversed_target.reverse();
         let target = hex::encode(reversed_target);
+        // The full self-certifying finalizer address, when the action carries one.
+        let target_address = crate::crosslink::action_target_address(&staking_action)
+            .map_or(json::Null, |address| {
+                json::JsonValue::from(address.encode())
+            });
 
         json::object! {
             "kind" => kind,
-            "val" => value.staking_action.unwrap().amount_zats,
+            "val" => staking_action.amount_zats(),
             "target" => target,
-            "unique_public_key" => hex::encode(value.staking_action.unwrap().arg32_0)
+            "target_address" => target_address,
+            "unique_public_key" => hex::encode(staking_action.unique_pubkey())
         }
     }
 }

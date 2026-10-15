@@ -42,10 +42,10 @@ pub mod sync;
 pub mod transaction;
 mod zcb_traits;
 
+pub use crate::wallet::keys::unified::SeedDerivation;
 pub use pepper_sync::config::{
     PerformanceLevel, SyncConfig, TransparentAddressDiscovery, TransparentAddressDiscoveryScopes,
 };
-pub use crate::wallet::keys::unified::SeedDerivation;
 
 /// Wallet settings.
 #[derive(Debug, Clone)]

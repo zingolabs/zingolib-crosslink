@@ -6,7 +6,7 @@ use pepper_sync::{error::ScanError, wallet::OutputId};
 use shardtree::error::ShardTreeError;
 use zcash_keys::keys::DerivationError;
 use zcash_primitives::transaction::TxId;
-use zcash_protocol::{PoolType, ShieldedProtocol, consensus::BlockHeight};
+use zcash_protocol::{PoolType, ShieldedPool, consensus::BlockHeight};
 
 use super::output::OutputRef;
 
@@ -61,7 +61,7 @@ pub enum WalletError {
     /// Shard store checkpoint not found.
     #[error("{shielded_protocol:?} shard store checkpoint not found at anchor height {height}.")]
     CheckpointNotFound {
-        shielded_protocol: ShieldedProtocol,
+        shielded_protocol: ShieldedPool,
         height: BlockHeight,
     },
     /// Shard tree error.
@@ -80,6 +80,27 @@ pub enum WalletError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum WithdrawError {
+    /// the wallet holds no create action for the bond, so it cannot sign for it
+    #[error("bond {} was not created by this wallet", hex::encode(.0))]
+    UnknownBond([u8; 32]),
+    /// the bond's signing key could not be recovered from the create action
+    #[error("could not recover the bond signing key for bond {}", hex::encode(.0))]
+    BondKeyNotRecoverable([u8; 32]),
+    /// the node reported no such bond
+    #[error("the node has no bond with key {}", hex::encode(.0))]
+    BondInfoUnavailable([u8; 32]),
+    /// no spending key for the account
+    #[error("{0}")]
+    KeyError(#[from] KeyError),
+    /// the wallet has no sync data to build against
+    #[error("wallet has no sync data")]
+    NoSyncData,
+    /// an Ironwood spend could not be added to the transaction
+    #[error("could not add Ironwood spend: {0}")]
+    AddIronwoodSpendFailed(String),
+    /// the finished transaction could not be recorded in the wallet
+    #[error("could not record the withdrawal in the wallet: {0}")]
+    RecordFailed(String),
     #[error("missing anchor")]
     MissingAnchor,
 
@@ -293,6 +314,33 @@ pub enum ProposeSendError {
     /// failed to calculate balance.
     #[error("failed to calculated balance. {0}")]
     BalanceError(#[from] crate::wallet::error::BalanceError),
+    /// the finalizer address capability does not verify
+    #[error("finalizer address does not verify; consensus would reject the staking action")]
+    InvalidFinalizerAddress,
+    /// a new bond must be a power of 10 zats from `FeaturenetUpgrade1`
+    #[error("bond amount {0} zats is not a power of 10, which consensus requires for new bonds")]
+    BondAmountNotPowerOfTen(u64),
+    /// the wallet holds no create action for the bond, so it cannot sign for it
+    #[error("bond {} was not created by this wallet", hex::encode(.0))]
+    UnknownBond([u8; 32]),
+    /// no spending key for the account
+    #[error("{0}")]
+    KeyError(#[from] KeyError),
+    /// the wallet has no sync data to build against
+    #[error("wallet has no sync data")]
+    NoSyncData,
+    /// the wallet has no address with a receiver for the requested pool
+    #[error("wallet has no address with a receiver for pool {0:?}")]
+    NoReceiverForPool(zcash_protocol::PoolType),
+    /// a pool-to-pool transfer must move value between two different pools
+    #[error("source and destination pool are the same")]
+    SamePool,
+    /// an own address could not be re-encoded for the proposal
+    #[error("failed to encode address: {0}")]
+    AddressParse(#[from] zcash_address::ParseError),
+    /// an own unified receiver could not be encoded for the proposal
+    #[error("failed to encode unified receiver: {0}")]
+    UnifiedAddressParse(#[from] zcash_address::unified::ParseError),
 }
 
 /// Errors that can result from constructing shield proposals.

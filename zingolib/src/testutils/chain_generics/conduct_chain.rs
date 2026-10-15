@@ -6,8 +6,8 @@
 use crate::config::ZingoConfig;
 use crate::get_base_address_macro;
 use crate::testutils::lightclient::from_inputs;
-use crate::wallet::keys::unified::ReceiverSelection;
 use crate::wallet::SeedDerivation;
+use crate::wallet::keys::unified::ReceiverSelection;
 use crate::{lightclient::LightClient, wallet::LightWallet};
 
 #[allow(async_fn_in_trait)]

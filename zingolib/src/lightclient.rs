@@ -3,7 +3,7 @@
 use std::{
     collections::HashMap,
     fs::File,
-    io::{BufReader, Cursor, Read},
+    io::{BufReader, Cursor},
     path::PathBuf,
     sync::{
         Arc,
@@ -28,7 +28,7 @@ use pepper_sync::{
     sync::SyncResult,
     wallet::{SyncMode, traits::SyncTransactions},
 };
-use zcash_primitives::transaction::{RosterMember, StakeTxId, StakingActionKind};
+use zcash_primitives::transaction::{RosterMember, StakingActionKind};
 use zcash_protocol::TxId;
 use zingo_netutils::get_client;
 
@@ -322,81 +322,35 @@ impl LightClient {
         self.wallet.read().await.do_total_value_to_address().await
     }
 
+    /// The active finalizer roster as the node reports it.
+    ///
+    /// Each member is decoded with the node's own codec, which carries the member's
+    /// self-certifying finalizer address when the node knows it. An address whose signature does
+    /// not verify is dropped by the codec rather than surfaced.
     pub async fn get_roster_info(&self) -> Result<RosterMembers, String> {
-        let mut roster: Vec<RosterMember> = Vec::new();
         let uri = self.server_uri();
-        let mut zcb_client = get_client(uri).await.unwrap();
+        let mut zcb_client = get_client(uri)
+            .await
+            .map_err(|e| format!("Error connecting to server: {e}"))?;
 
-        let res = zcb_client.get_roster(Empty {}).await.unwrap();
-
+        let res = zcb_client
+            .get_roster(Empty {})
+            .await
+            .map_err(|e| format!("Error getting roster: {e}"))?;
         let roster_bytes = res.into_inner().data;
 
-        let mut ok = !roster_bytes.is_empty();
         let mut cur = Cursor::new(&roster_bytes);
-
-        let mut new_roster = Vec::new();
-        let mut num_buf = [0u8; 8];
-        'read: while cur.position() < roster_bytes.len() as u64 {
-            let mut m = RosterMember {
-                pub_key: [0; 32],
-                voting_power: 0,
-                txids: Vec::new(),
-            };
-            if let Err(err) = cur.read_exact(&mut m.pub_key) {
-                println!("******* ROSTER DESERIALIZE ERROR: {err:?}");
-                ok = false;
-                break;
-            }
-            if let Err(err) = cur.read_exact(&mut num_buf) {
-                println!("******* ROSTER DESERIALIZE ERROR: {err:?}");
-                ok = false;
-                break;
-            }
-            m.voting_power = u64::from_le_bytes(num_buf);
-
-            if let Err(err) = cur.read_exact(&mut num_buf) {
-                println!("******* ROSTER DESERIALIZE ERROR: {err:?}");
-                ok = false;
-                break;
-            }
-
-            let mut voting_power_check = 0;
-            let txids_n = u64::from_le_bytes(num_buf);
-            for _ in 0..txids_n {
-                let mut stake_txid = StakeTxId {
-                    txid: [0; 32],
-                    zats: 0,
-                };
-                if let Err(err) = cur.read_exact(&mut stake_txid.txid) {
-                    println!("******* ROSTER DESERIALIZE ERROR: {err:?}");
-                    ok = false;
-                    break 'read;
+        let mut roster = Vec::new();
+        while cur.position() < roster_bytes.len() as u64 {
+            match RosterMember::read_from(&mut cur) {
+                Ok(member) => roster.push(member),
+                Err(err) => {
+                    return Err(format!(
+                        "Error deserializing roster member {}: {err}",
+                        roster.len()
+                    ));
                 }
-                if let Err(err) = cur.read_exact(&mut num_buf) {
-                    println!("******* ROSTER DESERIALIZE ERROR: {err:?}");
-                    ok = false;
-                    break 'read;
-                }
-                stake_txid.zats = u64::from_le_bytes(num_buf);
-                voting_power_check += stake_txid.zats;
-                m.txids.push(stake_txid);
             }
-
-            if m.voting_power != voting_power_check {
-                // TODO: use manually-found one?
-                println!(
-                    "******* RECEIVED ROSTER VOTING POWER INACCURATE: {} vs {}",
-                    m.voting_power, voting_power_check
-                );
-                // ok = false;
-                // break;
-            }
-
-            new_roster.push(m);
-        }
-
-        if ok {
-            roster = new_roster;
         }
 
         Ok(RosterMembers::from_parts(roster))
@@ -430,6 +384,7 @@ impl LightClient {
             kind: StakingActionKind,
             amount_zats: u64,
             target: [u8; 32],
+            target_address: Option<zcash_primitives::bft::FinalizerAddress>,
         }
 
         let mut evts: Vec<StkEvt> = Vec::new();
@@ -438,20 +393,24 @@ impl LightClient {
             let Some(sa) = tx.staking_data() else {
                 continue;
             };
+            if tx.status().is_failed() {
+                continue;
+            }
 
             let height: u32 = tx.status().get_height().into();
             let time: u32 = tx.datetime();
 
-            let mut reversed_target = sa.arg32_2;
+            let mut reversed_target = sa.target_finalizer_pk();
             reversed_target.reverse();
 
             evts.push(StkEvt {
                 order: (height, time),
                 txid: tx.txid(),
-                bond_key: sa.arg32_0,
-                kind: sa.kind,
-                amount_zats: sa.amount_zats,
+                bond_key: sa.unique_pubkey(),
+                kind: sa.kind(),
+                amount_zats: sa.amount_zats(),
                 target: reversed_target,
+                target_address: crate::crosslink::action_target_address(&sa),
             });
         }
 
@@ -462,13 +421,15 @@ impl LightClient {
 
         for e in evts {
             match e.kind {
-                StakingActionKind::CreateNewDelegationBond => {
+                StakingActionKind::CreateNewDelegationBond
+                | StakingActionKind::ConvertFinalizerRewardToDelegationBond => {
                     let new = WalletBond {
                         created_in_txid: e.txid,
                         pubkey: e.bond_key,
                         amount_zats: e.amount_zats,
                         status: 0,
                         finalizer: e.target,
+                        finalizer_address: e.target_address,
                     };
                     LightClient::upsert_latest(&mut by_bond, e.bond_key, new, e.order);
                 }
@@ -477,6 +438,7 @@ impl LightClient {
                     let updated = if let Some((existing, _)) = by_bond.get(&e.bond_key) {
                         WalletBond {
                             finalizer: e.target,
+                            finalizer_address: e.target_address,
                             ..*existing
                         }
                     } else {
@@ -486,6 +448,7 @@ impl LightClient {
                             amount_zats: 0,
                             status: 0,
                             finalizer: e.target,
+                            finalizer_address: e.target_address,
                         }
                     };
 
@@ -540,6 +503,7 @@ impl LightClient {
                         created_in_txid: b.created_in_txid,
                         pubkey: b.pubkey,
                         finalizer: b.finalizer,
+                        finalizer_address: b.finalizer_address,
                     });
                 }
                 Err(err) => {
@@ -596,6 +560,7 @@ impl std::fmt::Debug for LightClient {
 }
 #[cfg(test)]
 mod tests {
+    use crate::config::ConfiguredActivationHeights;
     use crate::{
         config::{ChainType, ZingoConfig},
         lightclient::error::LightClientError,
@@ -603,7 +568,6 @@ mod tests {
     };
     use bip0039::Mnemonic;
     use tempfile::TempDir;
-    use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
     use zingo_test_vectors::seeds::CHIMNEY_BETTER_SEED;
 
     use crate::{
@@ -614,18 +578,9 @@ mod tests {
     #[tokio::test]
     async fn new_wallet_from_phrase() {
         let temp_dir = TempDir::new().unwrap();
-        let config = ZingoConfig::build(ChainType::Regtest(ConfiguredActivationHeights {
-            before_overwinter: Some(1),
-            overwinter: Some(1),
-            sapling: Some(1),
-            blossom: Some(1),
-            heartwood: Some(1),
-            canopy: Some(1),
-            nu5: Some(1),
-            nu6: Some(1),
-            nu6_1: Some(1),
-            nu7: None,
-        }))
+        let config = ZingoConfig::build(ChainType::Regtest(
+            ConfiguredActivationHeights::regtest_all_active(),
+        ))
         .set_wallet_dir(temp_dir.path().to_path_buf())
         .create();
         let mut lc = LightClient::create_from_wallet(
