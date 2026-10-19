@@ -29,6 +29,10 @@ use zcash_protocol::consensus::{
 
 use crate::wallet::WalletSettings;
 
+pub mod indexers;
+
+pub use indexers::{Indexer, IndexerList, IndexerNetwork};
+
 /// TODO: Add Doc Comment Here!
 pub const DEVELOPER_DONATION_ADDRESS: &str = "u1w47nzy4z5g9zvm4h2s4ztpl8vrdmlclqz5sz02742zs5j3tz232u4safvv9kplg7g06wpk5fx0k0rx3r9gg4qk6nkg4c0ey57l0dyxtatqf8403xat7vyge7mmen7zwjcgvryg22khtg3327s6mqqkxnpwlnrt27kxhwg37qys2kpn2d2jl2zkk44l7j7hq9az82594u3qaescr3c9v";
 /// Regtest address for donation in test environments
@@ -275,9 +279,21 @@ pub fn load_clientconfig(
         &wallet_name
     };
 
+    // The configured endpoint heads the chain's list, ahead of the built-in ones.
+    let indexer_network = IndexerNetwork::of_chain(&chain);
+    let mut indexers = IndexerList::builtin();
+    if lightwallet_uri.host().is_some() && lightwallet_uri.port().is_some() {
+        indexers.prefer(
+            indexer_network.clone(),
+            Indexer::new(lightwallet_uri.clone(), "configured"),
+        );
+    }
+
     // Create a Light Client Config
     let config = ZingoConfig {
         lightwalletd_uri: Arc::new(RwLock::new(lightwallet_uri)),
+        indexers: Arc::new(RwLock::new(indexers)),
+        indexer_network,
         chain,
         wallet_dir: data_dir,
         wallet_name: wallet_name_config.into(),
@@ -318,8 +334,16 @@ pub fn construct_lightwalletd_uri(server: Option<String>) -> http::Uri {
 /// TODO: Add Doc Comment Here!
 #[derive(Clone, Debug)]
 pub struct ZingoConfigBuilder {
-    /// TODO: Add Doc Comment Here!
+    /// The endpoint the client connects to. When `None` and `indexers` is set, the first endpoint
+    /// listed for the chain's network; when both are unset, no indexer (offline).
     pub lightwalletd_uri: Option<http::Uri>,
+    /// The endpoints the client may switch between, per network. Defaults to
+    /// [`IndexerList::builtin`] when `None`.
+    pub indexers: Option<IndexerList>,
+    /// Which network's endpoints this client uses. Defaults to
+    /// [`IndexerNetwork::of_chain`] for `chain`; set it to pick a [`IndexerNetwork::Custom`]
+    /// deployment that shares the chain's parameters.
+    pub indexer_network: Option<IndexerNetwork>,
     /// TODO: Add Doc Comment Here!
     pub chain: ChainType,
     /// TODO: Add Doc Comment Here!
@@ -343,8 +367,13 @@ pub struct ZingoConfigBuilder {
 // lightclient or lightwallet if it needs to retained in memory.
 #[derive(Clone, Debug)]
 pub struct ZingoConfig {
-    /// TODO: Add Doc Comment Here!
+    /// The endpoint every request goes to. Swap it with
+    /// [`crate::lightclient::LightClient::set_server`].
     pub lightwalletd_uri: Arc<RwLock<http::Uri>>,
+    /// The endpoints the client may switch between, per network; see [`IndexerList`].
+    pub indexers: Arc<RwLock<IndexerList>>,
+    /// Which network's endpoints this client uses.
+    pub indexer_network: IndexerNetwork,
     /// TODO: Add Doc Comment Here!
     pub chain: ChainType,
     /// The directory where the wallet and logfiles will be created. By default, this will be in ~/.zcash on Linux and %APPDATA%\Zcash on Windows.
@@ -369,6 +398,64 @@ impl ZingoConfigBuilder {
     /// ```
     pub fn set_lightwalletd_uri(&mut self, lightwalletd_uri: http::Uri) -> &mut Self {
         self.lightwalletd_uri = Some(lightwalletd_uri);
+        self
+    }
+
+    /// Replaces the endpoint list. Start from [`IndexerList::builtin`] to keep the shipped
+    /// endpoints or from [`IndexerList::empty`] to supply every endpoint yourself.
+    ///
+    /// When no URI is set with [`Self::set_lightwalletd_uri`], the client connects to the first
+    /// endpoint listed for the chain's network.
+    /// # Examples
+    /// ```
+    /// use zingolib::config::{ChainType, Indexer, IndexerList, IndexerNetwork, ZingoConfigBuilder};
+    /// let mine = Indexer::parse("10.0.0.1:18234").unwrap();
+    /// let config = ZingoConfigBuilder::default()
+    ///     .set_chain(ChainType::Testnet(zingolib::config::ConfiguredActivationHeights::crosslink_featurenet()))
+    ///     .set_indexers(IndexerList::empty().with(IndexerNetwork::CrosslinkFeaturenet, mine.clone()))
+    ///     .create();
+    /// assert_eq!(config.get_lightwalletd_uri(), mine.uri);
+    /// ```
+    pub fn set_indexers(&mut self, indexers: IndexerList) -> &mut Self {
+        self.indexers = Some(indexers);
+        self
+    }
+
+    /// Selects which network's endpoints the client uses, instead of the one
+    /// [`IndexerNetwork::of_chain`] derives from the chain.
+    ///
+    /// Needed for a [`IndexerNetwork::Custom`] deployment, which no chain can name: for example
+    /// the crosslink nightly network shares the featurenet's parameters but not its chain.
+    /// # Examples
+    /// ```
+    /// use zingolib::config::{ChainType, ConfiguredActivationHeights, IndexerNetwork, ZingoConfigBuilder};
+    /// let config = ZingoConfigBuilder::default()
+    ///     .set_chain(ChainType::Testnet(ConfiguredActivationHeights::crosslink_featurenet()))
+    ///     .set_indexer_network(IndexerNetwork::CROSSLINK_NIGHTLY)
+    ///     .create();
+    /// assert_eq!(config.indexer_network, IndexerNetwork::CROSSLINK_NIGHTLY);
+    /// assert!(config.get_lightwalletd_uri().host().is_none(), "no URI chosen without a indexer list");
+    /// ```
+    pub fn set_indexer_network(&mut self, network: IndexerNetwork) -> &mut Self {
+        self.indexer_network = Some(network);
+        self
+    }
+
+    /// Adds an endpoint to the list (the built-in list when none was set yet), after the ones
+    /// already listed for `network`.
+    pub fn add_indexer(&mut self, network: IndexerNetwork, indexer: Indexer) -> &mut Self {
+        self.indexers
+            .get_or_insert_with(IndexerList::builtin)
+            .add(network, indexer);
+        self
+    }
+
+    /// Adds an endpoint ahead of the ones already listed for `network`, so it is the one the
+    /// client connects to when no URI is set explicitly.
+    pub fn prefer_indexer(&mut self, network: IndexerNetwork, indexer: Indexer) -> &mut Self {
+        self.indexers
+            .get_or_insert_with(IndexerList::builtin)
+            .prefer(network, indexer);
         self
     }
 
@@ -415,9 +502,25 @@ impl ZingoConfigBuilder {
 
     /// TODO: Add Doc Comment Here!
     pub fn create(&self) -> ZingoConfig {
-        let lightwalletd_uri = self.lightwalletd_uri.clone().unwrap_or_default();
+        let indexer_network = self
+            .indexer_network
+            .clone()
+            .unwrap_or_else(|| IndexerNetwork::of_chain(&self.chain));
+        let lightwalletd_uri = self
+            .lightwalletd_uri
+            .clone()
+            .or_else(|| {
+                self.indexers
+                    .as_ref()?
+                    .first(&indexer_network)
+                    .map(|indexer| indexer.uri.clone())
+            })
+            .unwrap_or_default();
+        let indexers = self.indexers.clone().unwrap_or_else(IndexerList::builtin);
         ZingoConfig {
             lightwalletd_uri: Arc::new(RwLock::new(lightwalletd_uri)),
+            indexers: Arc::new(RwLock::new(indexers)),
+            indexer_network,
             chain: self.chain,
             wallet_dir: self.wallet_dir.clone(),
             wallet_name: DEFAULT_WALLET_NAME.into(),
@@ -432,6 +535,8 @@ impl Default for ZingoConfigBuilder {
     fn default() -> Self {
         ZingoConfigBuilder {
             lightwalletd_uri: None,
+            indexers: None,
+            indexer_network: None,
             monitor_mempool: None,
             reorg_buffer_offset: None,
             wallet_dir: None,
@@ -626,13 +731,53 @@ impl ZingoConfig {
         }
     }
 
-    /// TODO: Add Doc Comment Here!
+    /// The endpoint every request goes to.
     #[must_use]
     pub fn get_lightwalletd_uri(&self) -> http::Uri {
         self.lightwalletd_uri
             .read()
             .expect("Couldn't read configured server URI!")
             .clone()
+    }
+
+    /// The network whose endpoints this config uses.
+    #[must_use]
+    pub fn indexer_network(&self) -> &IndexerNetwork {
+        &self.indexer_network
+    }
+
+    /// A copy of the endpoint list.
+    #[must_use]
+    pub fn indexers(&self) -> IndexerList {
+        self.indexers
+            .read()
+            .expect("Couldn't read configured indexer list!")
+            .clone()
+    }
+
+    /// The endpoints listed for this config's network, most preferred first.
+    #[must_use]
+    pub fn indexers_for_chain(&self) -> Vec<Indexer> {
+        self.indexers()
+            .for_network(&self.indexer_network)
+            .cloned()
+            .collect()
+    }
+
+    /// Adds an endpoint for this config's network, after the ones already listed.
+    pub fn add_indexer(&self, indexer: Indexer) {
+        self.indexers
+            .write()
+            .expect("Couldn't write configured indexer list!")
+            .add(self.indexer_network.clone(), indexer);
+    }
+
+    /// Adds an endpoint for this config's network ahead of the ones already listed.
+    pub fn prefer_indexer(&self, indexer: Indexer) {
+        self.indexers
+            .write()
+            .expect("Couldn't write configured indexer list!")
+            .prefer(self.indexer_network.clone(), indexer);
     }
 
     /// TODO: Add Doc Comment Here!

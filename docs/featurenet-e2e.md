@@ -232,3 +232,18 @@ confirm
 # the staking day after that:
 withdraw_stake <bond key>
 ```
+
+## Indexer lists: nightly and stable from one consumer
+
+A throwaway binary outside the workspace (depends on `zingolib` by path) registered, from an
+empty `IndexerList`, the nightly peers from the node's `dev` config (`45.32.186.234`,
+`64.177.122.73`) under `IndexerNetwork::CROSSLINK_NIGHTLY`, the four stable hosts under
+`IndexerNetwork::CrosslinkFeaturenet`, and a `custom("my-devnet")` entry. It then built one
+`LightClient` per network with `set_indexer_network`, probed, and selected the best indexer:
+
+| Network | Probe | Selected |
+|---|---|---|
+| nightly | `45.32.186.234` height 9826, branch `37a5165b`; `64.177.122.73` port open, no gRPC answer in 5 s | `45.32.186.234` |
+| stable | `88.198.67.189` height 69315, branch `46545531`; the three Shielded Labs hosts at 62149 | `88.198.67.189` |
+
+Whole run 12 s, the unreachable nightly host bounded by the probe timeout.

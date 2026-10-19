@@ -20,6 +20,38 @@ As of 2026-10-19 those three hosts sit on a stale fork at height 62149 without
 `FeaturenetUpgrade1`; the live chain (branch id `46545531`, near height 69 000) is served by other
 peers, for example `http://88.198.67.189:18234`. See [featurenet-e2e.md](featurenet-e2e.md).
 
+## Indexer lists
+
+`zingolib::config::IndexerList` keeps lightwalletd endpoints per `IndexerNetwork` (mainnet,
+testnet, crosslink featurenet, regtest); `IndexerNetwork::of_chain` maps a `ChainType` to its
+network (a testnet chain on the featurenet schedule is the featurenet). `IndexerList::builtin()`
+ships the endpoints above; a consumer injects its own:
+
+```rust
+use zingolib::config::{Indexer, IndexerList, IndexerNetwork, ZingoConfigBuilder};
+
+let mine = Indexer::parse("10.0.0.1:18234")?;            // host:port gets http://
+ZingoConfigBuilder::default()
+    .set_chain(chain)
+    .prefer_indexer(IndexerNetwork::CrosslinkFeaturenet, mine)        // ahead of the built-ins
+    // or .set_indexers(IndexerList::empty().with(network, indexer))  // no built-ins at all
+    .create();
+```
+
+Two crosslink deployments share these chain parameters but not a chain: the featurenet
+("stable", magic `ClT1`, the `0735e958` pin) and the nightly network (magic `CNi0`, the node's
+`dev` branch, peers `45.32.186.234` and `64.177.122.73`). A `ChainType` cannot tell them apart, so
+the network is a separate choice: `IndexerNetwork::CrosslinkFeaturenet` by default,
+`IndexerNetwork::CROSSLINK_NIGHTLY` or any `IndexerNetwork::custom("name")` through
+`ZingoConfigBuilder::set_indexer_network` (CLI: `--network nightly`). Endpoints registered under a
+custom name form their own list.
+
+With no explicit URI the client connects to the first endpoint listed for its network. At runtime
+`LightClient::indexers` lists them, `set_server` switches (and records the endpoint), and
+`select_best_indexer` probes every listed endpoint with `GetLightdInfo` (5 s each, concurrently)
+and switches to the one reporting the highest tip, which is how a stale fork is avoided. The CLI
+exposes the same as repeatable `--server`, `indexers [probe]` and `change_server <uri|index|best>`.
+
 ## What the node's lightwalletd does not serve
 
 `GetTreeState` returns no Ironwood tree, `GetSubtreeRoots` rejects the Ironwood protocol and compact

@@ -7,7 +7,6 @@ mod utils;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::num::NonZeroU32;
-use std::str::FromStr;
 
 use indoc::indoc;
 use json::object;
@@ -17,6 +16,7 @@ use pepper_sync::keys::transparent;
 use std::sync::LazyLock;
 use tokio::runtime::Runtime;
 use zingolib::ConfiguredActivationHeights;
+use zingolib::config::Indexer;
 use zingolib::utils::conversion::txid_from_hex_encoded_str;
 
 use zcash_address::unified::{Container, Encoding, Ufvk};
@@ -76,13 +76,20 @@ struct ChangeServerCommand {}
 impl Command for ChangeServerCommand {
     fn help(&self) -> &'static str {
         indoc! {r"
-            Change the lightwalletd server to receive blockchain data from
+            Change the lightwalletd indexer to receive blockchain data from.
 
             Usage:
-            change_server [server_uri]
+            change_server <server_uri | host:port | index | best>
+
+            A URI or host:port is added to the indexer list for this chain and used from now on.
+            An index picks that entry of the 'indexers' listing.
+            'best' probes every listed indexer and picks the one reporting the highest tip.
+            With no argument the client goes offline.
 
             Example:
             change_server https://mainnet.lightwalletd.com:9067
+            change_server 2
+            change_server best
         "}
     }
 
@@ -91,25 +98,113 @@ impl Command for ChangeServerCommand {
     }
 
     fn exec(&self, args: &[&str], lightclient: &mut LightClient) -> String {
-        match args.len() {
-            0 => {
+        match args {
+            [] | [""] => {
                 lightclient.set_server(http::Uri::default());
-                "server set".to_string()
+                "indexer set: offline".to_string()
             }
-            1 => match http::Uri::from_str(args[0]) {
-                Ok(uri) => {
-                    lightclient.set_server(uri);
-                    "server set"
-                }
-                Err(_) => match args[0] {
-                    "" => {
-                        lightclient.set_server(http::Uri::default());
-                        "server set"
+            ["best"] => RT.block_on(async {
+                match lightclient.select_best_indexer().await {
+                    Ok(probe) => json::object! {
+                        "indexer_set" => probe.indexer.uri.to_string(),
+                        "probe" => json::JsonValue::from(probe),
                     }
-                    _ => "invalid server uri",
-                },
+                    .pretty(2),
+                    Err(probes) => json::object! {
+                        "error" => "no listed indexer answered",
+                        "probes" => probes.into_iter().map(json::JsonValue::from).collect::<Vec<_>>(),
+                    }
+                    .pretty(2),
+                }
+            }),
+            [arg] => {
+                if let Ok(index) = arg.parse::<usize>() {
+                    let indexers = lightclient.indexers();
+                    return match indexers.get(index) {
+                        Some(indexer) => {
+                            lightclient.set_server(indexer.uri.clone());
+                            format!("indexer set: {indexer}")
+                        }
+                        None => format!(
+                            "no indexer with index {index}; 'indexers' lists {} entries",
+                            indexers.len()
+                        ),
+                    };
+                }
+                match Indexer::parse(arg) {
+                    Ok(indexer) => {
+                        lightclient.set_server(indexer.uri.clone());
+                        format!("indexer set: {indexer}")
+                    }
+                    Err(e) => e.to_string(),
+                }
             }
-            .to_string(),
+            _ => self.help().to_string(),
+        }
+    }
+}
+
+struct IndexersCommand {}
+impl Command for IndexersCommand {
+    fn help(&self) -> &'static str {
+        indoc! {r"
+            List the lightwalletd indexers known for this wallet's chain, most preferred first.
+
+            Usage:
+            indexers [probe]
+
+            'probe' asks every indexer for its tip height, which 'change_server best' uses.
+            Add indexers on the command line with --server (repeatable) or with change_server.
+        "}
+    }
+
+    fn short_help(&self) -> &'static str {
+        "List the lightwalletd indexers known for this chain"
+    }
+
+    fn exec(&self, args: &[&str], lightclient: &mut LightClient) -> String {
+        let active = lightclient.server_uri();
+        match args {
+            [] => {
+                let indexers = lightclient
+                    .indexers()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, indexer)| {
+                        json::object! {
+                            "index" => index,
+                            "uri" => indexer.uri.to_string(),
+                            "label" => indexer.label,
+                            "active" => indexer.uri == active,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                json::object! {
+                    "network" => lightclient.config().indexer_network().to_string(),
+                    "indexers" => indexers,
+                }
+                .pretty(2)
+            }
+            ["probe"] => RT.block_on(async {
+                let probes = lightclient
+                    .probe_indexers()
+                    .await
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, probe)| {
+                        let active = probe.indexer.uri == active;
+                        let mut value = json::JsonValue::from(probe);
+                        value["index"] = index.into();
+                        value["active"] = active.into();
+                        value
+                    })
+                    .collect::<Vec<_>>();
+                json::object! {
+                    "network" => lightclient.config().indexer_network().to_string(),
+                    "indexers" => probes,
+                }
+                .pretty(2)
+            }),
             _ => self.help().to_string(),
         }
     }
@@ -2366,6 +2461,7 @@ pub fn get_commands() -> HashMap<&'static str, Box<dyn Command>> {
         ("parse_address", Box::new(ParseAddressCommand {})),
         ("parse_viewkey", Box::new(ParseViewKeyCommand {})),
         ("change_server", Box::new(ChangeServerCommand {})),
+        ("indexers", Box::new(IndexersCommand {})),
         ("rescan", Box::new(RescanCommand {})),
         ("clear", Box::new(ClearCommand {})),
         ("help", Box::new(HelpCommand {})),

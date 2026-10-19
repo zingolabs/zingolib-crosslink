@@ -44,6 +44,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the bond first and fail with `BondNotActive` or `StakingActionDelayNotMet` where consensus
   would reject them; `withdraw_stake` likewise requires the node to hold the bond as unbonding
   for at least the action delay.
+- `zingolib::config::{IndexerList, IndexerNetwork, Indexer}`: lightwalletd endpoints
+  grouped by network (mainnet, testnet, crosslink featurenet, regtest), with a built-in list and
+  consumer injection through `ZingoConfigBuilder::{set_indexers, add_indexer, prefer_indexer}`,
+  `ZingoConfig::{indexers, add_indexer, prefer_indexer}` and `LightClient::{indexers, add_indexer,
+  set_server}`. `LightClient::probe_indexers` and `select_best_indexer` ask every listed endpoint
+  for its tip and switch to the highest. `zingo-cli --server` is repeatable, defaults to the
+  built-in list for the chain, and gains `indexers [probe]` and `change_server <uri|index|best>`.
+  `IndexerNetwork::Custom` names deployments no chain can (`IndexerNetwork::CROSSLINK_NIGHTLY`
+  ships with the node's nightly peers); `ZingoConfigBuilder::set_indexer_network` and
+  `zingo-cli --network <name>` select which list a client uses.
+- `zingo_netutils::get_client` bounds the connection attempt with `CONNECT_TIMEOUT` (10 s).
 - `docs/featurenet-e2e.md`: the running log of the end-to-end run against the live featurenet.
 ### Changed
 - removed `dev` branch reference from `zingo_common_components` crate and pointed to version `0.2`
