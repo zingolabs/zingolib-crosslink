@@ -89,6 +89,32 @@ pub enum WithdrawError {
     /// the node reported no such bond
     #[error("the node has no bond with key {}", hex::encode(.0))]
     BondInfoUnavailable([u8; 32]),
+    /// the node reports the bond in a state other than unbonding
+    #[error(
+        "bond {} is {status}, so consensus would reject the withdrawal; a bond must be unbonding",
+        hex::encode(.bond_key)
+    )]
+    BondNotUnbonding {
+        /// the bond
+        bond_key: [u8; 32],
+        /// its state at the node
+        status: crate::crosslink::BondStatus,
+    },
+    /// the unbond is too recent for consensus to accept the withdrawal
+    #[error(
+        "bond {}: unbonded at height {last_action_height}, withdrawal accepted from height {earliest_height}, target height {height}",
+        hex::encode(.bond_key)
+    )]
+    StakingActionDelayNotMet {
+        /// the bond
+        bond_key: [u8; 32],
+        /// the height of the unbond
+        last_action_height: u32,
+        /// the first height at which consensus accepts the withdrawal
+        earliest_height: u32,
+        /// the height the transaction would target
+        height: u32,
+    },
     /// no spending key for the account
     #[error("{0}")]
     KeyError(#[from] KeyError),
@@ -348,6 +374,29 @@ pub enum ProposeSendError {
         height: u32,
         /// the first height at which consensus accepts the action again
         next_window_start: u32,
+    },
+    /// the node reports the bond in a state that does not allow this action
+    #[error("bond {} is {status}, so consensus would reject this action", hex::encode(.bond_key))]
+    BondNotActive {
+        /// the bond
+        bond_key: [u8; 32],
+        /// its state at the node
+        status: crate::crosslink::BondStatus,
+    },
+    /// the bond's previous action is too recent for consensus to accept another
+    #[error(
+        "bond {}: last action at height {last_action_height}, next action accepted from height {earliest_height}, target height {height}",
+        hex::encode(.bond_key)
+    )]
+    StakingActionDelayNotMet {
+        /// the bond
+        bond_key: [u8; 32],
+        /// the height of the bond's previous action
+        last_action_height: u32,
+        /// the first height at which consensus accepts the next action
+        earliest_height: u32,
+        /// the height the transaction would target
+        height: u32,
     },
     /// the wallet has no address with a receiver for the requested pool
     #[error("wallet has no address with a receiver for pool {0:?}")]

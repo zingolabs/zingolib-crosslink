@@ -305,6 +305,8 @@ impl LightWallet {
             .await
             .unwrap();
 
+        // The node's status decides what is still at stake: active and unbonding bonds count,
+        // withdrawn and burned ones do not, whatever the wallet's own history says.
         let mut total_staked: u64 = 0;
         for pubkey in &active_bonds {
             if let Ok(resp) = client
@@ -313,7 +315,10 @@ impl LightWallet {
                 })
                 .await
             {
-                total_staked = total_staked.saturating_add(resp.into_inner().amount);
+                let bond_info = crate::crosslink::BondInfo::from(resp.into_inner());
+                if bond_info.status.is_staked() {
+                    total_staked = total_staked.saturating_add(bond_info.amount_zats);
+                }
             }
         }
 

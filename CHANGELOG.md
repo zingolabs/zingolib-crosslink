@@ -36,6 +36,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `stake`, `begin_unstake` and `withdraw_stake` fail before building when the staking day window
   is closed at the target height (`StakingWindowClosed`), naming the next height it opens. The
   check is skipped on regtest, whose nets may run a shrunk calendar.
+- `zingolib::crosslink::{BondInfo, BondStatus, earliest_bond_action_height, staking_calendar}`:
+  the node's `GetBondInfo` response typed. `LightClient::get_bond_info` returns it; `get_bonds`
+  reports `status_name`, `last_action_height` and `next_action_height` (the first height at which
+  an active bond can be unbonded or an unbonding bond withdrawn); the staked amount counts only
+  bonds the node holds as active or unbonding. `begin_unstake` and `redelegate` ask the node for
+  the bond first and fail with `BondNotActive` or `StakingActionDelayNotMet` where consensus
+  would reject them; `withdraw_stake` likewise requires the node to hold the bond as unbonding
+  for at least the action delay.
 - `docs/featurenet-e2e.md`: the running log of the end-to-end run against the live featurenet.
 ### Changed
 - removed `dev` branch reference from `zingo_common_components` crate and pointed to version `0.2`

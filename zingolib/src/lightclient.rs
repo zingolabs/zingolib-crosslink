@@ -15,7 +15,7 @@ use json::JsonValue;
 use tokio::{sync::RwLock, task::JoinHandle};
 
 use zcash_client_backend::{
-    proto::service::{BondInfoRequest, BondInfoResponse, Empty, FaucetRequest},
+    proto::service::{BondInfoRequest, Empty, FaucetRequest},
     tor,
 };
 use zcash_keys::address::UnifiedAddress;
@@ -34,6 +34,7 @@ use zingo_netutils::get_client;
 
 use crate::{
     config::ZingoConfig,
+    crosslink::BondStatus,
     lightclient::crosslink::{RosterMembers, WalletBond, WalletBonds},
     wallet::{
         LightWallet, SeedDerivation, WalletBase,
@@ -417,8 +418,14 @@ impl LightClient {
         Ok(RosterMembers::from_parts(roster))
     }
 
-    pub async fn get_bond_info(&self, bond_key: [u8; 32]) -> Result<BondInfoResponse, String> {
-        let mut zcb_client = get_client(self.server_uri()).await.unwrap();
+    /// The node's view of the bond `bond_key`: amount, status and the height of its last action.
+    pub async fn get_bond_info(
+        &self,
+        bond_key: [u8; 32],
+    ) -> Result<crate::crosslink::BondInfo, String> {
+        let mut zcb_client = get_client(self.server_uri())
+            .await
+            .map_err(|err| format!("Error connecting to the server: {err}"))?;
 
         match zcb_client
             .get_bond_info(BondInfoRequest {
@@ -426,8 +433,12 @@ impl LightClient {
             })
             .await
         {
-            Ok(res) => Ok(res.into_inner()),
-            Err(err) => Err(format!("Error getting bond info: {err:?}")),
+            Ok(res) => Ok(res.into_inner().into()),
+            Err(status) if status.code() == tonic::Code::NotFound => Err(format!(
+                "the node has no bond with key {}",
+                hex::encode(bond_key)
+            )),
+            Err(err) => Err(format!("Error getting bond info: {err}")),
         }
     }
 
@@ -488,7 +499,9 @@ impl LightClient {
                         created_in_txid: e.txid,
                         pubkey: e.bond_key,
                         amount_zats: e.amount_zats,
-                        status: 0,
+                        status: BondStatus::Active,
+                        last_action_height: None,
+                        next_action_height: None,
                         finalizer: e.target,
                         finalizer_address: e.target_address,
                     };
@@ -507,7 +520,9 @@ impl LightClient {
                             created_in_txid: e.txid,
                             pubkey: e.bond_key,
                             amount_zats: 0,
-                            status: 0,
+                            status: BondStatus::Active,
+                            last_action_height: None,
+                            next_action_height: None,
                             finalizer: e.target,
                             finalizer_address: e.target_address,
                         }
@@ -525,7 +540,7 @@ impl LightClient {
                 })?;
 
                     let updated = WalletBond {
-                        status: 1,
+                        status: BondStatus::Unbonding,
                         ..existing
                     };
                     LightClient::upsert_latest(&mut by_bond, e.bond_key, updated, e.order);
@@ -540,7 +555,7 @@ impl LightClient {
                 })?;
 
                     let updated = WalletBond {
-                        status: 2,
+                        status: BondStatus::Withdrawn,
                         ..existing
                     };
                     LightClient::upsert_latest(&mut by_bond, e.bond_key, updated, e.order);
@@ -552,23 +567,26 @@ impl LightClient {
 
         let mut bonds: Vec<WalletBond> = by_bond.into_values().map(|(bond, _order)| bond).collect();
 
-        bonds.sort_by_key(|b| b.status);
+        bonds.sort_by_key(|b| b.status.wire());
 
+        // The node knows the bond's current amount (rewards grow it), its status and the height
+        // of its last action, from which the next permitted action's height follows.
+        let calendar = crate::crosslink::staking_calendar(&self.config.chain);
         let mut enriched: Vec<WalletBond> = Vec::with_capacity(bonds.len());
         for b in bonds.into_iter() {
             match self.get_bond_info(b.pubkey).await {
                 Ok(bond_info) => {
                     enriched.push(WalletBond {
-                        amount_zats: bond_info.amount,
+                        amount_zats: bond_info.amount_zats,
                         status: bond_info.status,
-                        created_in_txid: b.created_in_txid,
-                        pubkey: b.pubkey,
-                        finalizer: b.finalizer,
-                        finalizer_address: b.finalizer_address,
+                        last_action_height: Some(bond_info.last_action_height),
+                        next_action_height: calendar
+                            .and_then(|calendar| bond_info.next_action_height(calendar)),
+                        ..b
                     });
                 }
                 Err(err) => {
-                    println!("Error getting bond info: {err}");
+                    tracing::warn!("showing bond from wallet history only: {err}");
                     enriched.push(b);
                 }
             }

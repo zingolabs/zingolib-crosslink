@@ -64,7 +64,7 @@ All staking goes through proposals, confirmed with `confirm`:
 | `begin_unstake <bond key>` | `BeginDelegationUnbonding` |
 | `redelegate <bond key> <zfinv1 address>` | `RetargetDelegationBond`, from the bond's current target |
 | `withdraw_stake <bond key>` | `WithdrawDelegationBond`; builds and broadcasts at once |
-| `get_bonds`, `roster_info` | wallet bonds and the finalizer roster, with `zfinv1` addresses |
+| `get_bonds`, `roster_info` | wallet bonds (node amount, status, `last_action_height`, `next_action_height`) and the finalizer roster, with `zfinv1` addresses |
 
 Bond keys derive from the account's bond root key plus the create action's terms, so a wallet
 restored from seed recovers them; `LightWallet::bond_create_action` finds the create action the
@@ -73,8 +73,14 @@ backend signs later actions from.
 Create, unbond and withdraw are only mined inside the staking day window,
 `height % 10368 < 3456` on the public calendar (`zingolib::crosslink::PUBLIC_STAKING_CALENDAR`);
 retarget is exempt. The wallet refuses to build outside the window and names the next height it
-opens (`StakingWindowClosed`). `withdraw_stake` additionally needs the bond unbonded at least
-3 457 blocks earlier.
+opens (`StakingWindowClosed`).
+
+Each bond action also waits for the action delay (3 457 blocks) after the bond's previous action.
+`GetBondInfo` reports the bond's status (`BondStatus`: active, unbonding, withdrawn, burned) and
+the height of that previous action; `zingolib::crosslink::BondInfo::next_action_height` turns it
+into the first height consensus accepts the next action, which `get_bonds` prints. `begin_unstake`
+and `redelegate` ask the node first and fail with `BondNotActive` or `StakingActionDelayNotMet`
+rather than at the mempool; `withdraw_stake` requires the node to hold the bond as unbonding.
 
 ## Finalizer addresses
 

@@ -1110,12 +1110,15 @@ struct GetBondsCommand {}
 impl Command for GetBondsCommand {
     fn help(&self) -> &'static str {
         indoc! {r#"
-            Returns the bonds this wallet created, with their current amount and status from the node.
+            Returns the bonds this wallet created, with their current amount, status, last action
+            height and the first height at which the next action is accepted, from the node.
 
             Usage:
                 get_bonds
 
-            Status: 0 = active, 1 = unbonding, 2 = withdrawn.
+            Status: 0 = active, 1 = unbonding, 2 = withdrawn, 3 = burned.
+            next_action_height: when an active bond can be unbonded, or an unbonding bond withdrawn
+            (the action delay after last_action_height, inside a staking window).
         "#}
     }
 

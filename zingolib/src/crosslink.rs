@@ -31,6 +31,121 @@ pub fn next_staking_window_start(height: u32, staking: &StakingParameters) -> u3
     }
 }
 
+/// The first height at which consensus accepts the next action on a bond whose previous action
+/// was mined at `last_action_height`: the action delay must have elapsed and the staking window
+/// must be open.
+#[must_use]
+pub fn earliest_bond_action_height(last_action_height: u32, staking: &StakingParameters) -> u32 {
+    next_staking_window_start(
+        last_action_height.saturating_add(staking.action_delay),
+        staking,
+    )
+}
+
+/// The staking calendar consensus applies on `chain`, or `None` where the wallet cannot know
+/// it (regtest nets may run a shrunk calendar).
+#[must_use]
+pub fn staking_calendar(chain: &crate::config::ChainType) -> Option<&'static StakingParameters> {
+    match chain {
+        crate::config::ChainType::Mainnet | crate::config::ChainType::Testnet(_) => {
+            Some(&PUBLIC_STAKING_CALENDAR)
+        }
+        crate::config::ChainType::Regtest(_) => None,
+    }
+}
+
+/// A delegation bond's state as the node reports it in `GetBondInfo`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BondStatus {
+    /// Delegated; may be retargeted, or unbonded once the action delay has passed.
+    Active,
+    /// Unbonding; may be withdrawn once the action delay has passed.
+    Unbonding,
+    /// Withdrawn into the wallet; nothing more can be done with it.
+    Withdrawn,
+    /// Burned by a slashing hardfork.
+    Burned,
+    /// A status code this wallet does not know.
+    Unknown(u32),
+}
+
+impl BondStatus {
+    /// Decodes the wire value of `BondInfoResponse.status`.
+    #[must_use]
+    pub fn from_wire(status: u32) -> Self {
+        match status {
+            0 => Self::Active,
+            1 => Self::Unbonding,
+            2 => Self::Withdrawn,
+            3 => Self::Burned,
+            other => Self::Unknown(other),
+        }
+    }
+
+    /// The wire value of `BondInfoResponse.status`.
+    #[must_use]
+    pub fn wire(self) -> u32 {
+        match self {
+            Self::Active => 0,
+            Self::Unbonding => 1,
+            Self::Withdrawn => 2,
+            Self::Burned => 3,
+            Self::Unknown(other) => other,
+        }
+    }
+
+    /// Whether the bond's value is still at stake (active or unbonding).
+    #[must_use]
+    pub fn is_staked(self) -> bool {
+        matches!(self, Self::Active | Self::Unbonding)
+    }
+}
+
+impl std::fmt::Display for BondStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Active => write!(f, "active"),
+            Self::Unbonding => write!(f, "unbonding"),
+            Self::Withdrawn => write!(f, "withdrawn"),
+            Self::Burned => write!(f, "burned"),
+            Self::Unknown(other) => write!(f, "unknown({other})"),
+        }
+    }
+}
+
+/// What the node knows about a bond: the `GetBondInfo` response, typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BondInfo {
+    /// The bond's current value, which rewards grow.
+    pub amount_zats: u64,
+    /// The bond's state.
+    pub status: BondStatus,
+    /// The height of the action that put the bond in its current state: creation while active,
+    /// the unbond while unbonding, the withdrawal once withdrawn.
+    pub last_action_height: u32,
+}
+
+impl BondInfo {
+    /// The first height at which consensus accepts the bond's next action (an unbond while
+    /// active, a withdrawal while unbonding), or `None` when no action remains.
+    #[must_use]
+    pub fn next_action_height(&self, staking: &StakingParameters) -> Option<u32> {
+        self.status
+            .is_staked()
+            .then(|| earliest_bond_action_height(self.last_action_height, staking))
+    }
+}
+
+impl From<zcash_client_backend::proto::service::BondInfoResponse> for BondInfo {
+    fn from(response: zcash_client_backend::proto::service::BondInfoResponse) -> Self {
+        Self {
+            amount_zats: response.amount,
+            status: BondStatus::from_wire(response.status),
+            last_action_height: response.last_action_height,
+        }
+    }
+}
+
 /// Why a finalizer address string was rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum FinalizerAddressError {
@@ -122,6 +237,36 @@ mod tests {
         assert_eq!(next_staking_window_start(5, &CALENDAR), 5);
         assert_eq!(next_staking_window_start(10, &CALENDAR), 100);
         assert_eq!(next_staking_window_start(199, &CALENDAR), 200);
+    }
+
+    #[test]
+    fn next_bond_action_waits_for_the_delay_and_the_window() {
+        // created at 5: delay ends at 16, outside the window, so the next day.
+        assert_eq!(earliest_bond_action_height(5, &CALENDAR), 100);
+        // unbonded at 95: delay ends at 106, inside the window.
+        assert_eq!(earliest_bond_action_height(95, &CALENDAR), 106);
+
+        let active = BondInfo {
+            amount_zats: 1,
+            status: BondStatus::Active,
+            last_action_height: 5,
+        };
+        assert_eq!(active.next_action_height(&CALENDAR), Some(100));
+        let withdrawn = BondInfo {
+            status: BondStatus::Withdrawn,
+            ..active
+        };
+        assert_eq!(withdrawn.next_action_height(&CALENDAR), None);
+    }
+
+    #[test]
+    fn bond_status_round_trips_the_wire_value() {
+        for wire in 0..5 {
+            assert_eq!(BondStatus::from_wire(wire).wire(), wire);
+        }
+        assert_eq!(BondStatus::from_wire(3), BondStatus::Burned);
+        assert!(BondStatus::Unbonding.is_staked());
+        assert!(!BondStatus::Withdrawn.is_staked());
     }
 
     #[test]

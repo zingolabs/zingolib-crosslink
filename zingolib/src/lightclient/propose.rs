@@ -106,6 +106,18 @@ impl LightClient {
         Ok(proposal)
     }
 
+    /// The node's view of a bond, or `None` when the node cannot be asked; the proposal is then
+    /// built from the wallet's own history and the node has the final say.
+    async fn node_bond_info(&self, bond_key: [u8; 32]) -> Option<crate::crosslink::BondInfo> {
+        match self.get_bond_info(bond_key).await {
+            Ok(info) => Some(info),
+            Err(err) => {
+                tracing::warn!("building without the node's bond info: {err}");
+                None
+            }
+        }
+    }
+
     /// Creates and stores a proposal that begins unbonding the bond `bond_key`.
     pub async fn propose_begin_unstake(
         &mut self,
@@ -113,11 +125,12 @@ impl LightClient {
         account_id: zip32::AccountId,
     ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
         let _ignore_error = self.pause_sync();
+        let bond_info = self.node_bond_info(bond_key).await;
         let proposal = self
             .wallet
             .write()
             .await
-            .create_unbonding_start_proposal(bond_key, account_id)
+            .create_unbonding_start_proposal(bond_key, bond_info.as_ref(), account_id)
             .await?;
         self.store_staking_proposal(&proposal, account_id).await;
 
@@ -132,11 +145,12 @@ impl LightClient {
         account_id: zip32::AccountId,
     ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
         let _ignore_error = self.pause_sync();
+        let bond_info = self.node_bond_info(bond_key).await;
         let proposal = self
             .wallet
             .write()
             .await
-            .create_retarget_proposal(bond_key, to_finalizer, account_id)
+            .create_retarget_proposal(bond_key, to_finalizer, bond_info.as_ref(), account_id)
             .await?;
         self.store_staking_proposal(&proposal, account_id).await;
 

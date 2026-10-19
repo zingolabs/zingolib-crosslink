@@ -41,7 +41,8 @@ use super::{
 use crate::{
     config::ChainType,
     crosslink::{
-        PUBLIC_STAKING_CALENDAR, StakingParameters, next_staking_window_start, staking_window_open,
+        BondInfo, BondStatus, StakingParameters, earliest_bond_action_height,
+        next_staking_window_start, staking_calendar, staking_window_open,
     },
     data::proposal::{ExtraFee, ExtraFeeProposal, ProportionalFeeProposal, ZingoProposal},
     wallet::{error::WithdrawError, utils::ensure_sapling_params_on_disk},
@@ -358,10 +359,38 @@ impl LightWallet {
     /// The staking calendar consensus applies on this wallet's network, or `None` where the
     /// wallet cannot know it (regtest nets may run a shrunk calendar).
     fn staking_calendar(&self) -> Option<&'static StakingParameters> {
-        match self.network {
-            ChainType::Mainnet | ChainType::Testnet(_) => Some(&PUBLIC_STAKING_CALENDAR),
-            ChainType::Regtest(_) => None,
+        staking_calendar(&self.network)
+    }
+
+    /// Fails when the node reports the bond in a state other than `expected`, or when its
+    /// previous action is too recent for consensus to accept the next one at `height`.
+    fn check_bond_ready(
+        &self,
+        bond_key: [u8; 32],
+        bond_info: &BondInfo,
+        expected: BondStatus,
+        height: BlockHeight,
+    ) -> Result<(), ProposeSendError> {
+        if bond_info.status != expected {
+            return Err(ProposeSendError::BondNotActive {
+                bond_key,
+                status: bond_info.status,
+            });
         }
+        let Some(calendar) = self.staking_calendar() else {
+            return Ok(());
+        };
+        let height = u32::from(height);
+        let earliest_height = earliest_bond_action_height(bond_info.last_action_height, calendar);
+        if height < earliest_height {
+            return Err(ProposeSendError::StakingActionDelayNotMet {
+                bond_key,
+                last_action_height: bond_info.last_action_height,
+                earliest_height,
+                height,
+            });
+        }
+        Ok(())
     }
 
     /// Fails when a create, unbond or withdraw action targeting `height` would be rejected
@@ -443,14 +472,22 @@ impl LightWallet {
     }
 
     /// Creates a proposal that begins unbonding the bond `bond_key`, which this wallet created.
+    ///
+    /// `bond_info` is the node's view of the bond when the caller could fetch it: the bond must
+    /// be active and its creation at least the action delay before the target height.
     pub(crate) async fn create_unbonding_start_proposal(
         &mut self,
         bond_key: [u8; 32],
+        bond_info: Option<&BondInfo>,
         account_id: zip32::AccountId,
     ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
         self.bond_create_action(bond_key)
             .ok_or(ProposeSendError::UnknownBond(bond_key))?;
-        self.check_staking_window(self.next_target_height()?)?;
+        let target_height = self.next_target_height()?;
+        self.check_staking_window(target_height)?;
+        if let Some(bond_info) = bond_info {
+            self.check_bond_ready(bond_key, bond_info, BondStatus::Active, target_height)?;
+        }
 
         let staking_action = StakingAction::BeginDelegationUnbonding {
             unique_pubkey: bond_key,
@@ -470,14 +507,24 @@ impl LightWallet {
     ///
     /// Consensus validates the action's `from_finalizer` against the bond's current target, so
     /// it is replayed from this wallet's own mined create and retarget actions.
+    ///
+    /// A retarget is exempt from the staking window and the action delay, but the node must
+    /// still hold the bond as active; `bond_info` is its view when the caller could fetch it.
     pub(crate) async fn create_retarget_proposal(
         &mut self,
         bond_key: [u8; 32],
         to_finalizer: FinalizerAddress,
+        bond_info: Option<&BondInfo>,
         account_id: zip32::AccountId,
     ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
         if !to_finalizer.verify() {
             return Err(ProposeSendError::InvalidFinalizerAddress);
+        }
+        if let Some(bond_info) = bond_info.filter(|info| info.status != BondStatus::Active) {
+            return Err(ProposeSendError::BondNotActive {
+                bond_key,
+                status: bond_info.status,
+            });
         }
         let from_finalizer = self
             .current_bond_target_address(bond_key)
@@ -569,14 +616,22 @@ impl LightWallet {
             .ok_or(WithdrawError::BondKeyNotRecoverable(bond_key))?;
 
         // The amount must equal the bond's current balance, which rewards have grown.
-        let bond_value: u64 = client
-            .get_bond_info(BondInfoRequest {
-                bond_key: bond_key.to_vec(),
-            })
-            .await
-            .map_err(|_| WithdrawError::BondInfoUnavailable(bond_key))?
-            .into_inner()
-            .amount;
+        let bond_info = BondInfo::from(
+            client
+                .get_bond_info(BondInfoRequest {
+                    bond_key: bond_key.to_vec(),
+                })
+                .await
+                .map_err(|_| WithdrawError::BondInfoUnavailable(bond_key))?
+                .into_inner(),
+        );
+        if bond_info.status != BondStatus::Unbonding {
+            return Err(WithdrawError::BondNotUnbonding {
+                bond_key,
+                status: bond_info.status,
+            });
+        }
+        let bond_value: u64 = bond_info.amount_zats;
 
         let orchard_fvk: orchard::keys::FullViewingKey = usk.orchard().into();
         let orchard_ovk = orchard_fvk.to_ovk(zip32::Scope::Internal);
@@ -596,6 +651,16 @@ impl LightWallet {
                 return Err(WithdrawError::StakingWindowClosed {
                     height,
                     next_window_start: next_staking_window_start(height, calendar),
+                });
+            }
+            let earliest_height =
+                earliest_bond_action_height(bond_info.last_action_height, calendar);
+            if height < earliest_height {
+                return Err(WithdrawError::StakingActionDelayNotMet {
+                    bond_key,
+                    last_action_height: bond_info.last_action_height,
+                    earliest_height,
+                    height,
                 });
             }
         }

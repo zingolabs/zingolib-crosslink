@@ -3,7 +3,7 @@ use serde::Serialize;
 use zcash_primitives::transaction::RosterMember;
 use zcash_protocol::TxId;
 
-use crate::crosslink::{encode_finalizer_address, finalizer_pubkey_hex};
+use crate::crosslink::{BondStatus, encode_finalizer_address, finalizer_pubkey_hex};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RosterMembers {
@@ -67,10 +67,20 @@ pub struct WalletBond {
 
     pub pubkey: [u8; 32],
 
+    /// The bond's value: the node's current figure (rewards grow it) when it could be asked,
+    /// else the created amount.
     pub amount_zats: u64,
 
-    /// 0 = Active, 1 = Unbonding, 2 = Withdrawn
-    pub status: u32,
+    /// The node's status when it could be asked, else the status the wallet's own actions imply.
+    pub status: BondStatus,
+
+    /// The height of the action that put the bond in its current state, from the node.
+    pub last_action_height: Option<u32>,
+
+    /// The first height at which consensus accepts the bond's next action: an unbond while
+    /// active, a withdrawal while unbonding. `None` when nothing remains to do, or when the
+    /// node or the calendar is unavailable.
+    pub next_action_height: Option<u32>,
 
     /// Finalizer / target this bond is delegated to (public key, node display byte order)
     pub finalizer: [u8; 32],
@@ -85,7 +95,10 @@ impl From<WalletBond> for JsonValue {
             "created_in_txid" => wallet_bond.created_in_txid.to_string(),
             "bond_key" => hex::encode(wallet_bond.pubkey),
             "amount_zats" => wallet_bond.amount_zats,
-            "status" => wallet_bond.status,
+            "status" => wallet_bond.status.wire(),
+            "status_name" => wallet_bond.status.to_string(),
+            "last_action_height" => wallet_bond.last_action_height,
+            "next_action_height" => wallet_bond.next_action_height,
             "finalizer" => hex::encode(wallet_bond.finalizer),
             "finalizer_address" => wallet_bond
                 .finalizer_address
