@@ -25,7 +25,7 @@ use zcash_keys::keys::UnifiedFullViewingKey;
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::value::Zatoshis;
 
-use pepper_sync::wallet::{KeyIdInterface, OrchardNote, SaplingNote, SyncMode};
+use pepper_sync::wallet::{IronwoodNote, KeyIdInterface, OrchardNote, SaplingNote, SyncMode};
 use zingolib::data::{PollReport, proposal};
 use zingolib::lightclient::LightClient;
 use zingolib::wallet::keys::WalletAddressRef;
@@ -2145,6 +2145,7 @@ impl Command for NotesCommand {
             let wallet = lightclient.wallet.read().await;
 
             json::object! {
+                "ironwood_notes" => json::JsonValue::from(wallet.note_summaries::<IronwoodNote>(all_notes)),
                 "orchard_notes" => json::JsonValue::from(wallet.note_summaries::<OrchardNote>(all_notes)),
                 "sapling_notes" => json::JsonValue::from(wallet.note_summaries::<SaplingNote>(all_notes)),
             }
