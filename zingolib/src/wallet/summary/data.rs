@@ -161,9 +161,11 @@ pub struct TransactionSummary {
     pub value: u64,
     pub fee: Option<u64>,
     pub zec_price: Option<f32>,
+    pub ironwood_notes: Vec<BasicNoteSummary>,
     pub orchard_notes: Vec<BasicNoteSummary>,
     pub sapling_notes: Vec<BasicNoteSummary>,
     pub transparent_coins: Vec<BasicCoinSummary>,
+    pub outgoing_ironwood_notes: Vec<OutgoingNoteSummary>,
     pub outgoing_orchard_notes: Vec<OutgoingNoteSummary>,
     pub outgoing_sapling_notes: Vec<OutgoingNoteSummary>,
     pub outgoing_transparent_coins: Vec<OutgoingCoinSummary>,
@@ -185,8 +187,9 @@ impl TransactionSummary {
                 | SendType::RetargetDelegationBond,
             ) => self.fee.map(|fee| -(fee as i64)),
             TransactionKind::Sent(SendType::WithdrawBond) => Some(
-                self.outgoing_orchard_notes
+                self.outgoing_ironwood_notes
                     .iter()
+                    .chain(self.outgoing_orchard_notes.iter())
                     .map(|note| note.value as i64)
                     .sum(),
             ),
@@ -203,7 +206,9 @@ impl TransactionSummary {
         String,
         BasicNoteSummaries,
         BasicNoteSummaries,
+        BasicNoteSummaries,
         BasicCoinSummaries,
+        OutgoingNoteSummaries,
         OutgoingNoteSummaries,
         OutgoingNoteSummaries,
         OutgoingCoinSummaries,
@@ -224,9 +229,11 @@ impl TransactionSummary {
         } else {
             "not available".to_string()
         };
+        let ironwood_notes = BasicNoteSummaries(self.ironwood_notes.clone());
         let orchard_notes = BasicNoteSummaries(self.orchard_notes.clone());
         let sapling_notes = BasicNoteSummaries(self.sapling_notes.clone());
         let transparent_coins = BasicCoinSummaries(self.transparent_coins.clone());
+        let outgoing_ironwood_notes = OutgoingNoteSummaries(self.outgoing_ironwood_notes.clone());
         let outgoing_orchard_notes = OutgoingNoteSummaries(self.outgoing_orchard_notes.clone());
         let outgoing_sapling_notes = OutgoingNoteSummaries(self.outgoing_sapling_notes.clone());
         let outgoing_transparent_coins =
@@ -245,9 +252,11 @@ impl TransactionSummary {
             datetime,
             fee,
             zec_price,
+            ironwood_notes,
             orchard_notes,
             sapling_notes,
             transparent_coins,
+            outgoing_ironwood_notes,
             outgoing_orchard_notes,
             outgoing_sapling_notes,
             outgoing_transparent_coins,
@@ -262,9 +271,11 @@ impl std::fmt::Display for TransactionSummary {
             datetime,
             fee,
             zec_price,
+            ironwood_notes,
             orchard_notes,
             sapling_notes,
             transparent_coins,
+            outgoing_ironwood_notes,
             outgoing_orchard_notes,
             outgoing_sapling_notes,
             outgoing_transparent_coins,
@@ -281,9 +292,11 @@ impl std::fmt::Display for TransactionSummary {
     value: {}
     fee: {}
     zec price: {}
+    ironwood notes: {}
     orchard notes: {}
     sapling notes: {}
     transparent coins: {}
+    outgoing ironwood notes: {}
     outgoing orchard notes: {}
     outgoing sapling notes: {}
     outgoing transparent coins: {}
@@ -297,9 +310,11 @@ impl std::fmt::Display for TransactionSummary {
             self.value,
             fee,
             zec_price,
+            ironwood_notes,
             orchard_notes,
             sapling_notes,
             transparent_coins,
+            outgoing_ironwood_notes,
             outgoing_orchard_notes,
             outgoing_sapling_notes,
             outgoing_transparent_coins,
@@ -319,9 +334,11 @@ impl From<TransactionSummary> for JsonValue {
             "value" => transaction.value,
             "fee" => transaction.fee,
             "zec_price" => transaction.zec_price,
+            "ironwood_notes" => JsonValue::from(transaction.ironwood_notes),
             "orchard_notes" => JsonValue::from(transaction.orchard_notes),
             "sapling_notes" => JsonValue::from(transaction.sapling_notes),
             "transparent_coins" => JsonValue::from(transaction.transparent_coins),
+            "outgoing_ironwood_notes" => JsonValue::from(transaction.outgoing_ironwood_notes),
             "outgoing_orchard_notes" => JsonValue::from(transaction.outgoing_orchard_notes),
             "outgoing_sapling_notes" => JsonValue::from(transaction.outgoing_sapling_notes),
             "outgoing_transparent_coins" => JsonValue::from(transaction.outgoing_transparent_coins),

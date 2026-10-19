@@ -737,8 +737,11 @@ impl WalletTransaction {
         let orchard_value_sent = self
             .total_outgoing_note_value::<OutgoingOrchardNote>()
             .saturating_sub(self.total_output_value::<OrchardNote>());
+        let ironwood_value_sent = self
+            .total_outgoing_note_value::<OutgoingIronwoodNote>()
+            .saturating_sub(self.total_output_value::<IronwoodNote>());
 
-        transparent_value_sent + sapling_value_sent + orchard_value_sent
+        transparent_value_sent + sapling_value_sent + orchard_value_sent + ironwood_value_sent
     }
 
     /// Returns total sum of all output values.
@@ -747,6 +750,7 @@ impl WalletTransaction {
         self.total_output_value::<TransparentCoin>()
             + self.total_output_value::<SaplingNote>()
             + self.total_output_value::<OrchardNote>()
+            + self.total_output_value::<IronwoodNote>()
     }
 
     /// Returns total sum of output values for a given pool.
