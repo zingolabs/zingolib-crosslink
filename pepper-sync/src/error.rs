@@ -204,6 +204,12 @@ pub enum ServerError {
     /// Server reports only the genesis block exists.
     #[error("server reports only the genesis block exists.")]
     GenesisBlockOnly,
+    /// Server serves no Ironwood tree state at a height where the pool is active, so the wallet
+    /// cannot recover the Ironwood frontier at its birthday.
+    #[error(
+        "server returned no Ironwood tree state at height {0}. the wallet birthday must be the Ironwood activation height on this server so the Ironwood tree can be rebuilt from scanned blocks."
+    )]
+    IronwoodTreeStateUnavailable(BlockHeight),
 }
 
 /// Sync mode error.

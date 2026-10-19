@@ -83,12 +83,19 @@ impl LightClient {
         overwrite: bool,
         seed_derivation: SeedDerivation,
     ) -> Result<Self, LightClientError> {
-        let sapling_activation_height = config
-            .chain
-            .activation_height(zcash_protocol::consensus::NetworkUpgrade::Sapling)
-            .expect("should have some sapling activation height");
-        let birthday = sapling_activation_height.max(chain_height - 100);
+        let birthday = Self::default_fresh_wallet_birthday(&config, chain_height);
+        Self::new_with_birthday(config, birthday, overwrite, seed_derivation)
+    }
 
+    /// Creates a `LightClient` with a new wallet from fresh entropy and the given `birthday`.
+    /// Will fail if a wallet file already exists in the given data directory unless `overwrite` is `true`.
+    #[allow(clippy::result_large_err)]
+    pub fn new_with_birthday(
+        config: ZingoConfig,
+        birthday: BlockHeight,
+        overwrite: bool,
+        seed_derivation: SeedDerivation,
+    ) -> Result<Self, LightClientError> {
         Self::create_from_wallet(
             LightWallet::new(
                 config.chain,
@@ -102,6 +109,60 @@ impl LightClient {
             config,
             overwrite,
         )
+    }
+
+    /// The birthday a fresh wallet gets without consulting the server: the higher of
+    /// [`chain_height` - 100] and sapling activation height.
+    pub fn default_fresh_wallet_birthday(
+        config: &ZingoConfig,
+        chain_height: BlockHeight,
+    ) -> BlockHeight {
+        let sapling_activation_height = config
+            .chain
+            .activation_height(zcash_protocol::consensus::NetworkUpgrade::Sapling)
+            .expect("should have some sapling activation height");
+        sapling_activation_height.max(chain_height - 100)
+    }
+
+    /// The birthday a fresh wallet should get against the configured server.
+    ///
+    /// Normally [`Self::default_fresh_wallet_birthday`]. When the server serves no Ironwood note
+    /// commitment tree state at `chain_height` although the pool is active there (the crosslink
+    /// node currently serves none), the wallet cannot recover the Ironwood frontier at a later
+    /// birthday and must rebuild the tree from scanned blocks, so the birthday is the pool's
+    /// activation height instead.
+    ///
+    /// # Error
+    ///
+    /// Returns an error if the server cannot be reached.
+    pub async fn fresh_wallet_birthday(
+        config: &ZingoConfig,
+        chain_height: BlockHeight,
+    ) -> Result<BlockHeight, String> {
+        let default_birthday = Self::default_fresh_wallet_birthday(config, chain_height);
+        let Some(ironwood_activation_height) = config
+            .chain
+            .activation_height(zcash_protocol::consensus::NetworkUpgrade::Nu6_3)
+        else {
+            return Ok(default_birthday);
+        };
+        if chain_height < ironwood_activation_height
+            || default_birthday <= ironwood_activation_height
+        {
+            return Ok(default_birthday);
+        }
+
+        let tree_state =
+            crate::grpc_connector::get_trees(config.get_lightwalletd_uri(), chain_height.into())
+                .await?;
+        if tree_state.ironwood_tree.is_empty() {
+            tracing::warn!(
+                "server serves no Ironwood tree state at height {chain_height}. the wallet birthday is set to the Ironwood activation height {ironwood_activation_height} so the Ironwood tree can be rebuilt from scanned blocks."
+            );
+            Ok(ironwood_activation_height)
+        } else {
+            Ok(default_birthday)
+        }
     }
 
     /// Creates a `LightClient` from a `wallet` and `config`.

@@ -1021,8 +1021,8 @@ where
 
 /// Scan post-processing
 #[allow(clippy::too_many_arguments)]
-async fn process_scan_results<W>(
-    consensus_parameters: &impl consensus::Parameters,
+async fn process_scan_results<P, W>(
+    consensus_parameters: &P,
     wallet: &mut W,
     fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
     ufvks: &HashMap<AccountId, UnifiedFullViewingKey>,
@@ -1033,6 +1033,7 @@ async fn process_scan_results<W>(
     nullifier_map_limit_exceeded: &mut bool,
 ) -> Result<(), SyncError<W::Error>>
 where
+    P: consensus::Parameters + Sync,
     W: SyncWallet
         + SyncBlocks
         + SyncTransactions
@@ -1489,8 +1490,8 @@ where
 
 /// Updates the wallet with data from `scan_results`
 #[allow(clippy::too_many_arguments)]
-async fn update_wallet_data<W>(
-    consensus_parameters: &impl consensus::Parameters,
+async fn update_wallet_data<P, W>(
+    consensus_parameters: &P,
     wallet: &mut W,
     fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
     ufvks: &HashMap<AccountId, UnifiedFullViewingKey>,
@@ -1503,6 +1504,7 @@ async fn update_wallet_data<W>(
     ironwood_located_trees: Vec<LocatedTreeData<MerkleHashOrchard>>,
 ) -> Result<(), SyncError<W::Error>>
 where
+    P: consensus::Parameters + Sync,
     W: SyncBlocks + SyncTransactions + SyncNullifiers + SyncOutPoints + SyncShardTrees + Send,
 {
     let sync_state = wallet
@@ -1583,6 +1585,7 @@ where
     }
     wallet
         .update_shard_trees(
+            consensus_parameters,
             fetch_request_sender,
             scan_range,
             highest_scanned_height,
@@ -1871,7 +1874,15 @@ where
         .expect("infallible")
         == 1
     {
-        let frontiers = client::get_frontiers(fetch_request_sender, birthday).await?;
+        let tree_state = client::get_tree_state(fetch_request_sender, birthday).await?;
+        if client::ironwood_tree_state_missing(consensus_parameters, &tree_state, birthday) {
+            return Err(SyncError::ServerError(
+                ServerError::IronwoodTreeStateUnavailable(birthday),
+            ));
+        }
+        let frontiers = tree_state
+            .to_chain_state()
+            .map_err(|e| SyncError::ServerError(ServerError::InvalidFrontier(e)))?;
         shard_trees
             .sapling
             .insert_frontier(

@@ -514,10 +514,18 @@ pub fn startup(
                     .map(|block_id| BlockHeight::from_u32(block_id.height as u32))
             })
             .map_err(|e| std::io::Error::other(format!("Failed to create lightclient. {e}")))?;
+        let birthday = RT
+            .block_on(LightClient::fresh_wallet_birthday(&config, chain_height))
+            .map_err(|e| std::io::Error::other(format!("Failed to create lightclient. {e}")))?;
+        if birthday != LightClient::default_fresh_wallet_birthday(&config, chain_height) {
+            println!(
+                "Server serves no Ironwood tree state; wallet birthday set to {birthday} so the Ironwood tree is rebuilt from scanned blocks"
+            );
+        }
 
-        LightClient::new(
+        LightClient::new_with_birthday(
             config.clone(),
-            chain_height,
+            birthday,
             false,
             filled_template.seed_derivation,
         )

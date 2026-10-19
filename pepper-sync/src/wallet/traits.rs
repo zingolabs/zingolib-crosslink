@@ -12,7 +12,7 @@ use shardtree::store::memory::MemoryShardStore;
 use shardtree::store::{Checkpoint, ShardStore, TreeState};
 use zcash_keys::keys::UnifiedFullViewingKey;
 use zcash_primitives::transaction::TxId;
-use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::consensus::{self, BlockHeight};
 use zcash_protocol::{PoolType, ShieldedPool};
 use zip32::AccountId;
 
@@ -241,8 +241,10 @@ pub trait SyncShardTrees: SyncWallet {
     /// Update wallet shard trees with new shard tree data.
     ///
     /// `highest_scanned_height` is the height of the highest scanned block in the wallet not including the `scan_range` we are updating.
-    fn update_shard_trees(
+    #[allow(clippy::too_many_arguments)]
+    fn update_shard_trees<P>(
         &mut self,
+        consensus_parameters: &P,
         fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
         scan_range: &ScanRange,
         highest_scanned_height: BlockHeight,
@@ -252,6 +254,7 @@ pub trait SyncShardTrees: SyncWallet {
     ) -> impl std::future::Future<Output = Result<(), SyncError<Self::Error>>> + Send
     where
         Self: std::marker::Send,
+        P: consensus::Parameters + Sync,
     {
         async move {
             let shard_trees = self.get_shard_trees_mut().map_err(SyncError::WalletError)?;
@@ -293,6 +296,7 @@ pub trait SyncShardTrees: SyncWallet {
                     { sapling_crypto::NOTE_COMMITMENT_TREE_DEPTH },
                     { witness::SHARD_HEIGHT },
                 >(
+                    consensus_parameters,
                     fetch_request_sender.clone(),
                     checkpoint_height,
                     &sapling_located_trees,
@@ -305,6 +309,7 @@ pub trait SyncShardTrees: SyncWallet {
                     { orchard::NOTE_COMMITMENT_TREE_DEPTH as u8 },
                     { witness::SHARD_HEIGHT },
                 >(
+                    consensus_parameters,
                     fetch_request_sender.clone(),
                     checkpoint_height,
                     &orchard_located_trees,
@@ -317,6 +322,7 @@ pub trait SyncShardTrees: SyncWallet {
                     { orchard::NOTE_COMMITMENT_TREE_DEPTH as u8 },
                     { witness::SHARD_HEIGHT },
                 >(
+                    consensus_parameters,
                     fetch_request_sender.clone(),
                     checkpoint_height,
                     &ironwood_located_trees,
@@ -407,6 +413,7 @@ pub trait SyncShardTrees: SyncWallet {
 
 // TODO: move into `update_shard_trees` trait method
 async fn add_checkpoint<D, L, const DEPTH: u8, const SHARD_HEIGHT: u8>(
+    consensus_parameters: &impl consensus::Parameters,
     fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
     checkpoint_height: BlockHeight,
     located_trees: &[LocatedTreeData<L>],
@@ -441,13 +448,17 @@ where
         let tree_state = if let Some(checkpoint) = previous_checkpoint {
             checkpoint.tree_state()
         } else {
-            let frontiers =
-                client::get_frontiers(fetch_request_sender.clone(), checkpoint_height).await?;
-            let tree_size = match D::SHIELDED_PROTOCOL {
-                ShieldedPool::Sapling => frontiers.final_sapling_tree().tree_size(),
-                ShieldedPool::Orchard => frontiers.final_orchard_tree().tree_size(),
-                ShieldedPool::Ironwood => frontiers.final_ironwood_tree().tree_size(),
-            };
+            let tree_sizes = client::get_tree_sizes(
+                fetch_request_sender.clone(),
+                consensus_parameters,
+                checkpoint_height,
+            )
+            .await?;
+            let tree_size = u64::from(match D::SHIELDED_PROTOCOL {
+                ShieldedPool::Sapling => tree_sizes.sapling,
+                ShieldedPool::Orchard => tree_sizes.orchard,
+                ShieldedPool::Ironwood => tree_sizes.ironwood,
+            });
             if tree_size == 0 {
                 TreeState::Empty
             } else {

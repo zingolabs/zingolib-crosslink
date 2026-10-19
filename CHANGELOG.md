@@ -23,6 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `begin_unstake`, `redelegate`, `withdraw_stake`, `get_bonds` and `roster_info`.
 - `ConfiguredActivationHeights::crosslink_featurenet()`: the featurenet schedule, with
   `FeaturenetUpgrade1` at the height the node ships.
+- `pepper-sync` syncs against a server that serves no Ironwood tree state, subtree roots or chain
+  metadata (the crosslink node today): Ironwood subtree-root rejections are tolerated, Ironwood tree
+  sizes are counted from the nullifier stream when the server's tree state omits the pool, and a
+  birthday above the pool's activation fails with `ServerError::IronwoodTreeStateUnavailable`
+  instead of mis-positioning notes. `LightClient::fresh_wallet_birthday` probes the server and
+  starts a fresh wallet at the Ironwood activation height when needed; `zingo-cli` uses it.
+- `AccountBalance` reports Ironwood balances; transaction summaries and value transfers list
+  Ironwood notes, report `pool_received: Ironwood`, and `WalletTransaction` value totals and the
+  transaction-kind classifier include the Ironwood pool.
+- `docs/featurenet-e2e.md`: the running log of the end-to-end run against the live featurenet.
 ### Changed
 - removed `dev` branch reference from `zingo_common_components` crate and pointed to version `0.2`
 - `crosslink_monolith` pinned to `0735e958` (NU6.3 at height 1, `FeaturenetUpgrade1` at 55296,

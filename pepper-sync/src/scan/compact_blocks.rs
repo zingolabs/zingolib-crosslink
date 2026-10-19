@@ -495,26 +495,13 @@ pub(crate) async fn calculate_block_tree_bounds(
 
             match compact_block.height().cmp(&sapling_activation_height) {
                 cmp::Ordering::Greater => {
-                    let frontiers =
-                        client::get_frontiers(fetch_request_sender.clone(), compact_block.height())
-                            .await?;
-                    (
-                        frontiers
-                            .final_sapling_tree()
-                            .tree_size()
-                            .try_into()
-                            .expect("should not be more than 2^32 note commitments in the tree!"),
-                        frontiers
-                            .final_orchard_tree()
-                            .tree_size()
-                            .try_into()
-                            .expect("should not be more than 2^32 note commitments in the tree!"),
-                        frontiers
-                            .final_ironwood_tree()
-                            .tree_size()
-                            .try_into()
-                            .expect("should not be more than 2^32 note commitments in the tree!"),
+                    let tree_sizes = client::get_tree_sizes(
+                        fetch_request_sender.clone(),
+                        consensus_parameters,
+                        compact_block.height(),
                     )
+                    .await?;
+                    (tree_sizes.sapling, tree_sizes.orchard, tree_sizes.ironwood)
                 }
                 cmp::Ordering::Equal => (0, 0, 0),
                 cmp::Ordering::Less => panic!("pre-sapling not supported!"),
