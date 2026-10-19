@@ -79,6 +79,111 @@ enumerated Sapling and Orchard only. Fixed in pepper-sync (`WalletTransaction` t
 (`TransactionSummary` gains `ironwood_notes`/`outgoing_ironwood_notes`, value transfers report
 `pool_received: ironwood`, `transaction_kind` counts Ironwood spends and outgoing notes).
 
-Confirmation is blocked on block production: no block since 2026-10-18 22:18 UTC. A local `zebrad`
-built from the pinned commit (copied out of the cargo git checkout, run with a config kept under
-`/tmp`, internal miner on) was started to mine; see below.
+Confirmation never came: no block since 2026-10-18 22:18 UTC on that node.
+
+## The configured public peers are on a stale fork
+
+A local `zebrad` built from the pinned commit (copied out of the cargo git checkout, run with a
+config kept under `/tmp`, data under `/tmp/claude/zebrad-data`) was started to mine. Its crosslink
+peer list showed about twenty peers at height 68 980+ advancing roughly one block a minute, and only
+the three configured hosts at 62 149. Probing the IPs the node discovered found three more nodes
+with port 18234 open:
+
+| Host | `blockHeight` | `consensusBranchId` |
+|---|---|---|
+| `45.63.75.9`, `70.34.220.94`, `64.177.44.176` (configured peers) | 62149 | `37a5165b` (NU6.3) |
+| `95.111.225.120` | 39680 | `37a5165b` |
+| `5.78.157.36` | 61109 | `46545531` (`FeaturenetUpgrade1`) |
+| `88.198.67.189` | 68990 and rising | `46545531` |
+
+So the hosts hard-coded in the node's `crosslink_default()` run a build without
+`FeaturenetUpgrade1` and stopped at 62149 (shielded activity on their chain ends at height 59412),
+while the live network has activated the upgrade at 55296 and sits near 69 000. This is a node and
+deployment problem, not a wallet one. Everything below uses `http://88.198.67.189:18234`; the local
+node, once synced, is an equivalent endpoint at `http://127.0.0.1:18234`.
+
+The live node has the same lightwalletd gaps (no `ironwoodTree`, no Ironwood subtree roots, no
+`chainMetadata`); 134 of the last 1989 blocks carry Ironwood transactions.
+
+## Flow 5: roster and finalizer addresses (on the stale node, repeated later on the live one)
+
+`roster_info` returned 13 members, each with a `zfinv1` address and a display-order `pubkey`.
+`decode_finalizer_address` on the first address reports `valid: true`, the same display-order
+`pubkey` and the raw key bytes.
+
+## Flow 8 (restore part): restore from seed
+
+`recovery_info` printed the 24 words and birthday 1. A new data directory restored with
+`--seed ... --birthday 1` synced in 2 min 23 s and showed the same unconfirmed Ironwood balance.
+Restoring with `--birthday 60000` on this server fails on purpose:
+
+```text
+error: Sync error. server error. server returned no Ironwood tree state at height 60000. the wallet birthday must be the Ironwood activation height on this server so the Ironwood tree can be rebuilt from scanned blocks.
+```
+
+## Flows 1 and 2 again, on the live node
+
+Fresh wallet against `88.198.67.189`: birthday 1, 68 990 blocks scanned in 1 min 45 s.
+`request_faucet` returned `{"request": "50000000"}`.
+The faucet transaction confirmed at height 68996 (`confirmed_ironwood_balance: 50_000_000`).
+
+`spendable_balance` still printed 0: `shielded_spendable_balance` and the CLI `notes` command
+enumerated Sapling and Orchard only. Fixed; it now prints the Ironwood total.
+
+## Flow 3: send to own address
+
+Commands are piped into interactive mode (one command per process would lose the stored proposal):
+
+```text
+send utest1gf09...asea 10000000 "self send"
+confirm
+```
+
+Proposal fee 10 000 zats, broadcast as `f8461b94...`, mined at 69007, summary kind `send-to-self`,
+two unspent Ironwood notes (10 000 000 and the 39 990 000 change).
+
+## Flow 4: pool transfers
+
+```text
+transfer_pool ironwood transparent 5000000   -> fee 15000, txid 5a500f30..., mined at 69020
+shield                                      -> value_to_shield 4985000, fee 15000, txid 439ac230..., mined
+```
+
+`balance` afterwards: 49 960 000 Ironwood, 0 transparent. There are no Orchard notes on this
+network (every shielded output is Ironwood), so `transfer_pool orchard ironwood` cannot be exercised
+against the live chain; the proposal path is the same code as the Ironwood to transparent transfer.
+
+## Flow 5 again, on the live node
+
+`roster_info` lists 13 finalizers with `zfinv1` addresses on the live chain too.
+
+## Flow 6: stake
+
+The staking calendar is the prototype one (`PROTOTYPE_STAKING`: period 10 368 blocks, day window
+3 456, action delay 3 457; 25 s target spacing, so a three-day period with a one-day window).
+Create, unbond and withdraw are only mined while `height % 10368 < 3456`; retarget and reward
+conversion are exempt (`zebra-consensus/src/transaction.rs::check_staking_day_window`).
+
+At the time of the run the tip was 69 026, position 6 818 in the period: the window is closed and
+opens again at 72 576, about 24 h away at the target spacing.
+
+The proposal built regardless (`kind: create_bond`, bond key derived, `fee: 10010000` = bond plus
+10 000 zats) and `confirm` was rejected by the node:
+
+```text
+Send error. Transmission error. Transmission failed. Send Error: code: 'Unknown error', message: "the transaction will be rejected from the mempool until the next chain tip block: transaction did not pass consensus validation: staking action outside staking window: block 69030 is not within the staking window (staking allowed when block_height _ 10368 < 3456)"
+```
+
+The wallet kept the transaction as `status: failed` with the notes it would have spent still
+spendable; `remove_transaction <txid>` cleared it.
+
+Fix: the wallet now checks the calendar before building. `stake` at 69 038 answers
+
+```text
+the staking window is closed at height 69038; the next window opens at height 72576
+```
+
+Flows 6 and 7 (`stake`, `get_bonds`, `redelegate`, `begin_unstake`, `withdraw_stake`) therefore
+cannot be driven to completion in this run: the first window opens at 72 576, unbonding needs the
+following window (action delay 3 457 blocks puts it in the next period, 82 944) and withdrawal the
+one after that (93 312), about a week of chain time end to end.

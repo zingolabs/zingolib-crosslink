@@ -95,6 +95,16 @@ pub enum WithdrawError {
     /// the wallet has no sync data to build against
     #[error("wallet has no sync data")]
     NoSyncData,
+    /// consensus only mines a withdrawal inside the staking day window
+    #[error(
+        "the staking window is closed at height {height}; the next window opens at height {next_window_start}"
+    )]
+    StakingWindowClosed {
+        /// the height the transaction would target
+        height: u32,
+        /// the first height at which consensus accepts the action again
+        next_window_start: u32,
+    },
     /// an Ironwood spend could not be added to the transaction
     #[error("could not add Ironwood spend: {0}")]
     AddIronwoodSpendFailed(String),
@@ -329,6 +339,16 @@ pub enum ProposeSendError {
     /// the wallet has no sync data to build against
     #[error("wallet has no sync data")]
     NoSyncData,
+    /// consensus only mines this staking action inside the staking day window
+    #[error(
+        "the staking window is closed at height {height}; the next window opens at height {next_window_start}"
+    )]
+    StakingWindowClosed {
+        /// the height the transaction would target
+        height: u32,
+        /// the first height at which consensus accepts the action again
+        next_window_start: u32,
+    },
     /// the wallet has no address with a receiver for the requested pool
     #[error("wallet has no address with a receiver for pool {0:?}")]
     NoReceiverForPool(zcash_protocol::PoolType),

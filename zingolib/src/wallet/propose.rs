@@ -40,6 +40,9 @@ use super::{
 };
 use crate::{
     config::ChainType,
+    crosslink::{
+        PUBLIC_STAKING_CALENDAR, StakingParameters, next_staking_window_start, staking_window_open,
+    },
     data::proposal::{ExtraFee, ExtraFeeProposal, ProportionalFeeProposal, ZingoProposal},
     wallet::{error::WithdrawError, utils::ensure_sapling_params_on_disk},
 };
@@ -352,6 +355,32 @@ impl LightWallet {
             .ok_or(ProposeSendError::NoSyncData)
     }
 
+    /// The staking calendar consensus applies on this wallet's network, or `None` where the
+    /// wallet cannot know it (regtest nets may run a shrunk calendar).
+    fn staking_calendar(&self) -> Option<&'static StakingParameters> {
+        match self.network {
+            ChainType::Mainnet | ChainType::Testnet(_) => Some(&PUBLIC_STAKING_CALENDAR),
+            ChainType::Regtest(_) => None,
+        }
+    }
+
+    /// Fails when a create, unbond or withdraw action targeting `height` would be rejected
+    /// because the staking window is closed, naming the next height at which it opens.
+    fn check_staking_window(&self, height: BlockHeight) -> Result<(), ProposeSendError> {
+        let Some(calendar) = self.staking_calendar() else {
+            return Ok(());
+        };
+        let height = u32::from(height);
+        if staking_window_open(height, calendar) {
+            Ok(())
+        } else {
+            Err(ProposeSendError::StakingWindowClosed {
+                height,
+                next_window_start: next_staking_window_start(height, calendar),
+            })
+        }
+    }
+
     /// The account's bond root key, from which every bond key of the account derives.
     fn bond_spending_key(
         &self,
@@ -400,6 +429,7 @@ impl LightWallet {
             signature: [0u8; 64],
         };
         let target_height = self.next_target_height()?;
+        self.check_staking_window(target_height)?;
         if !staking_action.amount_is_valid_at(&self.network, target_height.into()) {
             return Err(ProposeSendError::BondAmountNotPowerOfTen(amount.into_u64()));
         }
@@ -420,6 +450,7 @@ impl LightWallet {
     ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
         self.bond_create_action(bond_key)
             .ok_or(ProposeSendError::UnknownBond(bond_key))?;
+        self.check_staking_window(self.next_target_height()?)?;
 
         let staking_action = StakingAction::BeginDelegationUnbonding {
             unique_pubkey: bond_key,
@@ -555,6 +586,19 @@ impl LightWallet {
             .find(|(id, _)| id.account_id == account_id)
             .and_then(|(_, address)| address.orchard())
             .ok_or(WithdrawError::NoSyncData)?;
+
+        if let Some(calendar) = self.staking_calendar() {
+            let height = u32::from(
+                self.next_target_height()
+                    .map_err(|_| WithdrawError::NoSyncData)?,
+            );
+            if !staking_window_open(height, calendar) {
+                return Err(WithdrawError::StakingWindowClosed {
+                    height,
+                    next_window_start: next_staking_window_start(height, calendar),
+                });
+            }
+        }
 
         let (target_height, anchor_height) = self
             .get_target_and_anchor_heights(self.wallet_settings.min_confirmations)

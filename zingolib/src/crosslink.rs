@@ -7,8 +7,29 @@
 
 use zcash_primitives::transaction::{StakingAction, StakingActionKind};
 
-pub use zcash_primitives::bft::{FinalizerAddress, PubKeyID};
+pub use zcash_primitives::bft::{FinalizerAddress, PubKeyID, StakingParameters};
 pub use zcash_primitives::transaction::is_power_of_10;
+
+/// The staking calendar of the public networks; see
+/// [`zcash_primitives::bft::PROTOTYPE_STAKING`].
+pub const PUBLIC_STAKING_CALENDAR: StakingParameters = zcash_primitives::bft::PROTOTYPE_STAKING;
+
+/// Whether a staking action other than a retarget or a reward conversion may be mined at
+/// `height`: consensus allows them only while `height % period < day_window`.
+#[must_use]
+pub fn staking_window_open(height: u32, staking: &StakingParameters) -> bool {
+    height % staking.period < staking.day_window
+}
+
+/// The first height at or after `height` where the staking window is open.
+#[must_use]
+pub fn next_staking_window_start(height: u32, staking: &StakingParameters) -> u32 {
+    if staking_window_open(height, staking) {
+        height
+    } else {
+        (height / staking.period + 1) * staking.period
+    }
+}
 
 /// Why a finalizer address string was rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -83,6 +104,25 @@ pub fn staking_action_kind_name(kind: StakingActionKind) -> &'static str {
 mod tests {
     use super::*;
     use zcash_primitives::bft::finalizer_key_from_seed;
+
+    const CALENDAR: StakingParameters = StakingParameters {
+        period: 100,
+        day_window: 10,
+        action_delay: 11,
+    };
+
+    #[test]
+    fn staking_window_follows_the_calendar() {
+        assert!(staking_window_open(0, &CALENDAR));
+        assert!(staking_window_open(9, &CALENDAR));
+        assert!(!staking_window_open(10, &CALENDAR));
+        assert!(!staking_window_open(99, &CALENDAR));
+        assert!(staking_window_open(100, &CALENDAR));
+
+        assert_eq!(next_staking_window_start(5, &CALENDAR), 5);
+        assert_eq!(next_staking_window_start(10, &CALENDAR), 100);
+        assert_eq!(next_staking_window_start(199, &CALENDAR), 200);
+    }
 
     #[test]
     fn round_trips_a_finalizer_address() {

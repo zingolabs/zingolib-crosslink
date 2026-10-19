@@ -32,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AccountBalance` reports Ironwood balances; transaction summaries and value transfers list
   Ironwood notes, report `pool_received: Ironwood`, and `WalletTransaction` value totals and the
   transaction-kind classifier include the Ironwood pool.
+- `zingolib::crosslink::{staking_window_open, next_staking_window_start, PUBLIC_STAKING_CALENDAR}`;
+  `stake`, `begin_unstake` and `withdraw_stake` fail before building when the staking day window
+  is closed at the target height (`StakingWindowClosed`), naming the next height it opens. The
+  check is skipped on regtest, whose nets may run a shrunk calendar.
 - `docs/featurenet-e2e.md`: the running log of the end-to-end run against the live featurenet.
 ### Changed
 - removed `dev` branch reference from `zingo_common_components` crate and pointed to version `0.2`
