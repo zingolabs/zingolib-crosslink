@@ -13,7 +13,21 @@ What this wallet talks to, and what changed with the `0735e958` monolith pin.
 
 The node's default peers, all Shielded Labs hosts, serve the PoW network on port 8233, the
 crosslink peer protocol on UDP 12001 and Tenderlink on 12301:
-`45.63.75.9`, `70.34.220.94`, `64.177.44.176`.
+`45.63.75.9`, `70.34.220.94`, `64.177.44.176`. Every node embeds a lightwalletd-compatible gRPC
+server on its P2P port plus 10001 (`18234`).
+
+As of 2026-10-19 those three hosts sit on a stale fork at height 62149 without
+`FeaturenetUpgrade1`; the live chain (branch id `46545531`, near height 69 000) is served by other
+peers, for example `http://88.198.67.189:18234`. See [featurenet-e2e.md](featurenet-e2e.md).
+
+## What the node's lightwalletd does not serve
+
+`GetTreeState` returns no Ironwood tree, `GetSubtreeRoots` rejects the Ironwood protocol and compact
+blocks carry no `chainMetadata`. The wallet copes: it counts Ironwood actions from the nullifier
+stream to size the tree, builds the Ironwood tree from scanned blocks alone, and starts a fresh
+wallet at the Ironwood activation height (1) because the Ironwood frontier at any later birthday
+is unavailable. A restore from seed on this network must pass `--birthday 1`; a later birthday
+fails the first sync with `ServerError::IronwoodTreeStateUnavailable`.
 
 `ConfiguredActivationHeights::crosslink_featurenet()` is the schedule the wallet uses for
 `ChainType::Testnet`; it must match the node or every transaction carries the wrong branch id.
@@ -46,7 +60,7 @@ All staking goes through proposals, confirmed with `confirm`:
 
 | Command | Action |
 |---|---|
-| `stake <zfinv1 address> <zats>` | `CreateNewDelegationBond`; amount must be a power of 10 from `FeaturenetUpgrade1` |
+| `stake <zfinv1 address> <zats>` | `CreateNewDelegationBond`; amount must be a power of 10 from `FeaturenetUpgrade1`; the bond amount is paid on top of the fee |
 | `begin_unstake <bond key>` | `BeginDelegationUnbonding` |
 | `redelegate <bond key> <zfinv1 address>` | `RetargetDelegationBond`, from the bond's current target |
 | `withdraw_stake <bond key>` | `WithdrawDelegationBond`; builds and broadcasts at once |
@@ -55,6 +69,12 @@ All staking goes through proposals, confirmed with `confirm`:
 Bond keys derive from the account's bond root key plus the create action's terms, so a wallet
 restored from seed recovers them; `LightWallet::bond_create_action` finds the create action the
 backend signs later actions from.
+
+Create, unbond and withdraw are only mined inside the staking day window,
+`height % 10368 < 3456` on the public calendar (`zingolib::crosslink::PUBLIC_STAKING_CALENDAR`);
+retarget is exempt. The wallet refuses to build outside the window and names the next height it
+opens (`StakingWindowClosed`). `withdraw_stake` additionally needs the bond unbonded at least
+3 457 blocks earlier.
 
 ## Finalizer addresses
 

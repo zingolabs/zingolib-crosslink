@@ -187,3 +187,48 @@ Flows 6 and 7 (`stake`, `get_bonds`, `redelegate`, `begin_unstake`, `withdraw_st
 cannot be driven to completion in this run: the first window opens at 72 576, unbonding needs the
 following window (action delay 3 457 blocks puts it in the next period, 82 944) and withdrawal the
 one after that (93 312), about a week of chain time end to end.
+
+## Flow 8 on the live node: restart and restore
+
+Every command above ran as a separate `zingo-cli` process, so the wallet file was reloaded from
+disk before each one and the state (notes, spends, failed-then-removed transaction) carried over.
+A restore of the same seed into a new directory with `--birthday 1` synced in 1 min 46 s and
+showed the same 49 960 000 zats of Ironwood and all four transactions. Bond recovery could not be
+exercised because no bond could be created (see flow 6).
+
+## Local node
+
+The pinned-commit `zebrad` (config `/tmp/claude/zebrad.toml`, data `/tmp/claude/zebrad-data`)
+syncs the live chain through the crosslink peer protocol at a few blocks a second early on and
+about one block a second once finality checking kicks in ("Deferring ... crosslink: child fp");
+it was at 38 907 after 35 min. Once at the tip its `http://127.0.0.1:18234` is interchangeable
+with the public live endpoint. Its own faucet pays from its own wallet, which is empty, so
+`request_faucet` must go to a funded node such as `88.198.67.189`.
+
+## Status
+
+| Flow | Result |
+|---|---|
+| 1 fresh wallet, sync, balance, addresses | works (birthday forced to 1, full scan about 2 min) |
+| 2 faucet | works against a live-chain node; the configured public peers are stale |
+| 3 send to own address | works |
+| 4 Ironwood to transparent, shield back | works; Orchard to Ironwood has no Orchard notes to move |
+| 5 roster, decode finalizer address | works |
+| 6 stake, get_bonds | blocked by the staking calendar until height 72 576 (about a day); the wallet now reports this up front |
+| 7 redelegate, begin_unstake, withdraw_stake | blocked on 6, and on two further staking periods |
+| 8 restart, restore from seed | works for notes and history; bonds untested |
+
+To resume flows 6 and 7 once `height % 10368 < 3456`:
+
+```text
+stake <zfinv1 from roster_info> 10000000
+confirm
+get_bonds
+redelegate <bond key> <another zfinv1>
+confirm
+# next staking day (height >= bond height + 3457 and inside the window):
+begin_unstake <bond key>
+confirm
+# the staking day after that:
+withdraw_stake <bond key>
+```
