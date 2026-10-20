@@ -14,7 +14,7 @@ What this wallet talks to, and what changed with the `0735e958` monolith pin.
 The node's default peers, all Shielded Labs hosts, serve the PoW network on port 8233, the
 crosslink peer protocol on UDP 12001 and Tenderlink on 12301:
 `45.63.75.9`, `70.34.220.94`, `64.177.44.176`. Every node embeds a lightwalletd-compatible gRPC
-server on its P2P port plus 10001 (`18234`).
+indexer on its P2P port plus 10001 (`18234`).
 
 As of 2026-10-19 those three hosts sit on a stale fork at height 62149 without
 `FeaturenetUpgrade1`; the live chain (branch id `46545531`, near height 69 000) is served by other
@@ -47,10 +47,10 @@ the network is a separate choice: `IndexerNetwork::CrosslinkFeaturenet` by defau
 custom name form their own list.
 
 With no explicit URI the client connects to the first endpoint listed for its network. At runtime
-`LightClient::indexers` lists them, `set_server` switches (and records the endpoint), and
+`LightClient::indexers` lists them, `set_indexer` switches (and records the endpoint), and
 `select_best_indexer` probes every listed endpoint with `GetLightdInfo` (5 s each, concurrently)
 and switches to the one reporting the highest tip, which is how a stale fork is avoided. The CLI
-exposes the same as repeatable `--server`, `indexers [probe]` and `change_server <uri|index|best>`.
+exposes the same as repeatable `--indexer`, `indexers [probe]` and `change_indexer <uri|index|best>`.
 
 ## What the node's lightwalletd does not serve
 
@@ -123,7 +123,7 @@ from the CLI. A `zfinv2` prefix is rejected by design.
 
 ## Wallet files
 
-Older wallet files load. Ironwood data is absent and is rebuilt from the server on the next
+Older wallet files load. Ironwood data is absent and is rebuilt from the indexer on the next
 sync. A spending key written before bond keys existed is loaded with a placeholder bond root and
 replaced by the seed-derived one when the mnemonic is present; a wallet imported from bare
 spending-key bytes keeps the placeholder, so its bond keys will not match a node wallet's.

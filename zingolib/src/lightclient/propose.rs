@@ -168,7 +168,7 @@ impl LightClient {
         account_id: zip32::AccountId,
     ) -> Result<zcash_protocol::TxId, WithdrawError> {
         let _ignore_error = self.pause_sync();
-        let mut client = zingo_netutils::get_client(self.server_uri())
+        let mut client = zingo_netutils::get_client(self.indexer_uri())
             .await
             .map_err(|e| WithdrawError::RecordFailed(e.to_string()))?;
         let txid = self

@@ -1,5 +1,5 @@
 //! these functions are each meant to be 'test-in-a-box'
-//! simply plug in a mock server as a chain conductor and provide some values
+//! simply plug in a mock indexer as a chain conductor and provide some values
 
 use pepper_sync::wallet::SaplingNote;
 use zcash_primitives::transaction::fees::zip317::MARGINAL_FEE;

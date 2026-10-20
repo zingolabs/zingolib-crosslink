@@ -210,7 +210,7 @@ impl IndexerList {
         add(
             &mut list,
             IndexerNetwork::Mainnet,
-            super::DEFAULT_LIGHTWALLETD_SERVER,
+            super::DEFAULT_INDEXER_URI,
             "zec.rocks",
         );
         add(

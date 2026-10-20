@@ -70,17 +70,17 @@ pub fn build_clap_app() -> clap::ArgMatches {
                 .value_name("birthday")
                 .value_parser(clap::value_parser!(u32))
                 .help("Specify wallet birthday when restoring from seed. This is the earliest block height where the wallet has a transaction."))
-            .arg(Arg::new("server")
-                .long("server")
-                .value_name("server")
+            .arg(Arg::new("indexer")
+                .long("indexer")
+                .value_name("indexer")
                 .action(clap::ArgAction::Append)
-                .help("Lightwalletd indexer to connect to, as [scheme]://[host]:[port] or host:port. Repeat to list more; the first is used and the rest are kept for 'indexers' and 'change_server best'. Defaults to the built-in list for the chain.")
+                .help("Lightwalletd indexer to connect to, as [scheme]://[host]:[port] or host:port. Repeat to list more; the first is used and the rest are kept for 'indexers' and 'change_indexer best'. Defaults to the built-in list for the chain.")
                 .value_parser(parse_indexer))
             .arg(Arg::new("network")
                 .long("network")
                 .value_name("NAME")
                 .value_parser(parse_network)
-                .help("Which network's indexer list to use: mainnet, testnet, featurenet (stable), nightly, regtest or a custom name. Defaults to the chain's network. --server entries are registered under it."))
+                .help("Which network's indexer list to use: mainnet, testnet, featurenet (stable), nightly, regtest or a custom name. Defaults to the chain's network. --indexer entries are registered under it."))
             .arg(Arg::new("data-dir")
                 .long("data-dir")
                 .value_name("data-dir")
@@ -107,7 +107,7 @@ fn parse_network(s: &str) -> Result<IndexerNetwork, String> {
     s.parse::<IndexerNetwork>().map_err(|e| e.to_string())
 }
 
-/// Parses a `--server` value: a full URI or a bare `host:port`.
+/// Parses a `--indexer` value: a full URI or a bare `host:port`.
 fn parse_indexer(s: &str) -> Result<Indexer, String> {
     Indexer::parse(s).map_err(|e| e.to_string())
 }
@@ -401,7 +401,7 @@ If you don't remember the block height, you can pass '--birthday 0' to scan from
             PathBuf::from("wallets")
         };
         let indexers: Vec<Indexer> = matches
-            .get_many::<Indexer>("server")
+            .get_many::<Indexer>("indexer")
             .map(|indexers| indexers.cloned().collect())
             .unwrap_or_default();
         let indexer_network = matches.get_one::<IndexerNetwork>("network").cloned();
@@ -467,7 +467,7 @@ pub fn startup(
         .map(|indexer| indexer.uri.clone())
         .ok_or_else(|| {
             std::io::Error::other(format!(
-                "no lightwalletd indexer is known for network {indexer_network}; pass --server"
+                "no lightwalletd indexer is known for network {indexer_network}; pass --indexer"
             ))
         })?;
     let mut config = zingolib::config::load_clientconfig(
@@ -531,13 +531,13 @@ pub fn startup(
     } else {
         // Fresh wallet: query chain tip and initialize at tip-100 to guard against reorgs
         println!("Creating a new wallet");
-        // Call the lightwalletd server to get the current block-height
+        // Call the lightwalletd indexer to get the current block-height
         // Do a getinfo first, before opening the wallet
-        let server_uri = config.get_lightwalletd_uri();
+        let indexer_uri = config.get_lightwalletd_uri();
 
         let chain_height = RT
             .block_on(async move {
-                zingolib::grpc_connector::get_latest_block(server_uri)
+                zingolib::grpc_connector::get_latest_block(indexer_uri)
                     .await
                     .map(|block_id| BlockHeight::from_u32(block_id.height as u32))
             })
@@ -547,7 +547,7 @@ pub fn startup(
             .map_err(|e| std::io::Error::other(format!("Failed to create lightclient. {e}")))?;
         if birthday != LightClient::default_fresh_wallet_birthday(&config, chain_height) {
             println!(
-                "Server serves no Ironwood tree state; wallet birthday set to {birthday} so the Ironwood tree is rebuilt from scanned blocks"
+                "Indexer serves no Ironwood tree state; wallet birthday set to {birthday} so the Ironwood tree is rebuilt from scanned blocks"
             );
         }
 

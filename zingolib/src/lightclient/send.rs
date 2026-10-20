@@ -185,9 +185,9 @@ impl LightClient {
                 })?;
 
             let mut retry_count = 0;
-            let txid_from_server = loop {
+            let txid_from_indexer = loop {
                 let transmission_result = crate::grpc_connector::send_transaction(
-                    self.server_uri(),
+                    self.indexer_uri(),
                     transaction_bytes.clone().into_boxed_slice(),
                 )
                 .await
@@ -224,15 +224,15 @@ impl LightClient {
                 .update_status(ConfirmationStatus::Transmitted(height), crate::utils::now());
             wallet.save_required = true;
 
-            let txid_from_server =
-                crate::utils::conversion::txid_from_hex_encoded_str(txid_from_server.as_str())
+            let txid_from_indexer =
+                crate::utils::conversion::txid_from_hex_encoded_str(txid_from_indexer.as_str())
                     .map_err(WalletError::ConversionFailed)?;
-            if txid_from_server != *txid {
-                // during darkside tests, the server may report a different txid to the one calculated.
+            if txid_from_indexer != *txid {
+                // during darkside tests, the indexer may report a different txid to the one calculated.
                 #[cfg(not(feature = "darkside_tests"))]
                 {
                     return Err(SendError::TransmissionError(
-                        TransmissionError::IncorrectTxidFromServer(*txid, txid_from_server),
+                        TransmissionError::IncorrectTxidFromIndexer(*txid, txid_from_indexer),
                     )
                     .into());
                 }

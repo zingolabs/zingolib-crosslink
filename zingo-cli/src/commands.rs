@@ -72,14 +72,14 @@ impl Command for GetVersionCommand {
     }
 }
 
-struct ChangeServerCommand {}
-impl Command for ChangeServerCommand {
+struct ChangeIndexerCommand {}
+impl Command for ChangeIndexerCommand {
     fn help(&self) -> &'static str {
         indoc! {r"
             Change the lightwalletd indexer to receive blockchain data from.
 
             Usage:
-            change_server <server_uri | host:port | index | best>
+            change_indexer <indexer_uri | host:port | index | best>
 
             A URI or host:port is added to the indexer list for this chain and used from now on.
             An index picks that entry of the 'indexers' listing.
@@ -87,20 +87,20 @@ impl Command for ChangeServerCommand {
             With no argument the client goes offline.
 
             Example:
-            change_server https://mainnet.lightwalletd.com:9067
-            change_server 2
-            change_server best
+            change_indexer https://mainnet.lightwalletd.com:9067
+            change_indexer 2
+            change_indexer best
         "}
     }
 
     fn short_help(&self) -> &'static str {
-        "Change lightwalletd server"
+        "Change lightwalletd indexer"
     }
 
     fn exec(&self, args: &[&str], lightclient: &mut LightClient) -> String {
         match args {
             [] | [""] => {
-                lightclient.set_server(http::Uri::default());
+                lightclient.set_indexer(http::Uri::default());
                 "indexer set: offline".to_string()
             }
             ["best"] => RT.block_on(async {
@@ -122,7 +122,7 @@ impl Command for ChangeServerCommand {
                     let indexers = lightclient.indexers();
                     return match indexers.get(index) {
                         Some(indexer) => {
-                            lightclient.set_server(indexer.uri.clone());
+                            lightclient.set_indexer(indexer.uri.clone());
                             format!("indexer set: {indexer}")
                         }
                         None => format!(
@@ -133,7 +133,7 @@ impl Command for ChangeServerCommand {
                 }
                 match Indexer::parse(arg) {
                     Ok(indexer) => {
-                        lightclient.set_server(indexer.uri.clone());
+                        lightclient.set_indexer(indexer.uri.clone());
                         format!("indexer set: {indexer}")
                     }
                     Err(e) => e.to_string(),
@@ -153,8 +153,8 @@ impl Command for IndexersCommand {
             Usage:
             indexers [probe]
 
-            'probe' asks every indexer for its tip height, which 'change_server best' uses.
-            Add indexers on the command line with --server (repeatable) or with change_server.
+            'probe' asks every indexer for its tip height, which 'change_indexer best' uses.
+            Add indexers on the command line with --indexer (repeatable) or with change_indexer.
         "}
     }
 
@@ -163,7 +163,7 @@ impl Command for IndexersCommand {
     }
 
     fn exec(&self, args: &[&str], lightclient: &mut LightClient) -> String {
-        let active = lightclient.server_uri();
+        let active = lightclient.indexer_uri();
         match args {
             [] => {
                 let indexers = lightclient
@@ -670,7 +670,7 @@ impl Command for InfoCommand {
     }
 
     fn short_help(&self) -> &'static str {
-        "Get the lightwalletd server's info"
+        "Get the lightwalletd indexer's info"
     }
 
     fn exec(&self, _args: &[&str], lightclient: &mut LightClient) -> String {
@@ -2185,7 +2185,7 @@ struct HeightCommand {}
 impl Command for HeightCommand {
     fn help(&self) -> &'static str {
         indoc! {r"
-            Returns the blockchain height at the time the wallet last requested the latest block height from the server.
+            Returns the blockchain height at the time the wallet last requested the latest block height from the indexer.
 
             Usage:
             height
@@ -2194,7 +2194,7 @@ impl Command for HeightCommand {
     }
 
     fn short_help(&self) -> &'static str {
-        "Returns the blockchain height at the time the wallet last requested the latest block height from the server."
+        "Returns the blockchain height at the time the wallet last requested the latest block height from the indexer."
     }
 
     fn exec(&self, _args: &[&str], lightclient: &mut LightClient) -> String {
@@ -2460,7 +2460,7 @@ pub fn get_commands() -> HashMap<&'static str, Box<dyn Command>> {
         ("sync", Box::new(SyncCommand {})),
         ("parse_address", Box::new(ParseAddressCommand {})),
         ("parse_viewkey", Box::new(ParseViewKeyCommand {})),
-        ("change_server", Box::new(ChangeServerCommand {})),
+        ("change_indexer", Box::new(ChangeIndexerCommand {})),
         ("indexers", Box::new(IndexersCommand {})),
         ("rescan", Box::new(RescanCommand {})),
         ("clear", Box::new(ClearCommand {})),
