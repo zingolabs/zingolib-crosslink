@@ -98,6 +98,12 @@ pub enum ScanError {
     /// Invalid orchard nullifier
     #[error("invalid orchard nullifier")]
     InvalidOrchardNullifier,
+    /// Invalid ironwood nullifier length
+    #[error("invalid ironwood nullifier length. should be 32 bytes, found {0}")]
+    InvalidIronwoodNullifierLength(usize),
+    /// Invalid ironwood nullifier
+    #[error("invalid ironwood nullifier")]
+    InvalidIronwoodNullifier,
     /// Invalid sapling output
     // TODO: add output data
     #[error("invalid sapling output")]
@@ -106,6 +112,9 @@ pub enum ScanError {
     // TODO: add output data
     #[error("invalid orchard action")]
     InvalidOrchardAction,
+    /// Invalid ironwood action
+    #[error("invalid ironwood action")]
+    InvalidIronwoodAction,
     /// Incorrect tree size
     #[error(
         "incorrect tree size. {shielded_protocol} tree size recorded in block metadata {block_metadata_size} does not match calculated size {calculated_size}"
@@ -195,6 +204,12 @@ pub enum ServerError {
     /// Server reports only the genesis block exists.
     #[error("server reports only the genesis block exists.")]
     GenesisBlockOnly,
+    /// Server serves no Ironwood tree state at a height where the pool is active, so the wallet
+    /// cannot recover the Ironwood frontier at its birthday.
+    #[error(
+        "server returned no Ironwood tree state at height {0}. the wallet birthday must be the Ironwood activation height on this server so the Ironwood tree can be rebuilt from scanned blocks."
+    )]
+    IronwoodTreeStateUnavailable(BlockHeight),
 }
 
 /// Sync mode error.

@@ -13,7 +13,7 @@ use zcash_client_backend::wallet::TransparentAddressMetadata;
 use zcash_encoding::{CompactSize, Vector};
 use zcash_keys::{
     address::UnifiedAddress,
-    keys::{Era, UnifiedFullViewingKey, UnifiedSpendingKey},
+    keys::{UnifiedFullViewingKey, UnifiedSpendingKey},
 };
 use zcash_transparent::address::TransparentAddress;
 
@@ -361,7 +361,10 @@ pub(crate) fn legacy_sks_to_usk(
     CompactSize::write(&mut usk_bytes, account_tkey_bytes.len())?;
     usk_bytes.write_all(&account_tkey_bytes)?;
 
-    UnifiedSpendingKey::from_bytes(Era::Orchard, &usk_bytes).map_err(|_| KeyError::KeyDecodingError)
+    // Legacy keys predate the bond spending key; the fallback gives them a placeholder bond root,
+    // which the wallet load replaces with the seed-derived one when a mnemonic is present.
+    super::unified::usk_from_bytes_with_legacy_fallback(&usk_bytes)
+        .ok_or(KeyError::KeyDecodingError)
 }
 
 impl ReadableWriteable for sapling_crypto::zip32::ExtendedSpendingKey {

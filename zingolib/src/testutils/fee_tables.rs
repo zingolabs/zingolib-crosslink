@@ -3,13 +3,13 @@
 use std::cmp::max;
 
 use zcash_primitives::transaction::fees::zip317::{GRACE_ACTIONS, MARGINAL_FEE};
-use zcash_protocol::{PoolType, ShieldedProtocol};
+use zcash_protocol::{PoolType, ShieldedPool};
 
 /// estimates a fee based on the zip317 protocol rules
 /// <https://zips.z.cash/zip-0317>
 #[must_use]
 pub fn one_to_one(
-    source_protocol: Option<ShieldedProtocol>,
+    source_protocol: Option<ShieldedPool>,
     target_pool: PoolType,
     mut change: bool,
 ) -> u64 {
@@ -23,15 +23,16 @@ pub fn one_to_one(
     let mut sapling_outputs = 0;
     let mut orchard_inputs = 0;
     let mut orchard_outputs = 0;
+    // Ironwood actions are priced like Orchard actions.
     match source_protocol {
-        Some(ShieldedProtocol::Sapling) => sapling_inputs += 1,
-        Some(ShieldedProtocol::Orchard) => orchard_inputs += 1,
+        Some(ShieldedPool::Sapling) => sapling_inputs += 1,
+        Some(ShieldedPool::Orchard | ShieldedPool::Ironwood) => orchard_inputs += 1,
         _ => {}
     }
     match target_pool {
         PoolType::Transparent => transparent_outputs += 1,
-        PoolType::Shielded(ShieldedProtocol::Sapling) => sapling_outputs += 1,
-        PoolType::Shielded(ShieldedProtocol::Orchard) => orchard_outputs += 1,
+        PoolType::Shielded(ShieldedPool::Sapling) => sapling_outputs += 1,
+        PoolType::Shielded(ShieldedPool::Orchard | ShieldedPool::Ironwood) => orchard_outputs += 1,
     }
     if change {
         if orchard_inputs + orchard_outputs == 0 {

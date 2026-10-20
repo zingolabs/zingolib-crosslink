@@ -25,7 +25,7 @@ use crate::{
 };
 
 #[cfg(not(feature = "darkside_test"))]
-use zcash_protocol::{PoolType, ShieldedProtocol};
+use zcash_protocol::{PoolType, ShieldedPool};
 
 use self::runners::{BatchRunners, DecryptedOutput};
 
@@ -64,14 +64,18 @@ where
     let mut witness_data = WitnessData::new(
         Position::from(u64::from(initial_scan_data.sapling_initial_tree_size)),
         Position::from(u64::from(initial_scan_data.orchard_initial_tree_size)),
+        Position::from(u64::from(initial_scan_data.ironwood_initial_tree_size)),
     );
     let mut sapling_initial_tree_size;
     let mut orchard_initial_tree_size;
+    let mut ironwood_initial_tree_size;
     let mut sapling_final_tree_size = initial_scan_data.sapling_initial_tree_size;
     let mut orchard_final_tree_size = initial_scan_data.orchard_initial_tree_size;
+    let mut ironwood_final_tree_size = initial_scan_data.ironwood_initial_tree_size;
     for block in &compact_blocks {
         sapling_initial_tree_size = sapling_final_tree_size;
         orchard_initial_tree_size = orchard_final_tree_size;
+        ironwood_initial_tree_size = ironwood_final_tree_size;
 
         let block_height = block.height();
 
@@ -82,6 +86,9 @@ where
                 .collect_results(block.hash(), transaction.txid());
             let incoming_orchard_outputs = runners
                 .orchard
+                .collect_results(block.hash(), transaction.txid());
+            let incoming_ironwood_outputs = runners
+                .ironwood
                 .collect_results(block.hash(), transaction.txid());
 
             // gather the txids of all transactions relevant to the wallet
@@ -101,6 +108,13 @@ where
                     narrow_scan_area: false,
                 });
             }
+            for output_id in incoming_ironwood_outputs.keys() {
+                decrypted_scan_targets.insert(ScanTarget {
+                    block_height,
+                    txid: output_id.txid(),
+                    narrow_scan_area: false,
+                });
+            }
 
             collect_nullifiers(&mut nullifiers, block.height(), transaction)?;
 
@@ -114,6 +128,14 @@ where
                 calculate_orchard_leaves_and_retentions(
                     &transaction.actions,
                     &incoming_orchard_outputs,
+                    || ScanError::InvalidOrchardAction,
+                )?,
+            );
+            witness_data.ironwood_leaves_and_retentions.extend(
+                calculate_orchard_leaves_and_retentions(
+                    &transaction.ironwood_actions,
+                    &incoming_ironwood_outputs,
+                    || ScanError::InvalidIronwoodAction,
                 )?,
             );
 
@@ -129,10 +151,18 @@ where
                 &incoming_orchard_outputs,
                 &mut decrypted_note_data.orchard_nullifiers_and_positions,
             );
+            calculate_nullifiers_and_positions(
+                ironwood_final_tree_size,
+                &scanning_keys.ironwood,
+                &incoming_ironwood_outputs,
+                &mut decrypted_note_data.ironwood_nullifiers_and_positions,
+            );
 
             sapling_final_tree_size += u32::try_from(transaction.outputs.len())
                 .expect("should not be more than 2^32 outputs in a transaction");
             orchard_final_tree_size += u32::try_from(transaction.actions.len())
+                .expect("should not be more than 2^32 outputs in a transaction");
+            ironwood_final_tree_size += u32::try_from(transaction.ironwood_actions.len())
                 .expect("should not be more than 2^32 outputs in a transaction");
         }
 
@@ -143,6 +173,10 @@ where
         set_checkpoint_retentions(
             block_height,
             &mut witness_data.orchard_leaves_and_retentions,
+        );
+        set_checkpoint_retentions(
+            block_height,
+            &mut witness_data.ironwood_leaves_and_retentions,
         );
 
         let wallet_block = WalletBlock {
@@ -160,6 +194,8 @@ where
                 sapling_final_tree_size,
                 orchard_initial_tree_size,
                 orchard_final_tree_size,
+                ironwood_initial_tree_size,
+                ironwood_final_tree_size,
             },
         };
 
@@ -182,11 +218,11 @@ fn trial_decrypt<P>(
     scanning_keys: &ScanningKeys,
     compact_blocks: &[CompactBlock],
     trial_decrypt_task_size: usize,
-) -> Result<BatchRunners<(), ()>, ScanError>
+) -> Result<BatchRunners<(), (), ()>, ScanError>
 where
     P: consensus::Parameters + Send + 'static,
 {
-    let mut runners = BatchRunners::<(), ()>::for_keys(trial_decrypt_task_size, scanning_keys);
+    let mut runners = BatchRunners::<(), (), ()>::for_keys(trial_decrypt_task_size, scanning_keys);
     for block in compact_blocks {
         runners
             .add_block(consensus_parameters, block.clone())
@@ -283,7 +319,7 @@ fn check_tree_size(
 
             #[cfg(not(feature = "darkside_test"))]
             return Err(ScanError::IncorrectTreeSize {
-                shielded_protocol: PoolType::Shielded(ShieldedProtocol::Sapling),
+                shielded_protocol: PoolType::Shielded(ShieldedPool::Sapling),
                 block_metadata_size: chain_metadata.sapling_commitment_tree_size,
                 calculated_size: wallet_block.tree_bounds().sapling_final_tree_size,
             });
@@ -306,9 +342,32 @@ fn check_tree_size(
 
             #[cfg(not(feature = "darkside_test"))]
             return Err(ScanError::IncorrectTreeSize {
-                shielded_protocol: PoolType::Shielded(ShieldedProtocol::Orchard),
+                shielded_protocol: PoolType::Shielded(ShieldedPool::Orchard),
                 block_metadata_size: chain_metadata.orchard_commitment_tree_size,
                 calculated_size: wallet_block.tree_bounds().orchard_final_tree_size,
+            });
+        }
+        if chain_metadata.ironwood_commitment_tree_size
+            != wallet_block.tree_bounds().ironwood_final_tree_size
+        {
+            #[cfg(feature = "darkside_test")]
+            {
+                tracing::error!(
+                    "darkside compact block ironwood tree size incorrect.\nwallet block: {}\ncompact_block: {}",
+                    wallet_block.tree_bounds().ironwood_final_tree_size,
+                    compact_block
+                        .chain_metadata
+                        .expect("should exist in this scope")
+                        .ironwood_commitment_tree_size
+                );
+                return Ok(());
+            }
+
+            #[cfg(not(feature = "darkside_test"))]
+            return Err(ScanError::IncorrectTreeSize {
+                shielded_protocol: PoolType::Shielded(ShieldedPool::Ironwood),
+                block_metadata_size: chain_metadata.ironwood_commitment_tree_size,
+                calculated_size: wallet_block.tree_bounds().ironwood_final_tree_size,
             });
         }
     }
@@ -360,7 +419,7 @@ fn calculate_sapling_leaves_and_retentions<D: Domain>(
             .enumerate()
             .map(|(output_index, output)| {
                 let note_commitment = CompactOutputDescription::try_from(output)
-                    .map_err(|()| ScanError::InvalidSaplingOutput)?
+                    .map_err(|_| ScanError::InvalidSaplingOutput)?
                     .cmu;
                 let leaf = sapling_crypto::Node::from_cmu(&note_commitment);
                 let decrypted: bool = incoming_output_indexes.contains(&(output_index as u16));
@@ -378,10 +437,12 @@ fn calculate_sapling_leaves_and_retentions<D: Domain>(
     }
 }
 
-// calculates the orchard note commitment tree leaves and shardtree retentions for a given compact transaction
+/// Calculates the orchard-family (Orchard or Ironwood) note commitment tree leaves and shardtree retentions for a
+/// given compact transaction. `invalid_action_error` builds the error returned if an action fails to parse.
 fn calculate_orchard_leaves_and_retentions<D: Domain>(
     actions: &[CompactOrchardAction],
     incoming_decrypted_outputs: &HashMap<OutputId, DecryptedOutput<D, ()>>,
+    invalid_action_error: impl Fn() -> ScanError,
 ) -> Result<Vec<(MerkleHashOrchard, Retention<BlockHeight>)>, ScanError> {
     let incoming_output_indexes = incoming_decrypted_outputs
         .keys()
@@ -397,7 +458,7 @@ fn calculate_orchard_leaves_and_retentions<D: Domain>(
             .enumerate()
             .map(|(output_index, output)| {
                 let note_commitment = CompactAction::try_from(output)
-                    .map_err(|()| ScanError::InvalidOrchardAction)?
+                    .map_err(|_| invalid_action_error())?
                     .cmx();
                 let leaf = MerkleHashOrchard::from_cmx(&note_commitment);
                 let decrypted: bool = incoming_output_indexes.contains(&(output_index as u16));
@@ -420,11 +481,12 @@ pub(crate) async fn calculate_block_tree_bounds(
     fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
     compact_block: &CompactBlock,
 ) -> Result<TreeBounds, ServerError> {
-    let (sapling_final_tree_size, orchard_final_tree_size) =
+    let (sapling_final_tree_size, orchard_final_tree_size, ironwood_final_tree_size) =
         if let Some(chain_metadata) = compact_block.chain_metadata {
             (
                 chain_metadata.sapling_commitment_tree_size,
                 chain_metadata.orchard_commitment_tree_size,
+                chain_metadata.ironwood_commitment_tree_size,
             )
         } else {
             let sapling_activation_height = consensus_parameters
@@ -433,23 +495,15 @@ pub(crate) async fn calculate_block_tree_bounds(
 
             match compact_block.height().cmp(&sapling_activation_height) {
                 cmp::Ordering::Greater => {
-                    let frontiers =
-                        client::get_frontiers(fetch_request_sender.clone(), compact_block.height())
-                            .await?;
-                    (
-                        frontiers
-                            .final_sapling_tree()
-                            .tree_size()
-                            .try_into()
-                            .expect("should not be more than 2^32 note commitments in the tree!"),
-                        frontiers
-                            .final_orchard_tree()
-                            .tree_size()
-                            .try_into()
-                            .expect("should not be more than 2^32 note commitments in the tree!"),
+                    let tree_sizes = client::get_tree_sizes(
+                        fetch_request_sender.clone(),
+                        consensus_parameters,
+                        compact_block.height(),
                     )
+                    .await?;
+                    (tree_sizes.sapling, tree_sizes.orchard, tree_sizes.ironwood)
                 }
-                cmp::Ordering::Equal => (0, 0),
+                cmp::Ordering::Equal => (0, 0, 0),
                 cmp::Ordering::Less => panic!("pre-sapling not supported!"),
             }
         };
@@ -467,13 +521,22 @@ pub(crate) async fn calculate_block_tree_bounds(
         .map(|tx| tx.actions.len())
         .sum::<usize>()
         .try_into()
-        .expect("Sapling output count cannot exceed a u32");
+        .expect("Orchard output count cannot exceed a u32");
+    let ironwood_output_count: u32 = compact_block
+        .vtx
+        .iter()
+        .map(|tx| tx.ironwood_actions.len())
+        .sum::<usize>()
+        .try_into()
+        .expect("Ironwood output count cannot exceed a u32");
 
     Ok(TreeBounds {
         sapling_initial_tree_size: sapling_final_tree_size.saturating_sub(sapling_output_count),
         sapling_final_tree_size,
         orchard_initial_tree_size: orchard_final_tree_size.saturating_sub(orchard_output_count),
         orchard_final_tree_size,
+        ironwood_initial_tree_size: ironwood_final_tree_size.saturating_sub(ironwood_output_count),
+        ironwood_final_tree_size,
     })
 }
 

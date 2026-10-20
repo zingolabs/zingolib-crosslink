@@ -468,7 +468,7 @@ mod test {
         #[must_use]
         pub fn get_address(&self, pool: PoolType) -> String {
             match pool {
-                PoolType::ORCHARD => self
+                PoolType::ORCHARD | PoolType::IRONWOOD => self
                     .unified_addresses()
                     .get(&UnifiedAddressId {
                         address_index: 0,

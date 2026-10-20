@@ -327,6 +327,7 @@ pub mod orchard_note {
                 self.value.unwrap(),
                 self.rho.unwrap(),
                 self.random_seed.unwrap(),
+                orchard::note::NoteVersion::V2,
             )
             .unwrap()
         }
@@ -390,7 +391,7 @@ pub mod proposal {
     use zcash_primitives::transaction::fees::zip317::FeeRule;
     use zcash_protocol::consensus::BlockHeight;
     use zcash_protocol::value::Zatoshis;
-    use zcash_protocol::{PoolType, ShieldedProtocol};
+    use zcash_protocol::{PoolType, ShieldedPool};
 
     use super::{default_txid, default_zaddr};
     use crate::testutils::{build_method, build_method_push};
@@ -437,10 +438,16 @@ pub mod proposal {
                 step.payment_pools().clone(),
                 step.transparent_inputs().to_vec(),
                 step.shielded_inputs().cloned(),
+                step.anchor_height().unwrap_or(BlockHeight::from_u32(1)),
                 step.balance().clone(),
                 self.fee_rule.unwrap(),
                 self.min_target_height.unwrap().into(),
+                zcash_client_backend::data_api::wallet::ConfirmationsPolicy::new_symmetrical(
+                    std::num::NonZeroU32::MIN,
+                    false,
+                ),
                 step.is_shielding(),
+                false,
             )
             .unwrap()
         }
@@ -470,7 +477,7 @@ pub mod proposal {
     pub struct StepBuilder {
         transaction_request: Option<TransactionRequest>,
         payment_pools: Option<BTreeMap<usize, PoolType>>,
-        transparent_inputs: Option<Vec<WalletTransparentOutput>>,
+        transparent_inputs: Option<Vec<WalletTransparentOutput<()>>>,
         shielded_inputs: Option<Option<ShieldedInputs<OutputRef>>>,
         prior_step_inputs: Option<Vec<StepOutput>>,
         balance: Option<TransactionBalance>,
@@ -495,7 +502,7 @@ pub mod proposal {
         build_method!(transaction_request, TransactionRequest);
         build_method!(payment_pools, BTreeMap<usize, PoolType>
         );
-        build_method!(transparent_inputs, Vec<WalletTransparentOutput>);
+        build_method!(transparent_inputs, Vec<WalletTransparentOutput<()>>);
         build_method!(shielded_inputs, Option<ShieldedInputs<OutputRef>>);
         build_method!(prior_step_inputs, Vec<StepOutput>);
         build_method!(balance, TransactionBalance);
@@ -510,9 +517,11 @@ pub mod proposal {
                 self.payment_pools.unwrap(),
                 self.transparent_inputs.unwrap(),
                 self.shielded_inputs.unwrap(),
+                Some(BlockHeight::from_u32(1)),
                 self.prior_step_inputs.unwrap(),
                 self.balance.unwrap(),
                 self.is_shielding.unwrap(),
+                false,
             )
             .unwrap()
         }
@@ -529,7 +538,7 @@ pub mod proposal {
                 Rseed::AfterZip212([7; 32]),
             );
             let mut payment_pools = BTreeMap::new();
-            payment_pools.insert(0, PoolType::Shielded(ShieldedProtocol::Orchard));
+            payment_pools.insert(0, PoolType::Shielded(ShieldedPool::Orchard));
 
             let mut builder = Self::new();
             builder
@@ -537,9 +546,8 @@ pub mod proposal {
                 .payment_pools(payment_pools)
                 .transparent_inputs(vec![])
                 // .shielded_inputs(None)
-                .shielded_inputs(Some(ShieldedInputs::from_parts(
-                    BlockHeight::from_u32(1),
-                    NonEmpty::singleton(ReceivedNote::from_parts(
+                .shielded_inputs(Some(ShieldedInputs::from_parts(NonEmpty::singleton(
+                    ReceivedNote::from_parts(
                         OutputRef::new(OutputId::new(txid, 0), PoolType::SAPLING),
                         txid,
                         0,
@@ -548,8 +556,8 @@ pub mod proposal {
                         Position::from(1),
                         None, // mined_height. TODO: How should we use this here?
                         None, // max_shielding_input_height. TODO: How should we use this here?
-                    )),
-                )))
+                    ),
+                ))))
                 .prior_step_inputs(vec![])
                 .balance(TransactionBalance::new(vec![], Zatoshis::const_from_u64(20_000)).unwrap())
                 .is_shielding(false);

@@ -6,7 +6,7 @@ use pepper_sync::{error::ScanError, wallet::OutputId};
 use shardtree::error::ShardTreeError;
 use zcash_keys::keys::DerivationError;
 use zcash_primitives::transaction::TxId;
-use zcash_protocol::{PoolType, ShieldedProtocol, consensus::BlockHeight};
+use zcash_protocol::{PoolType, ShieldedPool, consensus::BlockHeight};
 
 use super::output::OutputRef;
 
@@ -61,7 +61,7 @@ pub enum WalletError {
     /// Shard store checkpoint not found.
     #[error("{shielded_protocol:?} shard store checkpoint not found at anchor height {height}.")]
     CheckpointNotFound {
-        shielded_protocol: ShieldedProtocol,
+        shielded_protocol: ShieldedPool,
         height: BlockHeight,
     },
     /// Shard tree error.
@@ -80,6 +80,63 @@ pub enum WalletError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum WithdrawError {
+    /// the wallet holds no create action for the bond, so it cannot sign for it
+    #[error("bond {} was not created by this wallet", hex::encode(.0))]
+    UnknownBond([u8; 32]),
+    /// the bond's signing key could not be recovered from the create action
+    #[error("could not recover the bond signing key for bond {}", hex::encode(.0))]
+    BondKeyNotRecoverable([u8; 32]),
+    /// the node reported no such bond
+    #[error("the node has no bond with key {}", hex::encode(.0))]
+    BondInfoUnavailable([u8; 32]),
+    /// the node reports the bond in a state other than unbonding
+    #[error(
+        "bond {} is {status}, so consensus would reject the withdrawal; a bond must be unbonding",
+        hex::encode(.bond_key)
+    )]
+    BondNotUnbonding {
+        /// the bond
+        bond_key: [u8; 32],
+        /// its state at the node
+        status: crate::crosslink::BondStatus,
+    },
+    /// the unbond is too recent for consensus to accept the withdrawal
+    #[error(
+        "bond {}: unbonded at height {last_action_height}, withdrawal accepted from height {earliest_height}, target height {height}",
+        hex::encode(.bond_key)
+    )]
+    StakingActionDelayNotMet {
+        /// the bond
+        bond_key: [u8; 32],
+        /// the height of the unbond
+        last_action_height: u32,
+        /// the first height at which consensus accepts the withdrawal
+        earliest_height: u32,
+        /// the height the transaction would target
+        height: u32,
+    },
+    /// no spending key for the account
+    #[error("{0}")]
+    KeyError(#[from] KeyError),
+    /// the wallet has no sync data to build against
+    #[error("wallet has no sync data")]
+    NoSyncData,
+    /// consensus only mines a withdrawal inside the staking day window
+    #[error(
+        "the staking window is closed at height {height}; the next window opens at height {next_window_start}"
+    )]
+    StakingWindowClosed {
+        /// the height the transaction would target
+        height: u32,
+        /// the first height at which consensus accepts the action again
+        next_window_start: u32,
+    },
+    /// an Ironwood spend could not be added to the transaction
+    #[error("could not add Ironwood spend: {0}")]
+    AddIronwoodSpendFailed(String),
+    /// the finished transaction could not be recorded in the wallet
+    #[error("could not record the withdrawal in the wallet: {0}")]
+    RecordFailed(String),
     #[error("missing anchor")]
     MissingAnchor,
 
@@ -236,6 +293,9 @@ pub enum KeyError {
         "Transparent address generation failed. Latest transparent address has not received funds."
     )]
     GapError,
+    /// CrosslinkTruncated32 seed derivation is not permitted on mainnet.
+    #[error("CrosslinkTruncated32 seed derivation is not permitted on mainnet.")]
+    CrosslinkSeedOnMainnet,
 }
 
 impl From<bip32::Error> for KeyError {
@@ -290,6 +350,66 @@ pub enum ProposeSendError {
     /// failed to calculate balance.
     #[error("failed to calculated balance. {0}")]
     BalanceError(#[from] crate::wallet::error::BalanceError),
+    /// the finalizer address capability does not verify
+    #[error("finalizer address does not verify; consensus would reject the staking action")]
+    InvalidFinalizerAddress,
+    /// a new bond must be a power of 10 zats from `FeaturenetUpgrade1`
+    #[error("bond amount {0} zats is not a power of 10, which consensus requires for new bonds")]
+    BondAmountNotPowerOfTen(u64),
+    /// the wallet holds no create action for the bond, so it cannot sign for it
+    #[error("bond {} was not created by this wallet", hex::encode(.0))]
+    UnknownBond([u8; 32]),
+    /// no spending key for the account
+    #[error("{0}")]
+    KeyError(#[from] KeyError),
+    /// the wallet has no sync data to build against
+    #[error("wallet has no sync data")]
+    NoSyncData,
+    /// consensus only mines this staking action inside the staking day window
+    #[error(
+        "the staking window is closed at height {height}; the next window opens at height {next_window_start}"
+    )]
+    StakingWindowClosed {
+        /// the height the transaction would target
+        height: u32,
+        /// the first height at which consensus accepts the action again
+        next_window_start: u32,
+    },
+    /// the node reports the bond in a state that does not allow this action
+    #[error("bond {} is {status}, so consensus would reject this action", hex::encode(.bond_key))]
+    BondNotActive {
+        /// the bond
+        bond_key: [u8; 32],
+        /// its state at the node
+        status: crate::crosslink::BondStatus,
+    },
+    /// the bond's previous action is too recent for consensus to accept another
+    #[error(
+        "bond {}: last action at height {last_action_height}, next action accepted from height {earliest_height}, target height {height}",
+        hex::encode(.bond_key)
+    )]
+    StakingActionDelayNotMet {
+        /// the bond
+        bond_key: [u8; 32],
+        /// the height of the bond's previous action
+        last_action_height: u32,
+        /// the first height at which consensus accepts the next action
+        earliest_height: u32,
+        /// the height the transaction would target
+        height: u32,
+    },
+    /// the wallet has no address with a receiver for the requested pool
+    #[error("wallet has no address with a receiver for pool {0:?}")]
+    NoReceiverForPool(zcash_protocol::PoolType),
+    /// a pool-to-pool transfer must move value between two different pools
+    #[error("source and destination pool are the same")]
+    SamePool,
+    /// an own address could not be re-encoded for the proposal
+    #[error("failed to encode address: {0}")]
+    AddressParse(#[from] zcash_address::ParseError),
+    /// an own unified receiver could not be encoded for the proposal
+    #[error("failed to encode unified receiver: {0}")]
+    UnifiedAddressParse(#[from] zcash_address::unified::ParseError),
 }
 
 /// Errors that can result from constructing shield proposals.

@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Deprecated
 
 ### Added
+- Added a `SeedDerivation` scheme; the `CrosslinkTruncated32` option makes keys from the first 32 bytes of the seed to match the zebra-crosslink node.
 
 ### Changed
 

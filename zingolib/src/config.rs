@@ -26,7 +26,6 @@ use log4rs::{
 use zcash_protocol::consensus::{
     BlockHeight, MAIN_NETWORK, NetworkType, NetworkUpgrade, Parameters,
 };
-use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
 
 use crate::wallet::WalletSettings;
 
@@ -45,15 +44,77 @@ pub fn get_donation_address_for_chain(chain: &ChainType) -> &'static str {
     }
 }
 
+/// Configurable network upgrade activation heights for a test or regtest network.
+///
+/// Mirrors the shape of zebra's `testnet::ConfiguredActivationHeights`, extended with the network
+/// upgrades the Crosslink node knows about. `None` means the upgrade never activates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[allow(missing_docs)]
+pub struct ConfiguredActivationHeights {
+    pub before_overwinter: Option<u32>,
+    pub overwinter: Option<u32>,
+    pub sapling: Option<u32>,
+    pub blossom: Option<u32>,
+    pub heartwood: Option<u32>,
+    pub canopy: Option<u32>,
+    pub nu5: Option<u32>,
+    pub nu6: Option<u32>,
+    pub nu6_1: Option<u32>,
+    pub nu6_2: Option<u32>,
+    pub nu6_3: Option<u32>,
+    /// The first Crosslink featurenet hard fork (power-of-10 bonds, top-level PoS issuance split).
+    pub featurenet_upgrade_1: Option<u32>,
+    pub nu7: Option<u32>,
+}
+
+impl ConfiguredActivationHeights {
+    /// The activation schedule of the Crosslink featurenet, as shipped in the node.
+    ///
+    /// Every upgrade through NU6.3 (which brings the Ironwood pool) activates at height 1, and
+    /// `FeaturenetUpgrade1` activates at the height hard-coded in `zcash_protocol`. The wallet and
+    /// the node must agree on these, or every transaction the wallet builds carries a consensus
+    /// branch ID the node rejects.
+    #[must_use]
+    pub fn crosslink_featurenet() -> Self {
+        Self {
+            before_overwinter: Some(1),
+            overwinter: Some(1),
+            sapling: Some(1),
+            blossom: Some(1),
+            heartwood: Some(1),
+            canopy: Some(1),
+            nu5: Some(1),
+            nu6: Some(1),
+            nu6_1: Some(1),
+            nu6_2: Some(1),
+            nu6_3: Some(1),
+            featurenet_upgrade_1: Some(
+                zcash_protocol::consensus::TESTNET_FEATURENET_UPGRADE_1_HEIGHT,
+            ),
+            nu7: None,
+        }
+    }
+
+    /// A regtest schedule with every upgrade through NU6.3 active from height 1 and no
+    /// `FeaturenetUpgrade1`.
+    #[must_use]
+    pub fn regtest_all_active() -> Self {
+        Self {
+            featurenet_upgrade_1: None,
+            ..Self::crosslink_featurenet()
+        }
+    }
+}
+
 /// The networks a zingolib client can run against
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ChainType {
     /// Public testnet
-    Testnet(zebra_chain::parameters::testnet::ConfiguredActivationHeights),
+    Testnet(ConfiguredActivationHeights),
     /// Mainnet
     Mainnet,
     /// Regtest
-    Regtest(zebra_chain::parameters::testnet::ConfiguredActivationHeights),
+    Regtest(ConfiguredActivationHeights),
 }
 
 impl std::fmt::Display for ChainType {
@@ -93,6 +154,11 @@ impl Parameters for ChainType {
                 NetworkUpgrade::Nu5 => activation_heights.nu5.map(BlockHeight::from_u32),
                 NetworkUpgrade::Nu6 => activation_heights.nu6.map(BlockHeight::from_u32),
                 NetworkUpgrade::Nu6_1 => activation_heights.nu6_1.map(BlockHeight::from_u32),
+                NetworkUpgrade::Nu6_2 => activation_heights.nu6_2.map(BlockHeight::from_u32),
+                NetworkUpgrade::Nu6_3 => activation_heights.nu6_3.map(BlockHeight::from_u32),
+                NetworkUpgrade::FeaturenetUpgrade1 => activation_heights
+                    .featurenet_upgrade_1
+                    .map(BlockHeight::from_u32),
             },
             Mainnet => MAIN_NETWORK.activation_height(nu),
             Regtest(activation_heights) => match nu {
@@ -108,6 +174,11 @@ impl Parameters for ChainType {
                 NetworkUpgrade::Nu5 => activation_heights.nu5.map(BlockHeight::from_u32),
                 NetworkUpgrade::Nu6 => activation_heights.nu6.map(BlockHeight::from_u32),
                 NetworkUpgrade::Nu6_1 => activation_heights.nu6_1.map(BlockHeight::from_u32),
+                NetworkUpgrade::Nu6_2 => activation_heights.nu6_2.map(BlockHeight::from_u32),
+                NetworkUpgrade::Nu6_3 => activation_heights.nu6_3.map(BlockHeight::from_u32),
+                NetworkUpgrade::FeaturenetUpgrade1 => activation_heights
+                    .featurenet_upgrade_1
+                    .map(BlockHeight::from_u32),
             },
         }
     }
@@ -134,31 +205,13 @@ pub enum ChainFromStringError {
 /// * `Err(String)` - An error message if the chain name is invalid
 pub fn chain_from_str(chain_name: &str) -> Result<ChainType, ChainFromStringError> {
     match chain_name {
-        "testnet" => Ok(ChainType::Testnet(ConfiguredActivationHeights {
-            before_overwinter: Some(1),
-            overwinter: Some(1),
-            sapling: Some(1),
-            blossom: Some(1),
-            heartwood: Some(1),
-            canopy: Some(1),
-            nu5: Some(1),
-            nu6: Some(1),
-            nu6_1: None,
-            nu7: None,
-        })),
+        "testnet" => Ok(ChainType::Testnet(
+            ConfiguredActivationHeights::crosslink_featurenet(),
+        )),
         "mainnet" => Ok(ChainType::Mainnet),
-        "regtest" => Ok(ChainType::Regtest(ConfiguredActivationHeights {
-            before_overwinter: Some(1),
-            overwinter: Some(1),
-            sapling: Some(1),
-            blossom: Some(1),
-            heartwood: Some(1),
-            canopy: Some(1),
-            nu5: Some(1),
-            nu6: Some(1),
-            nu6_1: None,
-            nu7: None,
-        })),
+        "regtest" => Ok(ChainType::Regtest(
+            ConfiguredActivationHeights::regtest_all_active(),
+        )),
         _ => Err(ChainFromStringError::UnknownChain(chain_name.to_string())),
     }
 }
@@ -325,9 +378,9 @@ impl ZingoConfigBuilder {
     /// Note "chain type" is not a formal standard.
     /// # Examples
     /// ```
-    /// use zingolib::config::ZingoConfigBuilder;
-    /// use zingolib::config::ChainType::Testnet;
-    /// assert_eq!(ZingoConfigBuilder::default().set_chain(Testnet).create().chain, Testnet);
+    /// use zingolib::config::{ChainType, ConfiguredActivationHeights, ZingoConfigBuilder};
+    /// let testnet = ChainType::Testnet(ConfiguredActivationHeights::crosslink_featurenet());
+    /// assert_eq!(ZingoConfigBuilder::default().set_chain(testnet).create().chain, testnet);
     /// ```
     pub fn set_chain(&mut self, chain: ChainType) -> &mut Self {
         self.chain = chain;
@@ -412,18 +465,9 @@ impl ZingoConfig {
     /// create a `ZingoConfig` that helps a `LightClient` connect to a server.
     #[must_use]
     pub fn create_testnet() -> ZingoConfig {
-        ZingoConfig::build(ChainType::Testnet(ConfiguredActivationHeights {
-            before_overwinter: Some(1),
-            overwinter: Some(1),
-            sapling: Some(1),
-            blossom: Some(1),
-            heartwood: Some(1),
-            canopy: Some(1),
-            nu5: Some(1),
-            nu6: Some(1),
-            nu6_1: None,
-            nu7: None,
-        }))
+        ZingoConfig::build(ChainType::Testnet(
+            ConfiguredActivationHeights::crosslink_featurenet(),
+        ))
         .set_lightwalletd_uri(
             (DEFAULT_TESTNET_LIGHTWALLETD_SERVER)
                 .parse::<http::Uri>()
@@ -690,8 +734,8 @@ mod tests {
     async fn test_load_clientconfig() {
         rustls::crypto::ring::default_provider()
             .install_default()
-            .expect("Ring to work as a default");
-        tracing_subscriber::fmt().init();
+            .ok(); // another test in this process may already have installed it
+        let _ = tracing_subscriber::fmt().try_init();
 
         let valid_uri = crate::config::construct_lightwalletd_uri(Some(String::new()));
 
@@ -722,8 +766,8 @@ mod tests {
     async fn test_load_clientconfig_serverless() {
         rustls::crypto::ring::default_provider()
             .install_default()
-            .expect("Ring to work as a default");
-        tracing_subscriber::fmt().init();
+            .ok(); // another test in this process may already have installed it
+        let _ = tracing_subscriber::fmt().try_init();
 
         let valid_uri = crate::config::construct_lightwalletd_uri(Some(
             crate::config::DEFAULT_LIGHTWALLETD_SERVER.to_string(),

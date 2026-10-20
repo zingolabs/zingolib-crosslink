@@ -54,8 +54,6 @@ zcash_proofs = { workspace = true, features = ["download-params"] }
 zcash_protocol = { workspace = true }
 zcash_transparent = { workspace = true }
 
-# Zebra
-zebra-chain = { workspace = true }
 
 # Protocol
 zip32.workspace = true
@@ -127,3 +125,7 @@ zingolib = { workspace = true, features = ["testutils"] }
 
 [build-dependencies]
 zcash_proofs = { workspace = true, features = ["download-params"] }
+# `zcash_proofs` lists `zcash_primitives` as a build-dependency without its `std` feature,
+# and resolver 2 resolves host features separately, so the host build of `zcash_primitives`
+# fails on its `std`-only crosslink modules. Naming it here enables `std` for that build.
+zcash_primitives = { workspace = true }
