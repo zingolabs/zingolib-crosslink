@@ -6,6 +6,7 @@ members = [
     "pepper-sync",
     "zingo-price",
     "zingo-netutils",
+    "delegator-tui",
 ]
 exclude = ["libtonode-tests", "zingolib_testutils", "darkside-tests"]
 
@@ -127,6 +128,11 @@ tonic-prost = "0.14"
 tonic-prost-build = "0.14"
 tracing-subscriber = "0.3"
 webpki-roots = "1.0.6"
+
+### Terminal UI
+ratatui = "0.30"
+crossterm = "0.29"
+qrcode = { version = "0.14", default-features = false }
 
 # Workspace
 zingo-memo = { path = "zingo-memo" } # NOTE: for development between releases
