@@ -6,6 +6,10 @@
 #[cfg(test)]
 use tokio_rustls::rustls::RootCertStore;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
+
+/// How long [`get_client`] waits for the TCP (and TLS) connection before giving up, so that an
+/// unreachable server fails in seconds rather than at the operating system's own timeout.
+pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 use zcash_client_backend::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
 
 #[derive(Debug, thiserror::Error)]
@@ -57,7 +61,9 @@ pub async fn get_client(
     }
     let _authority = uri.authority().ok_or(GetClientError::InvalidAuthority)?;
 
-    let endpoint = Endpoint::from_shared(uri.to_string())?.tcp_nodelay(true);
+    let endpoint = Endpoint::from_shared(uri.to_string())?
+        .tcp_nodelay(true)
+        .connect_timeout(CONNECT_TIMEOUT);
 
     let channel = if scheme == "https" {
         let tls = client_tls_config()?;

@@ -18,7 +18,7 @@ use zcash_protocol::consensus::BlockHeight;
 
 use commands::ShortCircuitedCommand;
 use pepper_sync::config::{PerformanceLevel, SyncConfig, TransparentAddressDiscovery};
-use zingolib::config::ChainType;
+use zingolib::config::{ChainType, Indexer, IndexerList, IndexerNetwork};
 use zingolib::lightclient::LightClient;
 
 use zingolib::wallet::{LightWallet, SeedDerivation, WalletBase, WalletSettings};
@@ -73,9 +73,14 @@ pub fn build_clap_app() -> clap::ArgMatches {
             .arg(Arg::new("server")
                 .long("server")
                 .value_name("server")
-                .help("Lightwalletd server to connect to.")
-                .value_parser(parse_uri)
-                .default_value(zingolib::config::DEFAULT_LIGHTWALLETD_SERVER))
+                .action(clap::ArgAction::Append)
+                .help("Lightwalletd indexer to connect to, as [scheme]://[host]:[port] or host:port. Repeat to list more; the first is used and the rest are kept for 'indexers' and 'change_server best'. Defaults to the built-in list for the chain.")
+                .value_parser(parse_indexer))
+            .arg(Arg::new("network")
+                .long("network")
+                .value_name("NAME")
+                .value_parser(parse_network)
+                .help("Which network's indexer list to use: mainnet, testnet, featurenet (stable), nightly, regtest or a custom name. Defaults to the chain's network. --server entries are registered under it."))
             .arg(Arg::new("data-dir")
                 .long("data-dir")
                 .value_name("data-dir")
@@ -97,9 +102,14 @@ pub fn build_clap_app() -> clap::ArgMatches {
         ).get_matches()
 }
 
-/// Custom function to parse a string into an `http::Uri`
-fn parse_uri(s: &str) -> Result<http::Uri, String> {
-    s.parse::<http::Uri>().map_err(|e| e.to_string())
+/// Parses a `--network` value.
+fn parse_network(s: &str) -> Result<IndexerNetwork, String> {
+    s.parse::<IndexerNetwork>().map_err(|e| e.to_string())
+}
+
+/// Parses a `--server` value: a full URI or a bare `host:port`.
+fn parse_indexer(s: &str) -> Result<Indexer, String> {
+    Indexer::parse(s).map_err(|e| e.to_string())
 }
 /// Custom function to parse a string into a compliant ZIP32/BIP39 mnemonic phrase
 /// currently this is just a whitespace delimited string of 24 words.  I am
@@ -324,7 +334,10 @@ pub fn command_loop(
 /// TODO: Add Doc Comment Here!
 pub struct ConfigTemplate {
     params: Vec<String>,
-    server: http::Uri,
+    /// The indexers given on the command line, first preferred. Empty means the built-in list.
+    indexers: Vec<Indexer>,
+    /// The network whose indexer list to use, when not the chain's own.
+    indexer_network: Option<IndexerNetwork>,
     seed: Option<String>,
     ufvk: Option<String>,
     birthday: u64,
@@ -387,23 +400,17 @@ If you don't remember the block height, you can pass '--birthday 0' to scan from
         } else {
             PathBuf::from("wallets")
         };
-        let server = matches
-            .get_one::<http::Uri>("server")
-            .map(ToString::to_string);
+        let indexers: Vec<Indexer> = matches
+            .get_many::<Indexer>("server")
+            .map(|indexers| indexers.cloned().collect())
+            .unwrap_or_default();
+        let indexer_network = matches.get_one::<IndexerNetwork>("network").cloned();
         log::info!("data_dir: {}", &data_dir.to_str().unwrap());
-        let server = zingolib::config::construct_lightwalletd_uri(server);
         let chaintype = if let Some(chain) = matches.get_one::<String>("chain") {
             zingolib::config::chain_from_str(chain).map_err(|e| e.to_string())?
         } else {
             ChainType::Mainnet
         };
-
-        // Test to make sure the server has all of scheme, host and port
-        if server.scheme_str().is_none() || server.host().is_none() || server.port().is_none() {
-            return Err(format!(
-                "Please provide the --server parameter as [scheme]://[host]:[port].\nYou provided: {server}"
-            ));
-        }
 
         let seed_derivation = match matches
             .get_one::<String>("seed-derivation")
@@ -417,7 +424,8 @@ If you don't remember the block height, you can pass '--birthday 0' to scan from
         let waitsync = matches.get_flag("waitsync");
         Ok(Self {
             params,
-            server,
+            indexers,
+            indexer_network,
             seed,
             ufvk,
             birthday,
@@ -444,8 +452,26 @@ pub type CommandResponse = String;
 pub fn startup(
     filled_template: &ConfigTemplate,
 ) -> std::io::Result<(Sender<CommandRequest>, Receiver<CommandResponse>)> {
-    let config = zingolib::config::load_clientconfig(
-        filled_template.server.clone(),
+    // The first indexer given on the command line, else the first built-in one for the network.
+    let indexer_network = filled_template
+        .indexer_network
+        .clone()
+        .unwrap_or_else(|| IndexerNetwork::of_chain(&filled_template.chaintype));
+    let mut indexers = IndexerList::builtin();
+    indexers.prefer_all(
+        indexer_network.clone(),
+        filled_template.indexers.iter().cloned(),
+    );
+    let indexer = indexers
+        .first(&indexer_network)
+        .map(|indexer| indexer.uri.clone())
+        .ok_or_else(|| {
+            std::io::Error::other(format!(
+                "no lightwalletd indexer is known for network {indexer_network}; pass --server"
+            ))
+        })?;
+    let mut config = zingolib::config::load_clientconfig(
+        indexer,
         Some(filled_template.data_dir.clone()),
         filled_template.chaintype,
         WalletSettings {
@@ -459,6 +485,8 @@ pub fn startup(
         "".to_string(),
     )
     .unwrap();
+    *config.indexers.write().unwrap() = indexers;
+    config.indexer_network = indexer_network;
 
     let mut lightclient = if let Some(seed_phrase) = filled_template.seed.clone() {
         LightClient::create_from_wallet(

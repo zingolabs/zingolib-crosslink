@@ -33,7 +33,7 @@ use zcash_protocol::TxId;
 use zingo_netutils::get_client;
 
 use crate::{
-    config::ZingoConfig,
+    config::{Indexer, ZingoConfig},
     crosslink::BondStatus,
     lightclient::crosslink::{RosterMembers, WalletBond, WalletBonds},
     wallet::{
@@ -71,6 +71,51 @@ pub struct LightClient {
     sync_handle: Option<JoinHandle<Result<SyncResult, SyncError<WalletError>>>>,
     save_active: Arc<AtomicBool>,
     save_handle: Option<JoinHandle<std::io::Result<()>>>,
+}
+
+/// What a indexer reported to a probe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexerInfo {
+    /// The indexer's tip height.
+    pub block_height: u64,
+    /// The consensus branch id at the indexer's tip.
+    pub consensus_branch_id: String,
+    /// The indexer software's vendor string.
+    pub vendor: String,
+    /// The indexer software's version string.
+    pub version: String,
+}
+
+/// The outcome of probing one endpoint.
+#[derive(Debug, Clone)]
+pub struct IndexerProbe {
+    /// The endpoint probed.
+    pub indexer: Indexer,
+    /// What it reported, or why the probe failed.
+    pub result: Result<IndexerInfo, String>,
+}
+
+impl From<IndexerProbe> for JsonValue {
+    fn from(probe: IndexerProbe) -> Self {
+        let mut value = json::object! {
+            "uri" => probe.indexer.uri.to_string(),
+            "label" => probe.indexer.label,
+        };
+        match probe.result {
+            Ok(info) => {
+                value["reachable"] = true.into();
+                value["block_height"] = info.block_height.into();
+                value["consensus_branch_id"] = info.consensus_branch_id.into();
+                value["vendor"] = info.vendor.into();
+                value["version"] = info.version.into();
+            }
+            Err(error) => {
+                value["reachable"] = false.into();
+                value["error"] = error.into();
+            }
+        }
+        value
+    }
 }
 
 impl LightClient {
@@ -237,8 +282,88 @@ impl LightClient {
     }
 
     /// Set the server uri.
+    ///
+    /// The URI is also recorded at the head of the endpoint list for this client's chain, so
+    /// [`Self::indexers`] and the probes include it.
     pub fn set_server(&self, server: http::Uri) {
+        if server.host().is_some() && server.port().is_some() {
+            self.config
+                .prefer_indexer(Indexer::new(server.clone(), "configured"));
+        }
         *self.config.lightwalletd_uri.write().unwrap() = server;
+    }
+
+    /// The endpoints listed for this client's chain, most preferred first.
+    #[must_use]
+    pub fn indexers(&self) -> Vec<Indexer> {
+        self.config.indexers_for_chain()
+    }
+
+    /// Adds an endpoint for this client's chain after the ones already listed.
+    pub fn add_indexer(&self, indexer: Indexer) {
+        self.config.add_indexer(indexer);
+    }
+
+    /// How long a indexer probe waits, connection included, before it is reported unreachable.
+    pub const INDEXER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// Probes every endpoint listed for this client's chain concurrently with `GetLightdInfo`,
+    /// giving each [`Self::INDEXER_PROBE_TIMEOUT`].
+    ///
+    /// Results come back in list order; each carries the indexer's reported tip height, or the
+    /// error that stopped the probe.
+    pub async fn probe_indexers(&self) -> Vec<IndexerProbe> {
+        let indexers = self.indexers();
+        let probes = indexers.into_iter().map(|indexer| async move {
+            let result = match tokio::time::timeout(
+                Self::INDEXER_PROBE_TIMEOUT,
+                crate::grpc_connector::get_info(indexer.uri.clone()),
+            )
+            .await
+            {
+                Ok(Ok(info)) => Ok(IndexerInfo {
+                    block_height: info.block_height,
+                    consensus_branch_id: info.consensus_branch_id,
+                    vendor: info.vendor,
+                    version: info.version,
+                }),
+                Ok(Err(error)) => Err(error),
+                Err(_) => Err(format!(
+                    "no answer within {} s",
+                    Self::INDEXER_PROBE_TIMEOUT.as_secs()
+                )),
+            };
+            IndexerProbe { indexer, result }
+        });
+        futures::future::join_all(probes).await
+    }
+
+    /// Probes the endpoints listed for this client's chain and switches to the one reporting the
+    /// highest tip, preferring the earlier-listed endpoint on a tie.
+    ///
+    /// # Error
+    ///
+    /// Returns the probe results as an error when no endpoint answered.
+    pub async fn select_best_indexer(&self) -> Result<IndexerProbe, Vec<IndexerProbe>> {
+        let probes = self.probe_indexers().await;
+        let best = probes
+            .iter()
+            .filter_map(|probe| {
+                probe
+                    .result
+                    .as_ref()
+                    .ok()
+                    .map(|info| (probe, info.block_height))
+            })
+            .max_by(|(_, a), (_, b)| a.cmp(b).then(std::cmp::Ordering::Less))
+            .map(|(probe, _)| probe.clone());
+        match best {
+            Some(probe) => {
+                *self.config.lightwalletd_uri.write().unwrap() = probe.indexer.uri.clone();
+                Ok(probe)
+            }
+            None => Err(probes),
+        }
     }
 
     /// Creates a tor client for current price updates.
