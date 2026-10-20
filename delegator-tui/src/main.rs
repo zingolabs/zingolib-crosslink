@@ -1,16 +1,5 @@
 //! delegator-tui: a watch-only terminal wallet for Zcash crosslink delegators.
 
-mod app;
-mod backend;
-mod cli;
-mod clipboard;
-mod format;
-mod input;
-mod qr;
-mod settings;
-mod theme;
-mod ui;
-
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -18,9 +7,10 @@ use clap::Parser;
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use tokio::sync::mpsc;
 
-use app::{Action, Command, Network, OpenSpec, Phase, State, Wizard, reduce};
-use backend::BackendConfig;
-use cli::Cli;
+use delegator_tui::app::{Action, Command, Network, OpenSpec, Phase, State, Wizard, reduce};
+use delegator_tui::backend::{self, BackendConfig};
+use delegator_tui::cli::Cli;
+use delegator_tui::{clipboard, input, settings, theme, ui};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
