@@ -6,7 +6,7 @@ use incrementalmerkletree::Position;
 use orchard::{
     Action,
     keys::Scope,
-    note_encryption::OrchardDomain,
+    note_encryption::{IronwoodDomain, OrchardDomain},
     primitives::redpallas::{Signature, SpendAuth},
 };
 use sapling_crypto::{
@@ -17,7 +17,7 @@ use zcash_keys::{address::UnifiedAddress, keys::UnifiedFullViewingKey};
 use zcash_note_encryption::{BatchDomain, Domain, ENC_CIPHERTEXT_SIZE, ShieldedOutput};
 use zcash_primitives::transaction::{Transaction, TxId};
 use zcash_protocol::{
-    ShieldedProtocol,
+    ShieldedPool,
     consensus::{self, BlockHeight, NetworkConstants},
     memo::Memo,
 };
@@ -28,13 +28,14 @@ use zingo_status::confirmation_status::ConfirmationStatus;
 use zip32::AccountId;
 
 use crate::{
+    Ironwood, Orchard, Sapling,
     client::{self, FetchRequest},
     error::ScanError,
     keys::{self, KeyId, transparent::TransparentAddressId},
     wallet::{
-        NullifierMap, OrchardNote, OutgoingNote, OutgoingNoteInterface, OutgoingOrchardNote,
-        OutgoingSaplingNote, OutputId, SaplingNote, ScanTarget, TransparentCoin, WalletBlock,
-        WalletNote, WalletTransaction,
+        IronwoodNote, NullifierMap, OrchardNote, OutgoingIronwoodNote, OutgoingNote,
+        OutgoingNoteInterface, OutgoingOrchardNote, OutgoingSaplingNote, OutputId, SaplingNote,
+        ScanTarget, TransparentCoin, WalletBlock, WalletNote, WalletTransaction,
     },
 };
 
@@ -52,6 +53,16 @@ impl<A> ShieldedOutputExt<OrchardDomain> for Action<A> {
     }
 
     fn value_commitment(&self) -> <OrchardDomain as Domain>::ValueCommitment {
+        self.cv_net().clone()
+    }
+}
+
+impl<A> ShieldedOutputExt<IronwoodDomain> for Action<A> {
+    fn out_ciphertext(&self) -> [u8; 80] {
+        self.encrypted_note().out_ciphertext
+    }
+
+    fn value_commitment(&self) -> <IronwoodDomain as Domain>::ValueCommitment {
         self.cv_net().clone()
     }
 }
@@ -167,14 +178,19 @@ pub(crate) fn scan_transaction(
     let mut transparent_coins: Vec<TransparentCoin> = Vec::new();
     let mut sapling_notes: Vec<SaplingNote> = Vec::new();
     let mut orchard_notes: Vec<OrchardNote> = Vec::new();
+    let mut ironwood_notes: Vec<IronwoodNote> = Vec::new();
     let mut outgoing_sapling_notes: Vec<OutgoingSaplingNote> = Vec::new();
     let mut outgoing_orchard_notes: Vec<OutgoingOrchardNote> = Vec::new();
+    let mut outgoing_ironwood_notes: Vec<OutgoingIronwoodNote> = Vec::new();
     let mut encoded_memos = Vec::new();
 
     let mut sapling_ivks = Vec::new();
     let mut sapling_ovks = Vec::new();
     let mut orchard_ivks = Vec::new();
     let mut orchard_ovks = Vec::new();
+    // Ironwood outputs are decrypted with the Orchard viewing keys under the Ironwood domain.
+    let mut ironwood_ivks = Vec::new();
+    let mut ironwood_ovks = Vec::new();
     for (account_id, ufvk) in ufvks {
         if let Some(dfvk) = ufvk.sapling() {
             for scope in [Scope::External, Scope::Internal] {
@@ -197,6 +213,11 @@ pub(crate) fn scan_transaction(
                     orchard::keys::PreparedIncomingViewingKey::new(&fvk.to_ivk(scope)),
                 ));
                 orchard_ovks.push((key_id, fvk.to_ovk(scope)));
+                ironwood_ivks.push((
+                    key_id,
+                    orchard::keys::PreparedIncomingViewingKey::new(&fvk.to_ivk(scope)),
+                ));
+                ironwood_ovks.push((key_id, fvk.to_ovk(scope)));
             }
         }
     }
@@ -226,6 +247,7 @@ pub(crate) fn scan_transaction(
             OutputDescription<GrothProofBytes>,
             sapling_crypto::Note,
             sapling_crypto::Nullifier,
+            Sapling,
         >(
             &mut sapling_notes,
             txid,
@@ -256,6 +278,7 @@ pub(crate) fn scan_transaction(
             Action<Signature<SpendAuth>>,
             orchard::Note,
             orchard::note::Nullifier,
+            Orchard,
         >(
             &mut orchard_notes,
             txid,
@@ -274,6 +297,37 @@ pub(crate) fn scan_transaction(
         encoded_memos.append(&mut parse_encoded_memos(&orchard_notes));
     }
 
+    if let Some(bundle) = transaction.ironwood_bundle() {
+        let ironwood_actions: Vec<(IronwoodDomain, Action<Signature<SpendAuth>>)> = bundle
+            .actions()
+            .iter()
+            .map(|action| (IronwoodDomain::for_action(action), action.clone()))
+            .collect();
+
+        scan_incoming_notes::<
+            IronwoodDomain,
+            Action<Signature<SpendAuth>>,
+            orchard::Note,
+            orchard::note::Nullifier,
+            Ironwood,
+        >(
+            &mut ironwood_notes,
+            txid,
+            ironwood_ivks,
+            &ironwood_actions,
+            decrypted_note_data.map(|d| &d.ironwood_nullifiers_and_positions),
+        )?;
+
+        scan_outgoing_notes(
+            &mut outgoing_ironwood_notes,
+            txid,
+            ironwood_ovks,
+            &ironwood_actions,
+        )?;
+
+        encoded_memos.append(&mut parse_encoded_memos(&ironwood_notes));
+    }
+
     // collect nullifiers for pending transactions
     // nullifiers for confirmed transactions are collected during compact block scanning
     if status.is_pending() {
@@ -290,8 +344,13 @@ pub(crate) fn scan_transaction(
                 )?;
                 add_recipient_unified_address(
                     consensus_parameters,
-                    uas,
+                    uas.clone(),
                     &mut outgoing_orchard_notes,
+                )?;
+                add_recipient_unified_address(
+                    consensus_parameters,
+                    uas,
+                    &mut outgoing_ironwood_notes,
                 )?;
             }
             ParsedMemo::Version1 {
@@ -305,8 +364,13 @@ pub(crate) fn scan_transaction(
                 )?;
                 add_recipient_unified_address(
                     consensus_parameters,
-                    uas,
+                    uas.clone(),
                     &mut outgoing_orchard_notes,
+                )?;
+                add_recipient_unified_address(
+                    consensus_parameters,
+                    uas,
+                    &mut outgoing_ironwood_notes,
                 )?;
 
                 // TODO: handle rejection addresses from encoded memos
@@ -322,8 +386,10 @@ pub(crate) fn scan_transaction(
         transparent_coins,
         sapling_notes,
         orchard_notes,
+        ironwood_notes,
         outgoing_sapling_notes,
         outgoing_orchard_notes,
+        outgoing_ironwood_notes,
     })
 }
 
@@ -353,8 +419,8 @@ fn scan_incoming_coins<P: consensus::Parameters>(
     }
 }
 
-fn scan_incoming_notes<D, Op, N, Nf>(
-    wallet_notes: &mut Vec<WalletNote<N, Nf>>,
+fn scan_incoming_notes<D, Op, N, Nf, P>(
+    wallet_notes: &mut Vec<WalletNote<N, Nf, P>>,
     txid: TxId,
     ivks: Vec<(KeyId, D::IncomingViewingKey)>,
     outputs: &[(D, Op)],
@@ -388,6 +454,7 @@ where
                 memo: Memo::from_bytes(memo_bytes.as_ref())?,
                 spending_transaction: None,
                 refetch_nullifier_ranges: Vec::new(),
+                pool: std::marker::PhantomData,
             });
         }
     }
@@ -395,8 +462,8 @@ where
     Ok(())
 }
 
-fn scan_outgoing_notes<D, Op, N>(
-    outgoing_notes: &mut Vec<OutgoingNote<N>>,
+fn scan_outgoing_notes<D, Op, N, P>(
+    outgoing_notes: &mut Vec<OutgoingNote<N, P>>,
     txid: TxId,
     ovks: Vec<(KeyId, D::OutgoingViewingKey)>,
     outputs: &[(D, Op)],
@@ -422,6 +489,7 @@ where
                 note,
                 memo: Memo::from_bytes(memo_bytes.as_ref())?,
                 recipient_full_unified_address: None,
+                pool: std::marker::PhantomData,
             });
         }
     }
@@ -451,7 +519,7 @@ fn try_output_recovery_with_ovks<D: Domain, Output: ShieldedOutput<D, ENC_CIPHER
     None
 }
 
-fn parse_encoded_memos<N, Nf: Copy>(wallet_notes: &[WalletNote<N, Nf>]) -> Vec<ParsedMemo> {
+fn parse_encoded_memos<N, Nf: Copy, P>(wallet_notes: &[WalletNote<N, Nf, P>]) -> Vec<ParsedMemo> {
     wallet_notes
         .iter()
         .filter_map(|note| {
@@ -470,24 +538,25 @@ fn parse_encoded_memos<N, Nf: Copy>(wallet_notes: &[WalletNote<N, Nf>]) -> Vec<P
         .collect()
 }
 
-fn add_recipient_unified_address<P, Nz>(
+fn add_recipient_unified_address<P, Nz, Pool>(
     consensus_parameters: &P,
     unified_addresses: Vec<UnifiedAddress>,
-    outgoing_notes: &mut [OutgoingNote<Nz>],
+    outgoing_notes: &mut [OutgoingNote<Nz, Pool>],
 ) -> Result<(), ScanError>
 where
     P: consensus::Parameters + NetworkConstants,
-    OutgoingNote<Nz>: OutgoingNoteInterface,
+    OutgoingNote<Nz, Pool>: OutgoingNoteInterface,
 {
     for unified_address in unified_addresses {
-        let encoded_address = match <OutgoingNote<Nz>>::SHIELDED_PROTOCOL {
-            ShieldedProtocol::Sapling => unified_address.sapling().map(|address| {
+        let encoded_address = match <OutgoingNote<Nz, Pool>>::SHIELDED_PROTOCOL {
+            ShieldedPool::Sapling => unified_address.sapling().map(|address| {
                 Ok(zcash_keys::encoding::encode_payment_address(
                     consensus_parameters.hrp_sapling_payment_address(),
                     address,
                 ))
             }),
-            ShieldedProtocol::Orchard => unified_address
+            // Ironwood shares the Orchard receiver.
+            ShieldedPool::Orchard | ShieldedPool::Ironwood => unified_address
                 .orchard()
                 .map(|address| keys::encode_orchard_receiver(consensus_parameters, address)),
         }
@@ -550,14 +619,30 @@ fn collect_nullifiers(
                 );
             });
     }
+    if let Some(bundle) = transaction.ironwood_bundle() {
+        bundle
+            .actions()
+            .iter()
+            .map(orchard::Action::nullifier)
+            .for_each(|nullifier| {
+                nullifier_map.ironwood.insert(
+                    *nullifier,
+                    ScanTarget {
+                        block_height,
+                        txid,
+                        narrow_scan_area: false,
+                    },
+                );
+            });
+    }
 }
 
 /// Adds the outpoints from a transparent bundle to the outpoint map.
-fn collect_outpoints<A: zcash_primitives::transaction::components::transparent::Authorization>(
+fn collect_outpoints<A: zcash_transparent::bundle::Authorization>(
     outpoint_map: &mut BTreeMap<OutputId, ScanTarget>,
     txid: TxId,
     block_height: BlockHeight,
-    transparent_bundle: &zcash_primitives::transaction::components::transparent::Bundle<A>,
+    transparent_bundle: &zcash_transparent::bundle::Bundle<A>,
 ) {
     transparent_bundle
         .vin

@@ -1,7 +1,7 @@
 use bip0039::Mnemonic;
 
 use zcash_keys::keys::Era;
-use zcash_protocol::{PoolType, ShieldedProtocol};
+use zcash_protocol::{PoolType, ShieldedPool};
 
 use crate::{
     config::ZingoConfig,
@@ -16,7 +16,7 @@ use crate::{
                 NetworkSeedVersion, RegtestSeedVersion, TestnetSeedVersion, VillageTargetVersion,
             },
         },
-        keys::unified::UnifiedKeyStore,
+        keys::unified::{SeedDerivation, UnifiedKeyStore},
     },
 };
 
@@ -31,7 +31,7 @@ impl NetworkSeedVersion {
         assert_wallet_capability_matches_seed(&wallet, self.example_wallet_base()).await;
         for pool in [
             PoolType::Transparent,
-            PoolType::Shielded(ShieldedProtocol::Orchard),
+            PoolType::Shielded(ShieldedPool::Orchard),
         ] {
             assert_eq!(wallet.get_address(pool), self.example_wallet_address(pool));
         }
@@ -252,6 +252,7 @@ async fn reload_wallet_from_buffer() {
         &mid_client_network,
         &expected_mnemonic,
         zip32::AccountId::ZERO,
+        SeedDerivation::Zip32Standard,
     )
     .unwrap();
 

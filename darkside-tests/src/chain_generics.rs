@@ -51,7 +51,7 @@ pub(crate) mod conduct_chain {
     use crate::utils::scenarios::DarksideEnvironment;
     use crate::utils::update_tree_states_for_transaction;
 
-    /// doesnt use the full extent of `DarksideEnvironment`, preferring to rely on server truths when ever possible.
+    /// doesnt use the full extent of `DarksideEnvironment`, preferring to rely on indexer truths when ever possible.
     impl ConductChain for DarksideEnvironment {
         async fn setup() -> Self {
             let elf = DarksideEnvironment::new(None).await;
@@ -63,8 +63,8 @@ pub(crate) mod conduct_chain {
             elf
         }
 
-        /// the mock chain is fed to the Client via lightwalletd. where is that server to be found?
-        fn lightserver_uri(&self) -> Option<http::Uri> {
+        /// the mock chain is fed to the Client via lightwalletd. where is that indexer to be found?
+        fn indexer_uri(&self) -> Option<http::Uri> {
             Some(self.client_builder.server_id.clone())
         }
 
@@ -80,6 +80,7 @@ pub(crate) mod conduct_chain {
                     WalletBase::Mnemonic {
                         mnemonic: Mnemonic::from_phrase(DARKSIDE_SEED.to_string()).unwrap(),
                         no_of_accounts: NonZeroU32::try_from(1).expect("hard-coded integer"),
+                        seed_derivation: zingolib::wallet::SeedDerivation::Zip32Standard,
                     },
                     1.into(),
                     config.wallet_settings.clone(),
@@ -105,7 +106,7 @@ pub(crate) mod conduct_chain {
 
         async fn increase_chain_height(&mut self) {
             let height_before =
-                zingolib::grpc_connector::get_latest_block(self.lightserver_uri().unwrap())
+                zingolib::grpc_connector::get_latest_block(self.indexer_uri().unwrap())
                     .await
                     .unwrap()
                     .height;

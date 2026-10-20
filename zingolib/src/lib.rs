@@ -4,6 +4,7 @@
 //! Zingo backend library
 
 pub mod config;
+pub mod crosslink;
 pub mod data;
 pub mod grpc_connector;
 pub mod lightclient;
@@ -25,5 +26,5 @@ extern crate rust_embed;
 #[folder = "zcash-params/"]
 pub struct SaplingParams;
 
-pub use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
+pub use config::ConfiguredActivationHeights;
 pub use zip32::AccountId;

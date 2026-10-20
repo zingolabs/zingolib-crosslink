@@ -41,8 +41,8 @@ impl Network {
     /// Default indexer for the network.
     pub fn default_server(self) -> &'static str {
         match self {
-            Network::Mainnet => zingolib::config::DEFAULT_LIGHTWALLETD_SERVER,
-            Network::Testnet => zingolib::config::DEFAULT_TESTNET_LIGHTWALLETD_SERVER,
+            Network::Mainnet => zingolib::config::DEFAULT_INDEXER_URI,
+            Network::Testnet => zingolib::config::DEFAULT_TESTNET_INDEXER_URI,
             Network::Regtest => "http://127.0.0.1:9067",
         }
     }

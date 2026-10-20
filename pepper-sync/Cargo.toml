@@ -83,3 +83,9 @@ simple-mermaid.workspace = true
 
 [dev-dependencies]
 zcash_protocol = { workspace = true, features = ["local-consensus"] }
+
+[build-dependencies]
+# `zcash_proofs` lists `zcash_primitives` as a build-dependency without its `std` feature,
+# and resolver 2 resolves host features separately, so the host build of `zcash_primitives`
+# fails on its `std`-only crosslink modules. Naming it here enables `std` for that build.
+zcash_primitives = { workspace = true }

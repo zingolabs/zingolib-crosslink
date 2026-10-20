@@ -123,20 +123,38 @@ pub use sync::sync_status;
 #[cfg(test)]
 mod mocks;
 
-use zcash_protocol::ShieldedProtocol;
+use zcash_protocol::ShieldedPool;
 
-pub(crate) trait SyncDomain {
-    const SHIELDED_PROTOCOL: ShieldedProtocol;
+/// A shielded pool marker.
+pub trait SyncDomain {
+    /// The shielded pool this marker stands for.
+    const SHIELDED_PROTOCOL: ShieldedPool;
 }
 
-pub(crate) struct Sapling;
+/// Marker for the Sapling shielded pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Sapling;
 
 impl SyncDomain for Sapling {
-    const SHIELDED_PROTOCOL: ShieldedProtocol = ShieldedProtocol::Sapling;
+    const SHIELDED_PROTOCOL: ShieldedPool = ShieldedPool::Sapling;
 }
 
-pub(crate) struct Orchard;
+/// Marker for the Orchard shielded pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Orchard;
 
 impl SyncDomain for Orchard {
-    const SHIELDED_PROTOCOL: ShieldedProtocol = ShieldedProtocol::Orchard;
+    const SHIELDED_PROTOCOL: ShieldedPool = ShieldedPool::Orchard;
+}
+
+/// Marker for the Ironwood shielded pool (ZIP 2005, NU6.3).
+///
+/// Ironwood notes are Orchard-shaped and are decrypted with the account's Orchard viewing keys, but they live in
+/// their own note commitment tree, have their own nullifier set, and are carried in a separate transaction bundle.
+/// The marker keeps Ironwood notes type-distinct from Orchard notes throughout the sync engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Ironwood;
+
+impl SyncDomain for Ironwood {
+    const SHIELDED_PROTOCOL: ShieldedPool = ShieldedPool::Ironwood;
 }

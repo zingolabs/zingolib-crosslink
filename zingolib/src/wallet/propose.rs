@@ -1,14 +1,16 @@
 //! creating proposals from wallet data
 
-use std::num::NonZeroU32;
-
 use rand::rngs::OsRng;
 use tonic::transport::Channel;
-use tracing::{info, instrument};
+use tracing::instrument;
+use zcash_address::ZcashAddress;
 use zcash_client_backend::{
     data_api::{
-        WalletRead,
-        wallet::{ConfirmationsPolicy, input_selection::GreedyInputSelector},
+        CoinbaseFilter, WalletRead,
+        wallet::{
+            ConfirmationsPolicy,
+            input_selection::{GreedyInputSelector, SpendPolicy},
+        },
     },
     fees::{DustAction, DustOutputPolicy},
     proto::service::{
@@ -16,34 +18,42 @@ use zcash_client_backend::{
     },
     zip321::TransactionRequest,
 };
-use zcash_primitives::transaction::{
-    StakingAction, StakingAction_WithdrawDelegationBond, builder::BuildConfig,
+use zcash_primitives::{
+    bft::FinalizerAddress,
+    transaction::{
+        StakingAction,
+        builder::{BuildConfig, BundlePadding},
+    },
 };
 use zcash_proofs::prover::LocalTxProver;
 use zcash_protocol::{
-    ShieldedProtocol, TxId,
-    consensus::{BlockHeight, Parameters},
+    PoolType, ShieldedPool, TxId,
+    consensus::{self, BlockHeight, NetworkConstants, Parameters},
     memo::{Memo, MemoBytes},
     value::Zatoshis,
 };
 use zcash_transparent::builder::TransparentSigningSet;
-use zip32::AccountId;
 
 use super::{
     LightWallet,
-    error::{ProposeSendError, ProposeShieldError, WalletError},
+    error::{KeyError, ProposeSendError, ProposeShieldError, WalletError},
 };
 use crate::{
     config::ChainType,
+    crosslink::{
+        BondInfo, BondStatus, StakingParameters, earliest_bond_action_height,
+        next_staking_window_start, staking_calendar, staking_window_open,
+    },
     data::proposal::{ExtraFee, ExtraFeeProposal, ProportionalFeeProposal, ZingoProposal},
     wallet::{error::WithdrawError, utils::ensure_sapling_params_on_disk},
 };
 use pepper_sync::{
     keys::transparent::TransparentScope,
     sync::ScanPriority,
-    wallet::{NoteInterface, OrchardNote},
+    wallet::{IronwoodNote, KeyIdInterface, NoteInterface, traits::SyncWallet},
 };
 use zcash_primitives::transaction::builder::Builder as TxBuilder;
+use zingo_status::confirmation_status::ConfirmationStatus;
 
 use zcash_primitives::transaction::fees::zip317::FeeError;
 
@@ -65,7 +75,7 @@ impl LightWallet {
         let change_strategy = zcash_client_backend::fees::zip317::SingleOutputChangeStrategy::new(
             zcash_primitives::transaction::fees::zip317::FeeRule::standard(),
             Some(memo),
-            ShieldedProtocol::Orchard,
+            ShieldedPool::Ironwood,
             DustOutputPolicy::new(DustAction::AddDustToFee, None),
         );
         let network = self.network;
@@ -88,6 +98,9 @@ impl LightWallet {
             request,
             // TODO: replace wallet min_confirmations field with confirmation policy to unify for all proposals
             ConfirmationsPolicy::new_symmetrical(self.wallet_settings.min_confirmations, false),
+            &SpendPolicy::default(),
+            None,
+            None,
         )
         .map_err(ProposeSendError::Proposal)
     }
@@ -109,7 +122,7 @@ impl LightWallet {
         let change_strategy = zcash_client_backend::fees::zip317::SingleOutputChangeStrategy::new(
             zcash_primitives::transaction::fees::zip317::FeeRule::standard(),
             None,
-            ShieldedProtocol::Orchard,
+            ShieldedPool::Ironwood,
             DustOutputPolicy::new(DustAction::AllowDustChange, None),
         );
         let network = self.network;
@@ -146,6 +159,8 @@ impl LightWallet {
             account_id,
             // TODO: replace wallet min_confirmations field with confirmation policy to unify for all proposals
             ConfirmationsPolicy::new_symmetrical(self.wallet_settings.min_confirmations, false),
+            CoinbaseFilter::AllTransparentOutputs,
+            None,
         )
         .map_err(ProposeShieldError::Component)?;
 
@@ -164,36 +179,152 @@ impl LightWallet {
         Ok(proposed_shield)
     }
 
-    /// Creates a proposal from a transaction request.
-    pub(crate) async fn create_stake_proposal(
+    /// Builds a proposal that moves `amount` from one of this wallet's pools into another, by
+    /// paying one of the wallet's own addresses.
+    ///
+    /// `from` restricts input selection to a single shielded pool; `to` picks the receiver the
+    /// payment is made to. On a network where the Ironwood pool is active, a payment to the
+    /// wallet's Orchard receiver is built in the Ironwood bundle, so `Orchard` and `Ironwood`
+    /// destinations both land in Ironwood: this is the ZIP 318 style Orchard -> Ironwood migration
+    /// in its simplest form, one transaction at a time. To move transparent funds into a shielded
+    /// pool use [`LightWallet::create_shield_proposal`] instead.
+    ///
+    /// Change returns to the `from` pool, so exactly `amount` crosses into `to`.
+    #[instrument(
+        name = "create_pool_transfer_proposal",
+        skip(self),
+        err,
+        level = "info"
+    )]
+    pub(crate) fn create_pool_transfer_proposal(
         &mut self,
-        request: TransactionRequest,
-        // staking_action: StakingAction,
-        // challenge is not needed here. A simple [0u8; 32] will do
-        // signature is not needed here. A simple [0u8; 32] will do
+        from: ShieldedPool,
+        to: PoolType,
         amount: Zatoshis,
-        unique_pubkey: [u8; 32],
-        target_finalizer: [u8; 32],
         account_id: zip32::AccountId,
-    ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
+    ) -> Result<ProportionalFeeProposal, ProposeSendError> {
+        if PoolType::Shielded(from) == to {
+            return Err(ProposeSendError::SamePool);
+        }
+        let destination = self.own_address_for_pool(to, account_id)?;
+        let request =
+            TransactionRequest::new(vec![zcash_client_backend::zip321::Payment::without_memo(
+                destination,
+                amount,
+            )])?;
+
         let memo = self.change_memo_from_transaction_request(&request);
         let input_selector = GreedyInputSelector::new();
+        let change_strategy = zcash_client_backend::fees::zip317::SingleOutputChangeStrategy::new(
+            zcash_primitives::transaction::fees::zip317::FeeRule::standard(),
+            Some(memo),
+            from,
+            DustOutputPolicy::new(DustAction::AddDustToFee, None),
+        );
+        let network = self.network;
 
-        let extra = amount;
+        zcash_client_backend::data_api::wallet::propose_transfer::<
+            LightWallet,
+            ChainType,
+            GreedyInputSelector<LightWallet>,
+            zcash_client_backend::fees::zip317::SingleOutputChangeStrategy<
+                zcash_primitives::transaction::fees::zip317::FeeRule,
+                LightWallet,
+            >,
+            WalletError,
+        >(
+            self,
+            &network,
+            account_id,
+            &input_selector,
+            &change_strategy,
+            request,
+            ConfirmationsPolicy::new_symmetrical(self.wallet_settings.min_confirmations, false),
+            &SpendPolicy::shielded_pools([from]),
+            None,
+            None,
+        )
+        .map_err(ProposeSendError::Proposal)
+    }
+
+    /// One of this wallet's own addresses that carries a receiver for `pool`, as a
+    /// [`ZcashAddress`] the proposal machinery routes into that pool.
+    ///
+    /// Ironwood shares the Orchard receiver: a unified address with only an Orchard receiver is
+    /// returned for both, and the backend places the payment in the pool that is active.
+    fn own_address_for_pool(
+        &self,
+        pool: PoolType,
+        account_id: zip32::AccountId,
+    ) -> Result<ZcashAddress, ProposeSendError> {
+        let network_type = self.network.network_type();
+        let unified_address = self
+            .unified_addresses
+            .iter()
+            .find(|(id, _)| id.account_id == account_id)
+            .map(|(_, address)| address)
+            .ok_or(ProposeSendError::NoReceiverForPool(pool))?;
+
+        let encoded = match pool {
+            PoolType::Transparent => {
+                let address = self
+                    .transparent_addresses
+                    .iter()
+                    .find(|(id, _)| {
+                        id.account_id() == account_id && id.scope() == TransparentScope::External
+                    })
+                    .map(|(_, address)| address.clone())
+                    .ok_or(ProposeSendError::NoReceiverForPool(pool))?;
+                return Ok(ZcashAddress::try_from_encoded(&address)?);
+            }
+            PoolType::Shielded(ShieldedPool::Sapling) => {
+                let receiver = unified_address
+                    .sapling()
+                    .ok_or(ProposeSendError::NoReceiverForPool(pool))?;
+                zcash_keys::encoding::encode_payment_address(
+                    self.network.hrp_sapling_payment_address(),
+                    receiver,
+                )
+            }
+            PoolType::Shielded(ShieldedPool::Orchard | ShieldedPool::Ironwood) => {
+                let receiver = unified_address
+                    .orchard()
+                    .ok_or(ProposeSendError::NoReceiverForPool(pool))?;
+                pepper_sync::keys::encode_orchard_receiver(&self.network, receiver)?
+            }
+        };
+        let _ = network_type;
+        Ok(ZcashAddress::try_from_encoded(&encoded)?)
+    }
+
+    /// Builds a proposal that funds a staking action from this wallet's shielded notes.
+    ///
+    /// The proposal pays nobody. Its fee is the standard ZIP 317 fee plus `extra`: the bond amount
+    /// for a `CreateNewDelegationBond`, zero for every other action. The staking action is
+    /// attached when the transaction is built; the builder then moves the bond amount into the
+    /// staking pool and signs the action with the bond key it derives from the account's spending
+    /// key.
+    async fn create_staking_proposal(
+        &mut self,
+        extra: Zatoshis,
+        account_id: zip32::AccountId,
+    ) -> Result<ExtraFeeProposal, ProposeSendError> {
+        let request = TransactionRequest::empty();
+        let memo = self.change_memo_from_transaction_request(&request);
+        let input_selector = GreedyInputSelector::new();
         let fee_rule = ExtraFee {
             base: zcash_primitives::transaction::fees::zip317::FeeRule::standard(),
             extra,
         };
         let change_strategy = zcash_client_backend::fees::zip317::SingleOutputChangeStrategy::new(
-            // zcash_primitives::transaction::fees::zip317::FeeRule::standard(),
             fee_rule,
             Some(memo),
-            ShieldedProtocol::Orchard,
+            ShieldedPool::Ironwood,
             DustOutputPolicy::new(DustAction::AddDustToFee, None),
         );
         let network = self.network;
 
-        let proposal = match zcash_client_backend::data_api::wallet::propose_transfer::<
+        zcash_client_backend::data_api::wallet::propose_transfer::<
             LightWallet,
             ChainType,
             GreedyInputSelector<LightWallet>,
@@ -209,25 +340,130 @@ impl LightWallet {
             &input_selector,
             &change_strategy,
             request,
-            // TODO: replace wallet min_confirmations field with confirmation policy to unify for all proposals
             ConfirmationsPolicy::new_symmetrical(self.wallet_settings.min_confirmations, false),
+            &SpendPolicy::default(),
+            None,
+            None,
         )
         .map_err(ProposeSendError::Proposal)
-        {
-            Err(e) => return Err(e),
-            Ok(proposal) => proposal,
-        };
+    }
 
-        let staking_action = StakingAction {
-            kind: zcash_primitives::transaction::StakingActionKind::CreateNewDelegationBond,
-            amount_zats: amount.into(),
-            arg32_0: unique_pubkey,
-            arg32_1: [0u8; 32],
-            arg32_2: target_finalizer,
-            arg32_3: [0u8; 32],
-            arg64_0: [0u8; 64],
-            arg64_1: [0u8; 64],
+    /// The height the next transaction targets: one above the last known chain height.
+    fn next_target_height(&self) -> Result<BlockHeight, ProposeSendError> {
+        self.sync_state
+            .last_known_chain_height()
+            .map(|height| height + 1)
+            .ok_or(ProposeSendError::NoSyncData)
+    }
+
+    /// The staking calendar consensus applies on this wallet's network, or `None` where the
+    /// wallet cannot know it (regtest nets may run a shrunk calendar).
+    fn staking_calendar(&self) -> Option<&'static StakingParameters> {
+        staking_calendar(&self.network)
+    }
+
+    /// Fails when the node reports the bond in a state other than `expected`, or when its
+    /// previous action is too recent for consensus to accept the next one at `height`.
+    fn check_bond_ready(
+        &self,
+        bond_key: [u8; 32],
+        bond_info: &BondInfo,
+        expected: BondStatus,
+        height: BlockHeight,
+    ) -> Result<(), ProposeSendError> {
+        if bond_info.status != expected {
+            return Err(ProposeSendError::BondNotActive {
+                bond_key,
+                status: bond_info.status,
+            });
+        }
+        let Some(calendar) = self.staking_calendar() else {
+            return Ok(());
         };
+        let height = u32::from(height);
+        let earliest_height = earliest_bond_action_height(bond_info.last_action_height, calendar);
+        if height < earliest_height {
+            return Err(ProposeSendError::StakingActionDelayNotMet {
+                bond_key,
+                last_action_height: bond_info.last_action_height,
+                earliest_height,
+                height,
+            });
+        }
+        Ok(())
+    }
+
+    /// Fails when a create, unbond or withdraw action targeting `height` would be rejected
+    /// because the staking window is closed, naming the next height at which it opens.
+    fn check_staking_window(&self, height: BlockHeight) -> Result<(), ProposeSendError> {
+        let Some(calendar) = self.staking_calendar() else {
+            return Ok(());
+        };
+        let height = u32::from(height);
+        if staking_window_open(height, calendar) {
+            Ok(())
+        } else {
+            Err(ProposeSendError::StakingWindowClosed {
+                height,
+                next_window_start: next_staking_window_start(height, calendar),
+            })
+        }
+    }
+
+    /// The account's bond root key, from which every bond key of the account derives.
+    fn bond_spending_key(
+        &self,
+        account_id: zip32::AccountId,
+    ) -> Result<zcash_keys::keys::UnifiedSpendingKey, ProposeSendError> {
+        let usk: zcash_keys::keys::UnifiedSpendingKey = self
+            .unified_key_store
+            .get(&account_id)
+            .ok_or(KeyError::NoAccountKeys)?
+            .try_into()?;
+        Ok(usk)
+    }
+
+    /// Creates a proposal that stakes `amount` to `target_finalizer` in a new delegation bond.
+    ///
+    /// The bond key is derived from the account's bond root key, the target, the amount and a
+    /// fresh salt, exactly as the node's wallet does, so a wallet restored from seed recovers
+    /// the key from the mined action alone.
+    pub(crate) async fn create_stake_proposal(
+        &mut self,
+        amount: Zatoshis,
+        target_finalizer: FinalizerAddress,
+        account_id: zip32::AccountId,
+    ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
+        if !target_finalizer.verify() {
+            return Err(ProposeSendError::InvalidFinalizerAddress);
+        }
+
+        let usk = self.bond_spending_key(account_id)?;
+        let mut bond_salt = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut OsRng, &mut bond_salt);
+        let signing_key = usk.bond().derive_signing_key(
+            &target_finalizer.pub_key.0,
+            amount.into_u64(),
+            &bond_salt,
+        );
+        let unique_pubkey = <[u8; 32]>::from(
+            zcash_primitives::ed25519_zebra::VerificationKeyBytes::from(&signing_key),
+        );
+
+        let staking_action = StakingAction::CreateNewDelegationBond {
+            amount_zats: amount.into_u64(),
+            unique_pubkey,
+            bond_salt,
+            target_finalizer,
+            signature: [0u8; 64],
+        };
+        let target_height = self.next_target_height()?;
+        self.check_staking_window(target_height)?;
+        if !staking_action.amount_is_valid_at(&self.network, target_height.into()) {
+            return Err(ProposeSendError::BondAmountNotPowerOfTen(amount.into_u64()));
+        }
+
+        let proposal = self.create_staking_proposal(amount, account_id).await?;
 
         Ok(StakingProposal {
             proportional_fee_proposal: proposal,
@@ -235,75 +471,31 @@ impl LightWallet {
         })
     }
 
-    //create_unbonding_start_proposal
-    /// Creates a proposal from a transaction request.
+    /// Creates a proposal that begins unbonding the bond `bond_key`, which this wallet created.
+    ///
+    /// `bond_info` is the node's view of the bond when the caller could fetch it: the bond must
+    /// be active and its creation at least the action delay before the target height.
     pub(crate) async fn create_unbonding_start_proposal(
         &mut self,
-        request: TransactionRequest,
-        // staking_action: StakingAction,
-        // challenge is not needed here. A simple [0u8; 32] will do
-        // signature is not needed here. A simple [0u8; 32] will do
-        // amount: Zatoshis, amount is also not needed.
-        unique_pubkey: [u8; 32],
-        target_finalizer: [u8; 32],
+        bond_key: [u8; 32],
+        bond_info: Option<&BondInfo>,
         account_id: zip32::AccountId,
     ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
-        let refund_address_count = self
-            .transparent_addresses
-            .keys()
-            .filter(|&address_id| address_id.scope() == TransparentScope::Refund)
-            .count() as u32;
-        let memo = self.change_memo_from_transaction_request(&request);
-        let input_selector = GreedyInputSelector::new();
+        self.bond_create_action(bond_key)
+            .ok_or(ProposeSendError::UnknownBond(bond_key))?;
+        let target_height = self.next_target_height()?;
+        self.check_staking_window(target_height)?;
+        if let Some(bond_info) = bond_info {
+            self.check_bond_ready(bond_key, bond_info, BondStatus::Active, target_height)?;
+        }
 
-        let fee_rule = ExtraFee {
-            base: zcash_primitives::transaction::fees::zip317::FeeRule::standard(),
-            extra: Zatoshis::const_from_u64(0),
+        let staking_action = StakingAction::BeginDelegationUnbonding {
+            unique_pubkey: bond_key,
+            signature: [0u8; 64],
         };
-        let change_strategy = zcash_client_backend::fees::zip317::SingleOutputChangeStrategy::new(
-            // zcash_primitives::transaction::fees::zip317::FeeRule::standard(),
-            fee_rule,
-            Some(memo),
-            ShieldedProtocol::Orchard,
-            DustOutputPolicy::new(DustAction::AddDustToFee, None),
-        );
-        let network = self.network;
-
-        let proposal = match zcash_client_backend::data_api::wallet::propose_transfer::<
-            LightWallet,
-            ChainType,
-            GreedyInputSelector<LightWallet>,
-            zcash_client_backend::fees::zip317::SingleOutputChangeStrategy<
-                ExtraFee<zcash_primitives::transaction::fees::zip317::FeeRule>,
-                LightWallet,
-            >,
-            WalletError,
-        >(
-            self,
-            &network,
-            account_id,
-            &input_selector,
-            &change_strategy,
-            request,
-            // TODO: replace wallet min_confirmations field with confirmation policy to unify for all proposals
-            ConfirmationsPolicy::new_symmetrical(self.wallet_settings.min_confirmations, false),
-        )
-        .map_err(ProposeSendError::Proposal)
-        {
-            Err(e) => return Err(e),
-            Ok(proposal) => proposal,
-        };
-
-        let staking_action = StakingAction {
-            kind: zcash_primitives::transaction::StakingActionKind::BeginDelegationUnbonding,
-            amount_zats: 0,
-            arg32_0: unique_pubkey,
-            arg32_1: [0u8; 32],
-            arg32_2: target_finalizer,
-            arg32_3: [0u8; 32],
-            arg64_0: [0u8; 64],
-            arg64_1: [0u8; 64],
-        };
+        let proposal = self
+            .create_staking_proposal(Zatoshis::ZERO, account_id)
+            .await?;
 
         Ok(StakingProposal {
             proportional_fee_proposal: proposal,
@@ -311,73 +503,42 @@ impl LightWallet {
         })
     }
 
+    /// Creates a proposal that moves the bond `bond_key` to `to_finalizer`.
+    ///
+    /// Consensus validates the action's `from_finalizer` against the bond's current target, so
+    /// it is replayed from this wallet's own mined create and retarget actions.
+    ///
+    /// A retarget is exempt from the staking window and the action delay, but the node must
+    /// still hold the bond as active; `bond_info` is its view when the caller could fetch it.
     pub(crate) async fn create_retarget_proposal(
         &mut self,
-        request: TransactionRequest,
-        // staking_action: StakingAction,
-        // challenge is not needed here. A simple [0u8; 32] will do
-        // signature is not needed here. A simple [0u8; 32] will do
-        // amount: Zatoshis, amount is also not needed.
         bond_key: [u8; 32],
-        new_target_finalizer: [u8; 32],
+        to_finalizer: FinalizerAddress,
+        bond_info: Option<&BondInfo>,
         account_id: zip32::AccountId,
     ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
-        let refund_address_count = self
-            .transparent_addresses
-            .keys()
-            .filter(|&address_id| address_id.scope() == TransparentScope::Refund)
-            .count() as u32;
-        let memo = self.change_memo_from_transaction_request(&request);
-        let input_selector = GreedyInputSelector::new();
+        if !to_finalizer.verify() {
+            return Err(ProposeSendError::InvalidFinalizerAddress);
+        }
+        if let Some(bond_info) = bond_info.filter(|info| info.status != BondStatus::Active) {
+            return Err(ProposeSendError::BondNotActive {
+                bond_key,
+                status: bond_info.status,
+            });
+        }
+        let from_finalizer = self
+            .current_bond_target_address(bond_key)
+            .ok_or(ProposeSendError::UnknownBond(bond_key))?;
 
-        let fee_rule = ExtraFee {
-            base: zcash_primitives::transaction::fees::zip317::FeeRule::standard(),
-            extra: Zatoshis::const_from_u64(0),
+        let staking_action = StakingAction::RetargetDelegationBond {
+            unique_pubkey: bond_key,
+            signature: [0u8; 64],
+            from_finalizer,
+            to_finalizer,
         };
-        let change_strategy = zcash_client_backend::fees::zip317::SingleOutputChangeStrategy::new(
-            // zcash_primitives::transaction::fees::zip317::FeeRule::standard(),
-            fee_rule,
-            Some(memo),
-            ShieldedProtocol::Orchard,
-            DustOutputPolicy::new(DustAction::AddDustToFee, None),
-        );
-        let network = self.network;
-
-        let proposal = match zcash_client_backend::data_api::wallet::propose_transfer::<
-            LightWallet,
-            ChainType,
-            GreedyInputSelector<LightWallet>,
-            zcash_client_backend::fees::zip317::SingleOutputChangeStrategy<
-                ExtraFee<zcash_primitives::transaction::fees::zip317::FeeRule>,
-                LightWallet,
-            >,
-            WalletError,
-        >(
-            self,
-            &network,
-            account_id,
-            &input_selector,
-            &change_strategy,
-            request,
-            // TODO: replace wallet min_confirmations field with confirmation policy to unify for all proposals
-            ConfirmationsPolicy::new_symmetrical(self.wallet_settings.min_confirmations, false),
-        )
-        .map_err(ProposeSendError::Proposal)
-        {
-            Err(e) => return Err(e),
-            Ok(proposal) => proposal,
-        };
-
-        let staking_action = StakingAction {
-            kind: zcash_primitives::transaction::StakingActionKind::RetargetDelegationBond,
-            amount_zats: 0,
-            arg32_0: bond_key,
-            arg32_1: [0u8; 32],
-            arg32_2: new_target_finalizer,
-            arg32_3: [0u8; 32],
-            arg64_0: [0u8; 64],
-            arg64_1: [0u8; 64],
-        };
+        let proposal = self
+            .create_staking_proposal(Zatoshis::ZERO, account_id)
+            .await?;
 
         Ok(StakingProposal {
             proportional_fee_proposal: proposal,
@@ -385,141 +546,133 @@ impl LightWallet {
         })
     }
 
-    //create_unbonding_start_proposal
-    /// Creates a proposal from a transaction request.
-    #[instrument(
-        level = "info",
-        name = "create_withdraw_bond_proposal",
-        skip(self, request, unique_pubkey, target_finalizer, amount, account_id),
-        err
-    )]
-    pub(crate) async fn create_withdraw_bond_proposal(
-        &mut self,
-        request: TransactionRequest,
-        // staking_action: StakingAction,
-        // challenge is not needed here. A simple [0u8; 32] will do
-        // signature is not needed here. A simple [0u8; 32] will do
-        // amount: Zatoshis, amount is also not needed.
-        unique_pubkey: [u8; 32],
-        target_finalizer: [u8; 32],
-        amount: Zatoshis,
-        account_id: zip32::AccountId,
-    ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
-        let refund_address_count = self
-            .transparent_addresses
-            .keys()
-            .filter(|&address_id| address_id.scope() == TransparentScope::Refund)
-            .count() as u32;
-        let memo = self.change_memo_from_transaction_request(&request);
-        let input_selector = GreedyInputSelector::new();
-
-        let fee_rule = ExtraFee {
-            base: zcash_primitives::transaction::fees::zip317::FeeRule::standard(),
-            extra: Zatoshis::const_from_u64(0),
-        };
-
-        let change_strategy = zcash_client_backend::fees::zip317::SingleOutputChangeStrategy::new(
-            fee_rule,
-            Some(memo),
-            ShieldedProtocol::Orchard,
-            DustOutputPolicy::new(DustAction::AddDustToFee, None),
-        );
-        let network = self.network;
-
-        info!("network: {}", network);
-        info!("request: {:#?}", request.to_uri());
-
-        let proposal = match zcash_client_backend::data_api::wallet::propose_transfer::<
-            LightWallet,
-            ChainType,
-            GreedyInputSelector<LightWallet>,
-            zcash_client_backend::fees::zip317::SingleOutputChangeStrategy<
-                ExtraFee<zcash_primitives::transaction::fees::zip317::FeeRule>,
-                LightWallet,
-            >,
-            WalletError,
-        >(
-            self,
-            &network,
-            account_id,
-            &input_selector,
-            &change_strategy,
-            request,
-            // TODO: replace wallet min_confirmations field with confirmation policy to unify for all proposals
-            ConfirmationsPolicy::new_symmetrical(self.wallet_settings.min_confirmations, false),
-        )
-        .map_err(ProposeSendError::Proposal)
-        {
-            Err(e) => return Err(e),
-            Ok(proposal) => proposal,
-        };
-
-        let staking_action = StakingAction {
-            kind: zcash_primitives::transaction::StakingActionKind::WithdrawDelegationBond,
-            amount_zats: amount.into_u64(),
-            arg32_0: unique_pubkey,
-            arg32_1: [0u8; 32],
-            arg32_2: target_finalizer,
-            arg32_3: [0u8; 32],
-            arg64_0: [0u8; 64],
-            arg64_1: [0u8; 64],
-        };
-
-        Ok(StakingProposal {
-            proportional_fee_proposal: proposal,
-            staking_action,
-        })
+    /// The action that created bond `bond_key`, if this wallet created it.
+    ///
+    /// Both `CreateNewDelegationBond` and `ConvertFinalizerRewardToDelegationBond` create bonds
+    /// and carry the terms the bond key derives from.
+    pub(crate) fn bond_create_action(&self, bond_key: [u8; 32]) -> Option<StakingAction> {
+        self.wallet_transactions
+            .values()
+            .filter_map(|transaction| transaction.staking_data())
+            .find(|action| action.bond_terms().is_some() && action.unique_pubkey() == bond_key)
     }
 
-    pub async fn withdraw_bond_using_orchard<P: Parameters>(
-        &mut self,
-        network: P,
-        client: &mut CompactTxStreamerClient<Channel>,
-        bond_key: &[u8; 32],
-    ) -> Result<TxId, WithdrawError> {
-        let orchard_tree = &self.shard_trees.orchard;
-
-        let bond_value: u64 = client
-            .get_bond_info(BondInfoRequest {
-                bond_key: bond_key.to_vec(),
+    /// The bond's current target as a full finalizer address, replayed from this wallet's own
+    /// transactions: the latest create or retarget action for the bond carries the address.
+    ///
+    /// Confirmed actions are ordered by height; pending ones count as newest.
+    pub fn current_bond_target_address(&self, bond_key: [u8; 32]) -> Option<FinalizerAddress> {
+        let mut candidates = self
+            .wallet_transactions
+            .values()
+            .filter(|transaction| !transaction.status().is_failed())
+            .filter_map(|transaction| {
+                let action = transaction.staking_data()?;
+                if action.unique_pubkey() != bond_key {
+                    return None;
+                }
+                let address = crate::crosslink::action_target_address(&action)?;
+                let order = transaction
+                    .status()
+                    .get_confirmed_height()
+                    .map_or(u32::MAX, u32::from);
+                Some((order, transaction.datetime(), address))
             })
-            .await
-            .ok()
-            .expect("bond should exist")
-            .into_inner()
-            .amount;
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|(height, time, _)| (*height, *time));
+        candidates.pop().map(|(_, _, address)| address)
+    }
 
-        let ufvks = self.get_unified_full_viewing_keys().unwrap();
+    /// Withdraws the unbonded bond `bond_key` back into this wallet's Ironwood pool, building and
+    /// broadcasting the transaction directly.
+    ///
+    /// A withdrawal is the one staking action the proposal machinery cannot express: the bond's
+    /// value enters the transaction from the staking pool, not from a note. So this selects
+    /// Ironwood notes to cover the fee, adds a single Ironwood output worth the bond plus the
+    /// change, attaches the action, and signs it with the bond key recovered from the action
+    /// that created the bond. The transaction is recorded in the wallet as pending once sent.
+    pub async fn withdraw_bond(
+        &mut self,
+        client: &mut CompactTxStreamerClient<Channel>,
+        bond_key: [u8; 32],
+        account_id: zip32::AccountId,
+    ) -> Result<TxId, WithdrawError> {
+        let network = self.network;
+        let create_action = self
+            .bond_create_action(bond_key)
+            .ok_or(WithdrawError::UnknownBond(bond_key))?;
+        let (target_finalizer, created_amount, bond_salt) = create_action
+            .bond_terms()
+            .ok_or(WithdrawError::UnknownBond(bond_key))?;
 
-        let orchard_fvk = ufvks.get(&AccountId::ZERO).unwrap().orchard().unwrap();
+        let usk: zcash_keys::keys::UnifiedSpendingKey = self
+            .unified_key_store
+            .get(&account_id)
+            .ok_or(KeyError::NoAccountKeys)?
+            .try_into()?;
+        let bond_signing_key = usk
+            .bond()
+            .recover_signing_key(&target_finalizer, created_amount, &bond_salt, bond_key)
+            .ok_or(WithdrawError::BondKeyNotRecoverable(bond_key))?;
 
-        let orchard_ovk = orchard_fvk.to_ovk(zip32::Scope::External);
+        // The amount must equal the bond's current balance, which rewards have grown.
+        let bond_info = BondInfo::from(
+            client
+                .get_bond_info(BondInfoRequest {
+                    bond_key: bond_key.to_vec(),
+                })
+                .await
+                .map_err(|_| WithdrawError::BondInfoUnavailable(bond_key))?
+                .into_inner(),
+        );
+        if bond_info.status != BondStatus::Unbonding {
+            return Err(WithdrawError::BondNotUnbonding {
+                bond_key,
+                status: bond_info.status,
+            });
+        }
+        let bond_value: u64 = bond_info.amount_zats;
 
-        let my_orchard_receiver = self
-            .unified_addresses()
-            .first_key_value()
-            .unwrap()
-            .1
-            .orchard()
-            .unwrap();
+        let orchard_fvk: orchard::keys::FullViewingKey = usk.orchard().into();
+        let orchard_ovk = orchard_fvk.to_ovk(zip32::Scope::Internal);
+        let my_receiver = *self
+            .unified_addresses
+            .iter()
+            .find(|(id, _)| id.account_id == account_id)
+            .and_then(|(_, address)| address.orchard())
+            .ok_or(WithdrawError::NoSyncData)?;
 
-        let unified_key_store = self.unified_key_store.first_key_value().unwrap().1;
+        if let Some(calendar) = self.staking_calendar() {
+            let height = u32::from(
+                self.next_target_height()
+                    .map_err(|_| WithdrawError::NoSyncData)?,
+            );
+            if !staking_window_open(height, calendar) {
+                return Err(WithdrawError::StakingWindowClosed {
+                    height,
+                    next_window_start: next_staking_window_start(height, calendar),
+                });
+            }
+            let earliest_height =
+                earliest_bond_action_height(bond_info.last_action_height, calendar);
+            if height < earliest_height {
+                return Err(WithdrawError::StakingActionDelayNotMet {
+                    bond_key,
+                    last_action_height: bond_info.last_action_height,
+                    earliest_height,
+                    height,
+                });
+            }
+        }
 
-        let orchard_spending_key = orchard::keys::SpendingKey::try_from(unified_key_store).unwrap();
+        let (target_height, anchor_height) = self
+            .get_target_and_anchor_heights(self.wallet_settings.min_confirmations)
+            .map_err(|_| WithdrawError::NoSyncData)?
+            .ok_or(WithdrawError::NoSyncData)?;
 
-        let tip = self
-            .chain_height()
-            .ok()
-            .flatten()
-            .expect("chain height should already be known");
-
-        let (target_height, latest_orchard_anchor_height) = self
-            .get_target_and_anchor_heights(NonZeroU32::new(3).unwrap())
-            .unwrap()
-            .expect("Orchard action did not exist");
-
-        let orchard_anchor = match orchard_tree
-            .root_at_checkpoint_id(&latest_orchard_anchor_height.clone())
+        let ironwood_tree = &self.shard_trees.ironwood;
+        let ironwood_anchor = match ironwood_tree
+            .root_at_checkpoint_id(&anchor_height)
             .expect("Infallible MemoryShardStore")
         {
             Some(root) => orchard::Anchor::from(root),
@@ -531,133 +684,122 @@ impl LightWallet {
             target_height.into(),
             BuildConfig::Standard {
                 sapling_anchor: None,
-                orchard_anchor: Some(orchard_anchor),
+                orchard_anchor: None,
+                ironwood_anchor: Some(ironwood_anchor),
+                orchard_padding: BundlePadding::DEFAULT,
+                ironwood_padding: BundlePadding::DEFAULT,
             },
         );
 
-        // notes to only cover fee.
+        // Notes to cover the fee only; the bond value arrives from the staking pool.
         let mut fee_inputs_sum: u64 = 0;
         let mut spend_count: usize = 0;
-
         let mut fee_est: u64 = 10_000;
 
-        let spendable_notes: Vec<&OrchardNote> = self
-            .spendable_notes(latest_orchard_anchor_height, &[], AccountId::ZERO, false)
-            .unwrap();
+        let spendable_notes: Vec<&IronwoodNote> = self
+            .spendable_notes(anchor_height, &[], account_id, false)
+            .map_err(|_| WithdrawError::NoSyncData)?;
 
         for note in spendable_notes.iter() {
-            let witness = match orchard_tree.witness_at_checkpoint_id(
-                note.position().unwrap(),
-                &latest_orchard_anchor_height.clone(),
-            ) {
+            let Some(position) = note.position() else {
+                continue;
+            };
+            let witness = match ironwood_tree.witness_at_checkpoint_id(position, &anchor_height) {
                 Ok(Some(w)) => w,
                 _ => continue,
             };
             let merkle_path = orchard::tree::MerklePath::from(witness);
 
-            if txb
-                .add_orchard_spend::<FeeError>(orchard_fvk.clone(), *note.note(), merkle_path)
-                .is_ok()
-            {
-                fee_inputs_sum += note.note().value().inner();
-                spend_count += 1;
+            txb.add_ironwood_spend::<FeeError>(orchard_fvk.clone(), *note.note(), merkle_path)
+                .map_err(|e| WithdrawError::AddIronwoodSpendFailed(format!("{e:?}")))?;
+            fee_inputs_sum += note.note().value().inner();
+            spend_count += 1;
 
-                let orchard_actions = spend_count + 1;
-                fee_est = 5000 * (orchard_actions as u64).max(2);
-                fee_est = fee_est.max(10_000);
+            let ironwood_actions = spend_count + 1;
+            fee_est = (5000 * (ironwood_actions as u64).max(2)).max(10_000);
 
-                if fee_inputs_sum >= fee_est {
-                    break;
-                }
+            if fee_inputs_sum >= fee_est {
+                break;
             }
         }
 
         if fee_inputs_sum < fee_est {
-            return Err(WithdrawError::NotEnoughFundsForFee); // not enough to pay fee
+            return Err(WithdrawError::NotEnoughFundsForFee);
         }
 
-        match txb.put_staking_action(
-            StakingAction_WithdrawDelegationBond {
-                amount_zats: bond_value,
-                unique_pubkey: *bond_key,
-                challenge: [0u8; 32],
-                signature: [0u8; 64],
-            }
-            .to_union(),
-        ) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("[withdraw] txb.put_staking_action failed: {e:?}");
-                return Err(WithdrawError::PutStakingActionFailed);
-            }
-        };
+        txb.put_staking_action(StakingAction::WithdrawDelegationBond {
+            amount_zats: bond_value,
+            unique_pubkey: bond_key,
+            signature: [0u8; 64],
+        })
+        .map_err(|_| WithdrawError::PutStakingActionFailed)?;
 
-        let out_value = bond_value + (fee_inputs_sum - fee_est);
-
-        match txb.add_orchard_output::<FeeError>(
+        let out_value = Zatoshis::from_u64(bond_value + (fee_inputs_sum - fee_est))
+            .map_err(|_| WithdrawError::BuildError)?;
+        txb.add_ironwood_output::<FeeError>(
             Some(orchard_ovk),
-            *my_orchard_receiver,
+            my_receiver,
             out_value,
             MemoBytes::from_bytes(&EMPTY_MEMO_BYTES).unwrap(),
-        ) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("[withdraw] txb.add_orchard_output failed: {e:?}");
-                return Err(WithdrawError::AddOrchardOutputFailed);
-            }
-        };
-
-        let signing_set = TransparentSigningSet::new();
+        )
+        .map_err(|_| WithdrawError::AddOrchardOutputFailed)?;
 
         let params_dir = std::env::temp_dir().join("zingo-params");
         let (spend, output) = ensure_sapling_params_on_disk(params_dir)
             .expect("could not materialize embedded zcash params");
-
         let prover = LocalTxProver::new(&spend, &output);
 
-        let rng = OsRng;
-
-        let orchard_ask: orchard::keys::SpendAuthorizingKey = (&orchard_spending_key).into();
-
-        let tx_res = match txb.build(
-            &signing_set,
-            &[],
-            &[orchard_ask],
-            rng,
-            &prover,
-            &prover,
-            &zcash_primitives::transaction::fees::zip317::FeeRule::standard(),
-        ) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("[withdraw] txb.build failed: {e:?}");
-                return Err(WithdrawError::BuildError);
-            }
-        };
+        let orchard_ask: orchard::keys::SpendAuthorizingKey = usk.orchard().into();
+        let tx_res = txb
+            .build(
+                &TransparentSigningSet::new(),
+                &[],
+                &[orchard_ask],
+                Some(bond_signing_key),
+                OsRng,
+                &prover,
+                &prover,
+                &zcash_primitives::transaction::fees::zip317::FeeRule::standard(),
+            )
+            .map_err(|e| {
+                tracing::error!("withdraw_bond: build failed: {e:?}");
+                WithdrawError::BuildError
+            })?;
 
         let tx = tx_res.transaction();
         let mut tx_bytes = vec![];
-        match tx.write(&mut tx_bytes) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("[withdraw] tx.write failed: {e:?}");
-                return Err(WithdrawError::TxWrite);
-            }
-        };
+        tx.write(&mut tx_bytes)
+            .map_err(|_| WithdrawError::TxWrite)?;
 
-        match client
+        client
             .send_transaction(RawTransaction {
-                data: tx_bytes,
+                data: tx_bytes.clone(),
                 height: 0,
             })
             .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("[withdraw] client.send_transaction failed: {e:?}");
-                return Err(WithdrawError::TxSend);
-            }
-        };
+            .map_err(|_| WithdrawError::TxSend)?;
+
+        // Record the pending withdrawal so the wallet tracks its status and the bond's state.
+        let transaction = zcash_primitives::transaction::Transaction::read(
+            tx_bytes.as_slice(),
+            consensus::BranchId::for_height(&network, target_height.into()),
+        )
+        .map_err(|e| WithdrawError::RecordFailed(e.to_string()))?;
+        let datetime = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as u32);
+        let ufvks = SyncWallet::get_unified_full_viewing_keys(self)
+            .map_err(|e| WithdrawError::RecordFailed(e.to_string()))?;
+        pepper_sync::scan_pending_transaction(
+            &network,
+            &ufvks,
+            self,
+            transaction,
+            ConfirmationStatus::Calculated(target_height.into()),
+            datetime,
+        )
+        .map_err(|e| WithdrawError::RecordFailed(e.to_string()))?;
+
         Ok(tx.txid())
     }
 
@@ -797,7 +939,7 @@ impl<R: Clone> StakingProposal<R> {
 
 #[cfg(test)]
 mod test {
-    use zcash_protocol::{PoolType, ShieldedProtocol};
+    use zcash_protocol::{PoolType, ShieldedPool};
 
     use crate::{
         testutils::lightclient::from_inputs::transaction_request_from_send_inputs,
@@ -815,7 +957,7 @@ mod test {
         .await;
         let mut wallet = client.wallet.write().await;
 
-        let pool = PoolType::Shielded(ShieldedProtocol::Orchard);
+        let pool = PoolType::Shielded(ShieldedPool::Orchard);
         let self_address = wallet.get_address(pool);
 
         let receivers = vec![(self_address.as_str(), 100_000, None)];

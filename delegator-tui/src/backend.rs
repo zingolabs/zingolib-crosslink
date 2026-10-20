@@ -437,7 +437,7 @@ impl Backend {
             wallet_name: self.config.wallet_name.clone(),
             wallet_path: lc.config.get_wallet_pathbuf().display().to_string(),
             birthday,
-            server: lc.server_uri().to_string(),
+            server: lc.indexer_uri().to_string(),
             has_orchard,
         };
         Ok((lc, info))
@@ -690,20 +690,23 @@ async fn staked(lc: &LightClient, last: u64) -> u64 {
             .collect();
         let withdrawn: HashSet<[u8; 32]> = actions
             .iter()
-            .filter(|a| a.kind == StakingActionKind::WithdrawDelegationBond)
-            .map(|a| a.arg32_0)
+            .filter(|a| a.kind() == StakingActionKind::WithdrawDelegationBond)
+            .map(|a| a.bond_key())
             .collect();
+        // `bond_terms` is `Some` only for the kinds that mint a bond.
         actions
             .iter()
-            .filter(|a| a.kind == StakingActionKind::CreateNewDelegationBond)
-            .filter(|a| !withdrawn.contains(&a.arg32_0))
-            .map(|a| (a.arg32_0, a.amount_zats))
+            .filter(|a| !withdrawn.contains(&a.bond_key()))
+            .filter_map(|a| {
+                a.bond_terms()
+                    .map(|(_, amount_zats, _)| (a.bond_key(), amount_zats))
+            })
             .collect()
     };
     if bonds.is_empty() {
         return 0;
     }
-    let mut client = match zingo_netutils::get_client(lc.server_uri()).await {
+    let mut client = match zingo_netutils::get_client(lc.indexer_uri()).await {
         Ok(client) => client,
         Err(e) => {
             tracing::warn!("cannot ask the server about bonds: {e:?}");
@@ -1109,7 +1112,13 @@ mod tests {
             .into_inner()
             .block_height;
         let zc = config.client_config(Network::Testnet, uri);
-        let mut lc = LightClient::new(zc, BlockHeight::from_u32(tip as u32), true).unwrap();
+        let mut lc = LightClient::new(
+            zc,
+            BlockHeight::from_u32(tip as u32),
+            true,
+            zingolib::wallet::SeedDerivation::Zip32Standard,
+        )
+        .unwrap();
         match lc.sync_and_await().await {
             Ok(r) => eprintln!("SYNC OK: {r}"),
             Err(e) => eprintln!("SYNC ERR: {e}\nDEBUG: {e:?}"),

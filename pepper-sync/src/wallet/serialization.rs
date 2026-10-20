@@ -3,6 +3,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::{Read, Write},
+    marker::PhantomData,
     ops::Range,
 };
 
@@ -31,6 +32,7 @@ use zcash_transparent::keys::NonHardenedChildIndex;
 use zingo_status::confirmation_status::ConfirmationStatus;
 
 use crate::{
+    SyncDomain,
     keys::{
         KeyId, decode_unified_address,
         transparent::{TransparentAddressId, TransparentScope},
@@ -40,11 +42,48 @@ use crate::{
 };
 
 use super::{
-    InitialSyncState, KeyIdInterface, NullifierMap, OrchardNote, OutgoingNote,
-    OutgoingNoteInterface, OutgoingOrchardNote, OutgoingSaplingNote, OutputId, OutputInterface,
-    SaplingNote, ShardTrees, SyncState, TransparentCoin, TreeBounds, WalletBlock, WalletNote,
-    WalletTransaction,
+    InitialSyncState, IronwoodNote, KeyIdInterface, NullifierMap, OrchardNote,
+    OutgoingIronwoodNote, OutgoingNote, OutgoingNoteInterface, OutgoingOrchardNote,
+    OutgoingSaplingNote, OutputId, OutputInterface, SaplingNote, ShardTrees, SyncState,
+    TransparentCoin, TreeBounds, WalletBlock, WalletNote, WalletTransaction,
 };
+
+/// The orchard note plaintext version that a pool's notes carry when the wallet file predates the
+/// note version byte: Orchard notes are ZIP 212 (`V2`); Ironwood notes are ZIP 2005 (`V3`).
+fn default_note_version<P: SyncDomain>() -> orchard::note::NoteVersion {
+    match P::SHIELDED_PROTOCOL {
+        zcash_protocol::ShieldedPool::Ironwood => orchard::note::NoteVersion::V3,
+        _ => orchard::note::NoteVersion::V2,
+    }
+}
+
+fn read_note_version<R: Read>(
+    reader: &mut R,
+    fallback: orchard::note::NoteVersion,
+    present: bool,
+) -> std::io::Result<orchard::note::NoteVersion> {
+    if !present {
+        return Ok(fallback);
+    }
+    match reader.read_u8()? {
+        2 => Ok(orchard::note::NoteVersion::V2),
+        3 => Ok(orchard::note::NoteVersion::V3),
+        other => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid orchard note version {other}"),
+        )),
+    }
+}
+
+fn write_note_version<W: Write>(
+    writer: &mut W,
+    version: orchard::note::NoteVersion,
+) -> std::io::Result<()> {
+    writer.write_u8(match version {
+        orchard::note::NoteVersion::V2 => 2,
+        orchard::note::NoteVersion::V3 => 3,
+    })
+}
 
 fn read_string<R: Read>(mut reader: R) -> std::io::Result<String> {
     let str_len = reader.read_u64::<LittleEndian>()?;
@@ -90,7 +129,7 @@ impl ScanTarget {
 
 impl SyncState {
     fn serialized_version() -> u8 {
-        3
+        4
     }
 
     /// Deserialize into `reader`
@@ -158,6 +197,16 @@ impl SyncState {
 
             Ok(start..end)
         })?;
+        let ironwood_shard_ranges = if version >= 4 {
+            Vector::read(&mut reader, |r| {
+                let start = BlockHeight::from_u32(r.read_u32::<LittleEndian>()?);
+                let end = BlockHeight::from_u32(r.read_u32::<LittleEndian>()?);
+
+                Ok(start..end)
+            })?
+        } else {
+            Vec::new()
+        };
         let scan_targets = Vector::read(&mut reader, |r| {
             Ok(if version >= 1 {
                 ScanTarget::read(r)?
@@ -179,6 +228,7 @@ impl SyncState {
             scan_ranges,
             sapling_shard_ranges,
             orchard_shard_ranges,
+            ironwood_shard_ranges,
             scan_targets,
             initial_sync_state: InitialSyncState::new(),
         })
@@ -202,6 +252,14 @@ impl SyncState {
         })?;
         Vector::write(
             &mut writer,
+            &self.ironwood_shard_ranges,
+            |w, shard_range| {
+                w.write_u32::<LittleEndian>(shard_range.start.into())?;
+                w.write_u32::<LittleEndian>(shard_range.end.into())
+            },
+        )?;
+        Vector::write(
+            &mut writer,
             &self.scan_targets.iter().collect::<Vec<_>>(),
             |w, &scan_target| scan_target.write(w),
         )
@@ -210,22 +268,32 @@ impl SyncState {
 
 impl TreeBounds {
     fn serialized_version() -> u8 {
-        0
+        1
     }
 
     /// Deserialize into `reader`
     pub fn read<R: Read>(mut reader: R) -> std::io::Result<Self> {
-        let _version = reader.read_u8()?;
+        let version = reader.read_u8()?;
         let sapling_initial_tree_size = reader.read_u32::<LittleEndian>()?;
         let sapling_final_tree_size = reader.read_u32::<LittleEndian>()?;
         let orchard_initial_tree_size = reader.read_u32::<LittleEndian>()?;
         let orchard_final_tree_size = reader.read_u32::<LittleEndian>()?;
+        let (ironwood_initial_tree_size, ironwood_final_tree_size) = if version >= 1 {
+            (
+                reader.read_u32::<LittleEndian>()?,
+                reader.read_u32::<LittleEndian>()?,
+            )
+        } else {
+            (0, 0)
+        };
 
         Ok(Self {
             sapling_initial_tree_size,
             sapling_final_tree_size,
             orchard_initial_tree_size,
             orchard_final_tree_size,
+            ironwood_initial_tree_size,
+            ironwood_final_tree_size,
         })
     }
 
@@ -235,13 +303,15 @@ impl TreeBounds {
         writer.write_u32::<LittleEndian>(self.sapling_initial_tree_size)?;
         writer.write_u32::<LittleEndian>(self.sapling_final_tree_size)?;
         writer.write_u32::<LittleEndian>(self.orchard_initial_tree_size)?;
-        writer.write_u32::<LittleEndian>(self.orchard_final_tree_size)
+        writer.write_u32::<LittleEndian>(self.orchard_final_tree_size)?;
+        writer.write_u32::<LittleEndian>(self.ironwood_initial_tree_size)?;
+        writer.write_u32::<LittleEndian>(self.ironwood_final_tree_size)
     }
 }
 
 impl NullifierMap {
     fn serialized_version() -> u8 {
-        1
+        2
     }
 
     /// Deserialize into `reader`
@@ -298,7 +368,27 @@ impl NullifierMap {
         .into_iter()
         .collect::<BTreeMap<_, _>>();
 
-        Ok(NullifierMap { sapling, orchard })
+        let ironwood = if version >= 2 {
+            Vector::read(&mut reader, |r| {
+                let mut nullifier_bytes = [0u8; 32];
+                r.read_exact(&mut nullifier_bytes)?;
+                let nullifier = orchard::note::Nullifier::from_bytes(&nullifier_bytes)
+                    .expect("nullifier bytes should be valid");
+                let scan_target = ScanTarget::read(r)?;
+
+                Ok((nullifier, scan_target))
+            })?
+            .into_iter()
+            .collect::<BTreeMap<_, _>>()
+        } else {
+            BTreeMap::new()
+        };
+
+        Ok(NullifierMap {
+            sapling,
+            orchard,
+            ironwood,
+        })
     }
 
     /// Serialize into `writer`
@@ -315,6 +405,14 @@ impl NullifierMap {
         Vector::write(
             &mut writer,
             &self.orchard.iter().collect::<Vec<_>>(),
+            |w, &(&nullifier, &scan_target)| {
+                w.write_all(&nullifier.to_bytes())?;
+                scan_target.write(w)
+            },
+        )?;
+        Vector::write(
+            &mut writer,
+            &self.ironwood.iter().collect::<Vec<_>>(),
             |w, &(&nullifier, &scan_target)| {
                 w.write_all(&nullifier.to_bytes())?;
                 scan_target.write(w)
@@ -364,7 +462,7 @@ impl WalletBlock {
 
 impl WalletTransaction {
     fn serialized_version() -> u8 {
-        0
+        1
     }
 
     /// Deserialize into `reader`
@@ -372,7 +470,7 @@ impl WalletTransaction {
         mut reader: R,
         consensus_parameters: &impl consensus::Parameters,
     ) -> std::io::Result<Self> {
-        let _version = reader.read_u8()?;
+        let version = reader.read_u8()?;
         let txid = TxId::read(&mut reader)?;
         let status = ConfirmationStatus::read(&mut reader)?;
         let transaction = Transaction::read(
@@ -389,6 +487,16 @@ impl WalletTransaction {
         let outgoing_orchard_notes = Vector::read(&mut reader, |r| {
             OutgoingOrchardNote::read(r, consensus_parameters)
         })?;
+        let (ironwood_notes, outgoing_ironwood_notes) = if version >= 1 {
+            (
+                Vector::read(&mut reader, |r| IronwoodNote::read(r))?,
+                Vector::read(&mut reader, |r| {
+                    OutgoingIronwoodNote::read(r, consensus_parameters)
+                })?,
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
 
         Ok(Self {
             txid,
@@ -398,8 +506,10 @@ impl WalletTransaction {
             transparent_coins,
             sapling_notes,
             orchard_notes,
+            ironwood_notes,
             outgoing_sapling_notes,
             outgoing_orchard_notes,
+            outgoing_ironwood_notes,
         })
     }
 
@@ -427,6 +537,12 @@ impl WalletTransaction {
             output.write(w, consensus_parameters)
         })?;
         Vector::write(&mut writer, self.outgoing_orchard_notes(), |w, output| {
+            output.write(w, consensus_parameters)
+        })?;
+        Vector::write(&mut writer, self.ironwood_notes(), |w, output| {
+            output.write(w)
+        })?;
+        Vector::write(&mut writer, self.outgoing_ironwood_notes(), |w, output| {
             output.write(w, consensus_parameters)
         })
     }
@@ -492,9 +608,11 @@ impl TransparentCoin {
     }
 }
 
-impl<N, Nf: Copy> WalletNote<N, Nf> {
+impl<N, Nf: Copy, P> WalletNote<N, Nf, P> {
+    /// Version 1 added the refetch nullifier ranges. Version 2 added the orchard note plaintext
+    /// version byte for Orchard-family notes (Sapling notes ignore it).
     fn serialized_version() -> u8 {
-        1
+        2
     }
 }
 
@@ -608,6 +726,7 @@ impl SaplingNote {
             memo,
             spending_transaction,
             refetch_nullifier_ranges,
+            pool: PhantomData,
         })
     }
 
@@ -650,7 +769,9 @@ impl SaplingNote {
     }
 }
 
-impl OrchardNote {
+/// Codec shared by Orchard and Ironwood notes, which differ only in their pool marker and note
+/// plaintext version.
+impl<P: SyncDomain> WalletNote<orchard::Note, orchard::note::Nullifier, P> {
     /// Deserialize into `reader`
     pub fn read<R: Read>(mut reader: R) -> std::io::Result<Self> {
         let version = reader.read_u8()?;
@@ -686,6 +807,8 @@ impl OrchardNote {
         reader.read_exact(&mut rseed_bytes)?;
         let rseed = orchard::note::RandomSeed::from_bytes(rseed_bytes, &rho)
             .expect("should be valid random seed bytes");
+        let note_version =
+            read_note_version(&mut reader, default_note_version::<P>(), version >= 2)?;
 
         let nullifier = Optional::read(&mut reader, |r| {
             let mut nullifier_bytes = [0u8; 32];
@@ -712,13 +835,14 @@ impl OrchardNote {
         Ok(Self {
             output_id: OutputId::new(txid, output_index),
             key_id: KeyId::from_parts(account_id, scope),
-            note: orchard::note::Note::from_parts(recipient, value, rho, rseed)
+            note: orchard::note::Note::from_parts(recipient, value, rho, rseed, note_version)
                 .expect("should be a valid orchard note"),
             nullifier,
             position,
             memo,
             spending_transaction,
             refetch_nullifier_ranges,
+            pool: PhantomData,
         })
     }
 
@@ -733,9 +857,10 @@ impl OrchardNote {
         writer.write_u8(self.key_id.scope as u8)?;
 
         writer.write_all(&self.note.recipient().to_raw_address_bytes())?;
-        writer.write_u64::<LittleEndian>(self.value())?;
+        writer.write_u64::<LittleEndian>(self.note.value().inner())?;
         writer.write_all(&self.note.rho().to_bytes())?;
         writer.write_all(self.note.rseed().as_bytes())?;
+        write_note_version(&mut writer, self.note.version())?;
 
         Optional::write(&mut writer, self.nullifier, |w, nullifier| {
             w.write_all(&nullifier.to_bytes())
@@ -752,9 +877,10 @@ impl OrchardNote {
     }
 }
 
-impl<N> OutgoingNote<N> {
+impl<N, P> OutgoingNote<N, P> {
+    /// Version 1 added the orchard note plaintext version byte for Orchard-family notes.
     fn serialized_version() -> u8 {
-        0
+        1
     }
 }
 
@@ -832,6 +958,7 @@ impl OutgoingSaplingNote {
             note: sapling_crypto::Note::from_parts(recipient, value, rseed),
             memo,
             recipient_full_unified_address: recipient_unified_address,
+            pool: PhantomData,
         })
     }
 
@@ -873,13 +1000,14 @@ impl OutgoingSaplingNote {
     }
 }
 
-impl OutgoingOrchardNote {
+/// Codec shared by outgoing Orchard and Ironwood notes.
+impl<P: SyncDomain> OutgoingNote<orchard::Note, P> {
     /// Deserialize into `reader`
     pub fn read<R: Read>(
         mut reader: R,
         consensus_parameters: &impl consensus::Parameters,
     ) -> std::io::Result<Self> {
-        let _version = reader.read_u8()?;
+        let version = reader.read_u8()?;
 
         let txid = TxId::read(&mut reader)?;
         let output_index = reader.read_u16::<LittleEndian>()?;
@@ -912,6 +1040,8 @@ impl OutgoingOrchardNote {
         reader.read_exact(&mut rseed_bytes)?;
         let rseed = orchard::note::RandomSeed::from_bytes(rseed_bytes, &rho)
             .expect("should be valid random seed bytes");
+        let note_version =
+            read_note_version(&mut reader, default_note_version::<P>(), version >= 1)?;
 
         let mut memo_bytes = [0u8; 512];
         reader.read_exact(&mut memo_bytes)?;
@@ -931,10 +1061,11 @@ impl OutgoingOrchardNote {
         Ok(Self {
             output_id: OutputId::new(txid, output_index),
             key_id: KeyId::from_parts(account_id, scope),
-            note: orchard::note::Note::from_parts(recipient, value, rho, rseed)
+            note: orchard::note::Note::from_parts(recipient, value, rho, rseed, note_version)
                 .expect("should be a valid orchard note"),
             memo,
             recipient_full_unified_address: recipient_unified_address,
+            pool: PhantomData,
         })
     }
 
@@ -953,9 +1084,10 @@ impl OutgoingOrchardNote {
         writer.write_u8(self.key_id.scope as u8)?;
 
         writer.write_all(&self.note.recipient().to_raw_address_bytes())?;
-        writer.write_u64::<LittleEndian>(self.value())?;
+        writer.write_u64::<LittleEndian>(self.note.value().inner())?;
         writer.write_all(&self.note.rho().to_bytes())?;
         writer.write_all(self.note.rseed().as_bytes())?;
+        write_note_version(&mut writer, self.note.version())?;
 
         writer.write_all(self.memo.encode().as_array())?;
         Optional::write(
@@ -969,17 +1101,29 @@ impl OutgoingOrchardNote {
 }
 
 impl ShardTrees {
+    /// Version 1 added the Ironwood shard tree.
     fn serialized_version() -> u8 {
-        0
+        1
     }
 
     /// Deserialize into `reader`
     pub fn read<R: Read>(mut reader: R) -> std::io::Result<Self> {
-        let _version = reader.read_u8()?;
+        let version = reader.read_u8()?;
         let sapling = Self::read_shardtree(&mut reader)?;
         let orchard = Self::read_shardtree(&mut reader)?;
+        let ironwood = if version >= 1 {
+            Self::read_shardtree(&mut reader)?
+        } else {
+            // A wallet file written before the Ironwood pool existed. The sync engine fills the
+            // tree from the server's subtree roots and frontiers on the next sync.
+            Self::new().ironwood
+        };
 
-        Ok(Self { sapling, orchard })
+        Ok(Self {
+            sapling,
+            orchard,
+            ironwood,
+        })
     }
 
     /// Serialize into `writer`
@@ -987,6 +1131,7 @@ impl ShardTrees {
         writer.write_u8(Self::serialized_version())?;
         Self::write_shardtree(&mut writer, &mut self.sapling)?;
         Self::write_shardtree(&mut writer, &mut self.orchard)?;
+        Self::write_shardtree(&mut writer, &mut self.ironwood)?;
 
         Ok(())
     }

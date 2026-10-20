@@ -224,6 +224,8 @@ async fn get_block_range(
             height: u64::from(block_range.end) - 1,
             hash: vec![],
         }),
+        // Empty means the server's default pool selection, which includes every shielded pool.
+        pool_types: vec![],
     });
 
     request.set_timeout(HEAVY_UNARY_TIMEOUT);
@@ -238,6 +240,12 @@ async fn get_block_range(
     Ok(resp.into_inner())
 }
 
+/// Streams the nullifier-only form of the compact blocks in `block_range`.
+///
+/// `GetBlockRangeNullifiers` is deprecated upstream in favour of `GetBlockRange` with
+/// `poolTypes`, but that pruning depends on the server honouring the field, which the crosslink
+/// node does not yet do, so the dedicated method stays the cheaper request here.
+#[allow(deprecated)]
 async fn get_block_range_nullifiers(
     client: &mut CompactTxStreamerClient<Channel>,
     block_range: Range<BlockHeight>,
@@ -251,6 +259,8 @@ async fn get_block_range_nullifiers(
             height: u64::from(block_range.end) - 1,
             hash: vec![],
         }),
+        // Empty means the server's default pool selection, which includes every shielded pool.
+        pool_types: vec![],
     });
 
     request.set_timeout(HEAVY_UNARY_TIMEOUT);
@@ -371,6 +381,8 @@ async fn get_taddress_txs(
             height: u64::from(block_range.end) - 1,
             hash: vec![],
         }),
+        // Empty means the server's default pool selection, which includes every shielded pool.
+        pool_types: vec![],
     });
 
     let mut request = tonic::Request::new(TransparentAddressBlockFilter { address, range });

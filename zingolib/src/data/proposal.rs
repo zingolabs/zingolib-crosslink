@@ -32,6 +32,8 @@ impl<R: FeeRule> FeeRule for ExtraFee<R> {
         sapling_input_count: usize,
         sapling_output_count: usize,
         orchard_action_count: usize,
+        ironwood_action_count: usize,
+        staking_action_count: usize,
     ) -> Result<Zatoshis, Self::Error> {
         let base_fee = self.base.fee_required(
             params,
@@ -41,6 +43,8 @@ impl<R: FeeRule> FeeRule for ExtraFee<R> {
             sapling_input_count,
             sapling_output_count,
             orchard_action_count,
+            ironwood_action_count,
+            staking_action_count,
         )?;
 
         // Zatoshis + Zatoshis returns Option<Zatoshis> (checked arithmetic).
@@ -65,9 +69,10 @@ impl<R: Zip317FeeRule> Zip317FeeRule for ExtraFee<R> {
 /// as the fee structure for a transaction series. This innovation was created in response
 /// "Binance Constraint" that t-addresses that only receive from t-addresses be supported.
 /// <https://zips.z.cash/zip-0320>
-pub(crate) type ProportionalFeeProposal = Proposal<zip317::FeeRule, OutputRef>;
+pub type ProportionalFeeProposal = Proposal<zip317::FeeRule, OutputRef>;
 
-pub(crate) type ExtraFeeProposal = Proposal<ExtraFee<zip317::FeeRule>, OutputRef>;
+/// A proposal whose fee also carries a staking action's value (the bond amount for a create).
+pub type ExtraFeeProposal = Proposal<ExtraFee<zip317::FeeRule>, OutputRef>;
 
 /// A proposed shielding.
 /// The `zcash_client_backend` Proposal type exposes a "`NoteRef`" generic
@@ -75,6 +80,9 @@ pub(crate) type ExtraFeeProposal = Proposal<ExtraFee<zip317::FeeRule>, OutputRef
 /// disallowed in Zingo `ShieldedProposals`
 pub(crate) type ProportionalFeeShieldProposal = Proposal<zip317::FeeRule, Infallible>;
 /// The `LightClient` holds one proposal at a time while the user decides whether to accept the fee.
+// A staking proposal carries the full `StakingAction`; one proposal lives at a time, so the size
+// difference between variants costs nothing worth boxing for.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub(crate) enum ZingoProposal {
     /// Send proposal.
@@ -102,7 +110,8 @@ pub fn total_payment_amount(proposal: &ProportionalFeeProposal) -> Result<Zatosh
         .iter()
         .map(zcash_client_backend::proposal::Step::transaction_request)
         .try_fold(Zatoshis::ZERO, |acc, request| {
-            (acc + request.total()?).ok_or(BalanceError::Overflow)
+            // A payment without an amount contributes nothing to the total.
+            (acc + request.total()?.unwrap_or(Zatoshis::ZERO)).ok_or(BalanceError::Overflow)
         })
 }
 

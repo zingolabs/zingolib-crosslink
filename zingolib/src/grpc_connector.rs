@@ -4,14 +4,13 @@ use std::time::Duration;
 
 use tonic::Request;
 
-use zcash_client_backend::proto::service::{BlockId, ChainSpec, Empty, LightdInfo, RawTransaction};
-
-#[cfg(feature = "testutils")]
-use zcash_client_backend::proto::service::TreeState;
+use zcash_client_backend::proto::service::{
+    BlockId, ChainSpec, Empty, LightdInfo, RawTransaction, TreeState,
+};
 
 pub const DEFAULT_GRPC_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Get server info.
+/// Get indexer info.
 pub async fn get_info(uri: http::Uri) -> Result<LightdInfo, String> {
     let mut client = zingo_netutils::get_client(uri.clone())
         .await
@@ -27,8 +26,7 @@ pub async fn get_info(uri: http::Uri) -> Result<LightdInfo, String> {
     Ok(response.into_inner())
 }
 
-/// TODO: Add Doc Comment Here!
-#[cfg(feature = "testutils")]
+/// `get_tree_state` GRPC call: the note commitment tree state at the end of block `height`.
 pub async fn get_trees(uri: http::Uri, height: u64) -> Result<TreeState, String> {
     let mut client = zingo_netutils::get_client(uri.clone())
         .await
@@ -38,8 +36,10 @@ pub async fn get_trees(uri: http::Uri, height: u64) -> Result<TreeState, String>
         height,
         hash: vec![],
     };
+    let mut request = Request::new(b);
+    request.set_timeout(DEFAULT_GRPC_TIMEOUT);
     let response = client
-        .get_tree_state(Request::new(b))
+        .get_tree_state(request)
         .await
         .map_err(|e| format!("Error with get_tree_state response at {uri}: {e:?}"))?;
 

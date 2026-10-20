@@ -187,7 +187,7 @@ mod load_wallet {
             .await
             .unwrap();
 
-        // Without sync push server forward 2 blocks
+        // Without sync push indexer forward 2 blocks
         local_net.validator().generate_blocks(2).await.unwrap();
         let client_fully_scanned_height = faucet
             .wallet

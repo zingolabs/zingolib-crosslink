@@ -224,6 +224,7 @@ impl ClientBuilder {
             WalletBase::Mnemonic {
                 mnemonic: Mnemonic::from_phrase(mnemonic_phrase).unwrap(),
                 no_of_accounts: 1.try_into().unwrap(),
+                seed_derivation: zingolib::wallet::SeedDerivation::Zip32Standard,
             },
             (birthday as u32).into(),
             config.wallet_settings.clone(),
@@ -793,7 +794,7 @@ where
 /// This function increases the chain height reliably (with polling) but
 /// it _also_ ensures that the client state is synced.
 /// Unsynced clients are very interesting to us.  See `increase_server_height`
-/// to reliably increase the server without syncing the client
+/// to reliably increase the indexer without syncing the client
 pub async fn increase_height_and_wait_for_client<V, I>(
     local_net: &LocalNet<V, I>,
     client: &mut LightClient,

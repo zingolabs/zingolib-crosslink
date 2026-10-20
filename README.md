@@ -14,8 +14,8 @@ zingodisclosure@proton.me
 
 ## Privacy
 
-- While all the keys and transaction detection happens on the client, the server can learn what blocks contain your shielded transactions.
-- The server also learns other metadata about you like your ip address etc...
+- While all the keys and transaction detection happens on the client, the indexer can learn what blocks contain your shielded transactions.
+- The indexer also learns other metadata about you like your ip address etc...
 - Also remember that t-addresses are publicly visible on the blockchain.
 - Price information is retrieved from Gemini exchange.
 
@@ -50,9 +50,9 @@ cargo build --release --package zingo-cli
 This will launch the interactive prompt. Type `help` to get a list of commands.
 
 ## Notes:
-* If you want to run your own server, please see [zingo lightwalletd](https://github.com/zingolabs/lightwalletd), and then run `./zingo-cli --server http://127.0.0.1:9067`
+* If you want to run your own indexer, please see [zingo lightwalletd](https://github.com/zingolabs/lightwalletd), and then run `./zingo-cli --indexer http://127.0.0.1:9067`
 * The default log file is in `~/.zcash/zingo-wallet.debug.log`. A default wallet is stored in `~/.zcash/zingo-wallet.dat`
-* If a server is not specified, the default indexer/lightwallet server is "https://zec.rocks:443".
+* If an indexer is not specified, the default indexer is "https://zec.rocks:443".
 
 ## Running in non-interactive mode:
 
@@ -68,8 +68,8 @@ Here are some CLI arguments you can pass to `zingo-cli`. Please run `zingo-cli -
     * Example: `./zingo-cli --data-dir /path/to/data_directory/` will use the provided directory to store `zingo-wallet.dat` and logs. If the provided directory does not exist, it will create it.
 * `--waitsync`: Wait for sync before running a command in non-interactive mode or entering the command prompt in interactive mode.
     * Example: `./zingo-cli --data-dir /path/to/data_directory/ --waitsync balance`
-* `--server`: Connect to a custom zcash lightwalletd server.
-    * Example: `./zingo-cli --data-dir /path/to/data_directory/ --server 127.0.0.1:9067`
+* `--indexer`: Connect to a custom zcash lightwalletd indexer.
+    * Example: `./zingo-cli --data-dir /path/to/data_directory/ --indexer 127.0.0.1:9067`
 * `--seed`: Restore a wallet from a seed phrase. Note that this will fail if there is an existing wallet. Delete (or move) any existing wallet to restore from the 24-word seed phrase
 * `--birthday`: Specify wallet birthday when restoring from seed. This is the earliest block height where the wallet has a transaction.
     * Example: `./zingo-cli --data-dir /path/to/data_directory/ --seed "twenty four words seed phrase" --birthday 1234567`

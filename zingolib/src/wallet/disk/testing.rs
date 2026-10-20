@@ -33,6 +33,7 @@ pub async fn assert_wallet_capability_matches_seed(
         &wallet.network,
         &expected_mnemonic,
         zip32::AccountId::ZERO,
+        crate::wallet::keys::unified::SeedDerivation::Zip32Standard,
     )
     .unwrap();
 

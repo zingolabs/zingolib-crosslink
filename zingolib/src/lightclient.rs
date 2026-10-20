@@ -3,7 +3,7 @@
 use std::{
     collections::HashMap,
     fs::File,
-    io::{BufReader, Cursor, Read},
+    io::{BufReader, Cursor},
     path::PathBuf,
     sync::{
         Arc,
@@ -15,7 +15,7 @@ use json::JsonValue;
 use tokio::{sync::RwLock, task::JoinHandle};
 
 use zcash_client_backend::{
-    proto::service::{BondInfoRequest, BondInfoResponse, Empty, FaucetRequest},
+    proto::service::{BondInfoRequest, Empty, FaucetRequest},
     tor,
 };
 use zcash_keys::address::UnifiedAddress;
@@ -28,15 +28,16 @@ use pepper_sync::{
     sync::SyncResult,
     wallet::{SyncMode, traits::SyncTransactions},
 };
-use zcash_primitives::transaction::{RosterMember, StakeTxId, StakingActionKind};
+use zcash_primitives::transaction::{RosterMember, StakingActionKind};
 use zcash_protocol::TxId;
 use zingo_netutils::get_client;
 
 use crate::{
-    config::ZingoConfig,
+    config::{Indexer, ZingoConfig},
+    crosslink::BondStatus,
     lightclient::crosslink::{RosterMembers, WalletBond, WalletBonds},
     wallet::{
-        LightWallet, WalletBase,
+        LightWallet, SeedDerivation, WalletBase,
         balance::AccountBalance,
         error::{BalanceError, KeyError, SummaryError, WalletError},
         keys::unified::{ReceiverSelection, UnifiedAddressId},
@@ -72,6 +73,51 @@ pub struct LightClient {
     save_handle: Option<JoinHandle<std::io::Result<()>>>,
 }
 
+/// What an indexer reported to a probe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexerInfo {
+    /// The indexer's tip height.
+    pub block_height: u64,
+    /// The consensus branch id at the indexer's tip.
+    pub consensus_branch_id: String,
+    /// The indexer software's vendor string.
+    pub vendor: String,
+    /// The indexer software's version string.
+    pub version: String,
+}
+
+/// The outcome of probing one endpoint.
+#[derive(Debug, Clone)]
+pub struct IndexerProbe {
+    /// The endpoint probed.
+    pub indexer: Indexer,
+    /// What it reported, or why the probe failed.
+    pub result: Result<IndexerInfo, String>,
+}
+
+impl From<IndexerProbe> for JsonValue {
+    fn from(probe: IndexerProbe) -> Self {
+        let mut value = json::object! {
+            "uri" => probe.indexer.uri.to_string(),
+            "label" => probe.indexer.label,
+        };
+        match probe.result {
+            Ok(info) => {
+                value["reachable"] = true.into();
+                value["block_height"] = info.block_height.into();
+                value["consensus_branch_id"] = info.consensus_branch_id.into();
+                value["vendor"] = info.vendor.into();
+                value["version"] = info.version.into();
+            }
+            Err(error) => {
+                value["reachable"] = false.into();
+                value["error"] = error.into();
+            }
+        }
+        value
+    }
+}
+
 impl LightClient {
     /// Creates a `LightClient` with a new wallet from fresh entropy and a birthday of the higher value between
     /// [`chain_height` - 100] or sapling activation height.
@@ -81,18 +127,27 @@ impl LightClient {
         config: ZingoConfig,
         chain_height: BlockHeight,
         overwrite: bool,
+        seed_derivation: SeedDerivation,
     ) -> Result<Self, LightClientError> {
-        let sapling_activation_height = config
-            .chain
-            .activation_height(zcash_protocol::consensus::NetworkUpgrade::Sapling)
-            .expect("should have some sapling activation height");
-        let birthday = sapling_activation_height.max(chain_height - 100);
+        let birthday = Self::default_fresh_wallet_birthday(&config, chain_height);
+        Self::new_with_birthday(config, birthday, overwrite, seed_derivation)
+    }
 
+    /// Creates a `LightClient` with a new wallet from fresh entropy and the given `birthday`.
+    /// Will fail if a wallet file already exists in the given data directory unless `overwrite` is `true`.
+    #[allow(clippy::result_large_err)]
+    pub fn new_with_birthday(
+        config: ZingoConfig,
+        birthday: BlockHeight,
+        overwrite: bool,
+        seed_derivation: SeedDerivation,
+    ) -> Result<Self, LightClientError> {
         Self::create_from_wallet(
             LightWallet::new(
                 config.chain,
                 WalletBase::FreshEntropy {
                     no_of_accounts: config.no_of_accounts,
+                    seed_derivation,
                 },
                 birthday,
                 config.wallet_settings.clone(),
@@ -100,6 +155,60 @@ impl LightClient {
             config,
             overwrite,
         )
+    }
+
+    /// The birthday a fresh wallet gets without consulting the indexer: the higher of
+    /// [`chain_height` - 100] and sapling activation height.
+    pub fn default_fresh_wallet_birthday(
+        config: &ZingoConfig,
+        chain_height: BlockHeight,
+    ) -> BlockHeight {
+        let sapling_activation_height = config
+            .chain
+            .activation_height(zcash_protocol::consensus::NetworkUpgrade::Sapling)
+            .expect("should have some sapling activation height");
+        sapling_activation_height.max(chain_height - 100)
+    }
+
+    /// The birthday a fresh wallet should get against the configured indexer.
+    ///
+    /// Normally [`Self::default_fresh_wallet_birthday`]. When the indexer serves no Ironwood note
+    /// commitment tree state at `chain_height` although the pool is active there (the crosslink
+    /// node currently serves none), the wallet cannot recover the Ironwood frontier at a later
+    /// birthday and must rebuild the tree from scanned blocks, so the birthday is the pool's
+    /// activation height instead.
+    ///
+    /// # Error
+    ///
+    /// Returns an error if the indexer cannot be reached.
+    pub async fn fresh_wallet_birthday(
+        config: &ZingoConfig,
+        chain_height: BlockHeight,
+    ) -> Result<BlockHeight, String> {
+        let default_birthday = Self::default_fresh_wallet_birthday(config, chain_height);
+        let Some(ironwood_activation_height) = config
+            .chain
+            .activation_height(zcash_protocol::consensus::NetworkUpgrade::Nu6_3)
+        else {
+            return Ok(default_birthday);
+        };
+        if chain_height < ironwood_activation_height
+            || default_birthday <= ironwood_activation_height
+        {
+            return Ok(default_birthday);
+        }
+
+        let tree_state =
+            crate::grpc_connector::get_trees(config.get_lightwalletd_uri(), chain_height.into())
+                .await?;
+        if tree_state.ironwood_tree.is_empty() {
+            tracing::warn!(
+                "indexer serves no Ironwood tree state at height {chain_height}. the wallet birthday is set to the Ironwood activation height {ironwood_activation_height} so the Ironwood tree can be rebuilt from scanned blocks."
+            );
+            Ok(ironwood_activation_height)
+        } else {
+            Ok(default_birthday)
+        }
     }
 
     /// Creates a `LightClient` from a `wallet` and `config`.
@@ -167,14 +276,94 @@ impl LightClient {
         self.tor_client.as_ref()
     }
 
-    /// Returns URI of the server the lightclient is connected to.
-    pub fn server_uri(&self) -> http::Uri {
+    /// Returns URI of the indexer the lightclient is connected to.
+    pub fn indexer_uri(&self) -> http::Uri {
         self.config.get_lightwalletd_uri()
     }
 
-    /// Set the server uri.
-    pub fn set_server(&self, server: http::Uri) {
-        *self.config.lightwalletd_uri.write().unwrap() = server;
+    /// Set the indexer uri.
+    ///
+    /// The URI is also recorded at the head of the endpoint list for this client's chain, so
+    /// [`Self::indexers`] and the probes include it.
+    pub fn set_indexer(&self, indexer: http::Uri) {
+        if indexer.host().is_some() && indexer.port().is_some() {
+            self.config
+                .prefer_indexer(Indexer::new(indexer.clone(), "configured"));
+        }
+        *self.config.lightwalletd_uri.write().unwrap() = indexer;
+    }
+
+    /// The endpoints listed for this client's chain, most preferred first.
+    #[must_use]
+    pub fn indexers(&self) -> Vec<Indexer> {
+        self.config.indexers_for_chain()
+    }
+
+    /// Adds an endpoint for this client's chain after the ones already listed.
+    pub fn add_indexer(&self, indexer: Indexer) {
+        self.config.add_indexer(indexer);
+    }
+
+    /// How long an indexer probe waits, connection included, before it is reported unreachable.
+    pub const INDEXER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// Probes every endpoint listed for this client's chain concurrently with `GetLightdInfo`,
+    /// giving each [`Self::INDEXER_PROBE_TIMEOUT`].
+    ///
+    /// Results come back in list order; each carries the indexer's reported tip height, or the
+    /// error that stopped the probe.
+    pub async fn probe_indexers(&self) -> Vec<IndexerProbe> {
+        let indexers = self.indexers();
+        let probes = indexers.into_iter().map(|indexer| async move {
+            let result = match tokio::time::timeout(
+                Self::INDEXER_PROBE_TIMEOUT,
+                crate::grpc_connector::get_info(indexer.uri.clone()),
+            )
+            .await
+            {
+                Ok(Ok(info)) => Ok(IndexerInfo {
+                    block_height: info.block_height,
+                    consensus_branch_id: info.consensus_branch_id,
+                    vendor: info.vendor,
+                    version: info.version,
+                }),
+                Ok(Err(error)) => Err(error),
+                Err(_) => Err(format!(
+                    "no answer within {} s",
+                    Self::INDEXER_PROBE_TIMEOUT.as_secs()
+                )),
+            };
+            IndexerProbe { indexer, result }
+        });
+        futures::future::join_all(probes).await
+    }
+
+    /// Probes the endpoints listed for this client's chain and switches to the one reporting the
+    /// highest tip, preferring the earlier-listed endpoint on a tie.
+    ///
+    /// # Error
+    ///
+    /// Returns the probe results as an error when no endpoint answered.
+    pub async fn select_best_indexer(&self) -> Result<IndexerProbe, Vec<IndexerProbe>> {
+        let probes = self.probe_indexers().await;
+        let best = probes
+            .iter()
+            .filter_map(|probe| {
+                probe
+                    .result
+                    .as_ref()
+                    .ok()
+                    .map(|info| (probe, info.block_height))
+            })
+            .max_by(|(_, a), (_, b)| a.cmp(b).then(std::cmp::Ordering::Less))
+            .map(|(probe, _)| probe.clone());
+        match best {
+            Some(probe) => {
+                *self.config.lightwalletd_uri.write().unwrap() = probe.indexer.uri.clone();
+                Ok(probe)
+            }
+            None => Err(probes),
+        }
     }
 
     /// Creates a tor client for current price updates.
@@ -199,15 +388,15 @@ impl LightClient {
         self.tor_client = None;
     }
 
-    /// Returns server information.
+    /// Returns indexer information.
     // TODO: return concrete struct with from json impl
     pub async fn do_info(&self) -> String {
-        match crate::grpc_connector::get_info(self.server_uri()).await {
+        match crate::grpc_connector::get_info(self.indexer_uri()).await {
             Ok(i) => {
                 let o = json::object! {
                     "version" => i.version,
                     "git_commit" => i.git_commit,
-                    "server_uri" => self.server_uri().to_string(),
+                    "indexer_uri" => self.indexer_uri().to_string(),
                     "vendor" => i.vendor,
                     "taddr_support" => i.taddr_support,
                     "chain_name" => i.chain_name,
@@ -320,88 +509,48 @@ impl LightClient {
         self.wallet.read().await.do_total_value_to_address().await
     }
 
+    /// The active finalizer roster as the node reports it.
+    ///
+    /// Each member is decoded with the node's own codec, which carries the member's
+    /// self-certifying finalizer address when the node knows it. An address whose signature does
+    /// not verify is dropped by the codec rather than surfaced.
     pub async fn get_roster_info(&self) -> Result<RosterMembers, String> {
-        let mut roster: Vec<RosterMember> = Vec::new();
-        let uri = self.server_uri();
-        let mut zcb_client = get_client(uri).await.unwrap();
+        let uri = self.indexer_uri();
+        let mut zcb_client = get_client(uri)
+            .await
+            .map_err(|e| format!("Error connecting to indexer: {e}"))?;
 
-        let res = zcb_client.get_roster(Empty {}).await.unwrap();
-
+        let res = zcb_client
+            .get_roster(Empty {})
+            .await
+            .map_err(|e| format!("Error getting roster: {e}"))?;
         let roster_bytes = res.into_inner().data;
 
-        let mut ok = !roster_bytes.is_empty();
         let mut cur = Cursor::new(&roster_bytes);
-
-        let mut new_roster = Vec::new();
-        let mut num_buf = [0u8; 8];
-        'read: while cur.position() < roster_bytes.len() as u64 {
-            let mut m = RosterMember {
-                pub_key: [0; 32],
-                voting_power: 0,
-                txids: Vec::new(),
-            };
-            if let Err(err) = cur.read_exact(&mut m.pub_key) {
-                println!("******* ROSTER DESERIALIZE ERROR: {err:?}");
-                ok = false;
-                break;
-            }
-            if let Err(err) = cur.read_exact(&mut num_buf) {
-                println!("******* ROSTER DESERIALIZE ERROR: {err:?}");
-                ok = false;
-                break;
-            }
-            m.voting_power = u64::from_le_bytes(num_buf);
-
-            if let Err(err) = cur.read_exact(&mut num_buf) {
-                println!("******* ROSTER DESERIALIZE ERROR: {err:?}");
-                ok = false;
-                break;
-            }
-
-            let mut voting_power_check = 0;
-            let txids_n = u64::from_le_bytes(num_buf);
-            for _ in 0..txids_n {
-                let mut stake_txid = StakeTxId {
-                    txid: [0; 32],
-                    zats: 0,
-                };
-                if let Err(err) = cur.read_exact(&mut stake_txid.txid) {
-                    println!("******* ROSTER DESERIALIZE ERROR: {err:?}");
-                    ok = false;
-                    break 'read;
+        let mut roster = Vec::new();
+        while cur.position() < roster_bytes.len() as u64 {
+            match RosterMember::read_from(&mut cur) {
+                Ok(member) => roster.push(member),
+                Err(err) => {
+                    return Err(format!(
+                        "Error deserializing roster member {}: {err}",
+                        roster.len()
+                    ));
                 }
-                if let Err(err) = cur.read_exact(&mut num_buf) {
-                    println!("******* ROSTER DESERIALIZE ERROR: {err:?}");
-                    ok = false;
-                    break 'read;
-                }
-                stake_txid.zats = u64::from_le_bytes(num_buf);
-                voting_power_check += stake_txid.zats;
-                m.txids.push(stake_txid);
             }
-
-            if m.voting_power != voting_power_check {
-                // TODO: use manually-found one?
-                println!(
-                    "******* RECEIVED ROSTER VOTING POWER INACCURATE: {} vs {}",
-                    m.voting_power, voting_power_check
-                );
-                // ok = false;
-                // break;
-            }
-
-            new_roster.push(m);
-        }
-
-        if ok {
-            roster = new_roster;
         }
 
         Ok(RosterMembers::from_parts(roster))
     }
 
-    pub async fn get_bond_info(&self, bond_key: [u8; 32]) -> Result<BondInfoResponse, String> {
-        let mut zcb_client = get_client(self.server_uri()).await.unwrap();
+    /// The node's view of the bond `bond_key`: amount, status and the height of its last action.
+    pub async fn get_bond_info(
+        &self,
+        bond_key: [u8; 32],
+    ) -> Result<crate::crosslink::BondInfo, String> {
+        let mut zcb_client = get_client(self.indexer_uri())
+            .await
+            .map_err(|err| format!("Error connecting to the indexer: {err}"))?;
 
         match zcb_client
             .get_bond_info(BondInfoRequest {
@@ -409,8 +558,12 @@ impl LightClient {
             })
             .await
         {
-            Ok(res) => Ok(res.into_inner()),
-            Err(err) => Err(format!("Error getting bond info: {err:?}")),
+            Ok(res) => Ok(res.into_inner().into()),
+            Err(status) if status.code() == tonic::Code::NotFound => Err(format!(
+                "the node has no bond with key {}",
+                hex::encode(bond_key)
+            )),
+            Err(err) => Err(format!("Error getting bond info: {err}")),
         }
     }
 
@@ -428,6 +581,7 @@ impl LightClient {
             kind: StakingActionKind,
             amount_zats: u64,
             target: [u8; 32],
+            target_address: Option<zcash_primitives::bft::FinalizerAddress>,
         }
 
         let mut evts: Vec<StkEvt> = Vec::new();
@@ -436,20 +590,24 @@ impl LightClient {
             let Some(sa) = tx.staking_data() else {
                 continue;
             };
+            if tx.status().is_failed() {
+                continue;
+            }
 
             let height: u32 = tx.status().get_height().into();
             let time: u32 = tx.datetime();
 
-            let mut reversed_target = sa.arg32_2;
+            let mut reversed_target = sa.target_finalizer_pk();
             reversed_target.reverse();
 
             evts.push(StkEvt {
                 order: (height, time),
                 txid: tx.txid(),
-                bond_key: sa.arg32_0,
-                kind: sa.kind,
-                amount_zats: sa.amount_zats,
+                bond_key: sa.unique_pubkey(),
+                kind: sa.kind(),
+                amount_zats: sa.amount_zats(),
                 target: reversed_target,
+                target_address: crate::crosslink::action_target_address(&sa),
             });
         }
 
@@ -460,13 +618,17 @@ impl LightClient {
 
         for e in evts {
             match e.kind {
-                StakingActionKind::CreateNewDelegationBond => {
+                StakingActionKind::CreateNewDelegationBond
+                | StakingActionKind::ConvertFinalizerRewardToDelegationBond => {
                     let new = WalletBond {
                         created_in_txid: e.txid,
                         pubkey: e.bond_key,
                         amount_zats: e.amount_zats,
-                        status: 0,
+                        status: BondStatus::Active,
+                        last_action_height: None,
+                        next_action_height: None,
                         finalizer: e.target,
+                        finalizer_address: e.target_address,
                     };
                     LightClient::upsert_latest(&mut by_bond, e.bond_key, new, e.order);
                 }
@@ -475,6 +637,7 @@ impl LightClient {
                     let updated = if let Some((existing, _)) = by_bond.get(&e.bond_key) {
                         WalletBond {
                             finalizer: e.target,
+                            finalizer_address: e.target_address,
                             ..*existing
                         }
                     } else {
@@ -482,8 +645,11 @@ impl LightClient {
                             created_in_txid: e.txid,
                             pubkey: e.bond_key,
                             amount_zats: 0,
-                            status: 0,
+                            status: BondStatus::Active,
+                            last_action_height: None,
+                            next_action_height: None,
                             finalizer: e.target,
+                            finalizer_address: e.target_address,
                         }
                     };
 
@@ -499,7 +665,7 @@ impl LightClient {
                 })?;
 
                     let updated = WalletBond {
-                        status: 1,
+                        status: BondStatus::Unbonding,
                         ..existing
                     };
                     LightClient::upsert_latest(&mut by_bond, e.bond_key, updated, e.order);
@@ -514,7 +680,7 @@ impl LightClient {
                 })?;
 
                     let updated = WalletBond {
-                        status: 2,
+                        status: BondStatus::Withdrawn,
                         ..existing
                     };
                     LightClient::upsert_latest(&mut by_bond, e.bond_key, updated, e.order);
@@ -526,22 +692,26 @@ impl LightClient {
 
         let mut bonds: Vec<WalletBond> = by_bond.into_values().map(|(bond, _order)| bond).collect();
 
-        bonds.sort_by_key(|b| b.status);
+        bonds.sort_by_key(|b| b.status.wire());
 
+        // The node knows the bond's current amount (rewards grow it), its status and the height
+        // of its last action, from which the next permitted action's height follows.
+        let calendar = crate::crosslink::staking_calendar(&self.config.chain);
         let mut enriched: Vec<WalletBond> = Vec::with_capacity(bonds.len());
         for b in bonds.into_iter() {
             match self.get_bond_info(b.pubkey).await {
                 Ok(bond_info) => {
                     enriched.push(WalletBond {
-                        amount_zats: bond_info.amount,
+                        amount_zats: bond_info.amount_zats,
                         status: bond_info.status,
-                        created_in_txid: b.created_in_txid,
-                        pubkey: b.pubkey,
-                        finalizer: b.finalizer,
+                        last_action_height: Some(bond_info.last_action_height),
+                        next_action_height: calendar
+                            .and_then(|calendar| bond_info.next_action_height(calendar)),
+                        ..b
                     });
                 }
                 Err(err) => {
-                    println!("Error getting bond info: {err}");
+                    tracing::warn!("showing bond from wallet history only: {err}");
                     enriched.push(b);
                 }
             }
@@ -551,7 +721,7 @@ impl LightClient {
     }
 
     pub async fn request_faucet_funds(&self, address: String) -> Result<String, String> {
-        let mut zcb_client = get_client(self.server_uri()).await.unwrap();
+        let mut zcb_client = get_client(self.indexer_uri()).await.unwrap();
         let res = zcb_client
             .request_faucet_donation(FaucetRequest { address })
             .await;
@@ -594,6 +764,7 @@ impl std::fmt::Debug for LightClient {
 }
 #[cfg(test)]
 mod tests {
+    use crate::config::ConfiguredActivationHeights;
     use crate::{
         config::{ChainType, ZingoConfig},
         lightclient::error::LightClientError,
@@ -601,26 +772,19 @@ mod tests {
     };
     use bip0039::Mnemonic;
     use tempfile::TempDir;
-    use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
     use zingo_test_vectors::seeds::CHIMNEY_BETTER_SEED;
 
-    use crate::{lightclient::LightClient, wallet::WalletBase};
+    use crate::{
+        lightclient::LightClient,
+        wallet::{SeedDerivation, WalletBase},
+    };
 
     #[tokio::test]
     async fn new_wallet_from_phrase() {
         let temp_dir = TempDir::new().unwrap();
-        let config = ZingoConfig::build(ChainType::Regtest(ConfiguredActivationHeights {
-            before_overwinter: Some(1),
-            overwinter: Some(1),
-            sapling: Some(1),
-            blossom: Some(1),
-            heartwood: Some(1),
-            canopy: Some(1),
-            nu5: Some(1),
-            nu6: Some(1),
-            nu6_1: Some(1),
-            nu7: None,
-        }))
+        let config = ZingoConfig::build(ChainType::Regtest(
+            ConfiguredActivationHeights::regtest_all_active(),
+        ))
         .set_wallet_dir(temp_dir.path().to_path_buf())
         .create();
         let mut lc = LightClient::create_from_wallet(
@@ -629,6 +793,7 @@ mod tests {
                 WalletBase::Mnemonic {
                     mnemonic: Mnemonic::from_phrase(CHIMNEY_BETTER_SEED.to_string()).unwrap(),
                     no_of_accounts: config.no_of_accounts,
+                    seed_derivation: SeedDerivation::Zip32Standard,
                 },
                 1.into(),
                 config.wallet_settings.clone(),
@@ -648,6 +813,7 @@ mod tests {
                 WalletBase::Mnemonic {
                     mnemonic: Mnemonic::from_phrase(CHIMNEY_BETTER_SEED.to_string()).unwrap(),
                     no_of_accounts: config.no_of_accounts,
+                    seed_derivation: SeedDerivation::Zip32Standard,
                 },
                 1.into(),
                 config.wallet_settings.clone(),

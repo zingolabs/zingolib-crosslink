@@ -1,11 +1,9 @@
 //! `LightClient` function `do_propose` generates a proposal to send to specified addresses.
 
-use rand::rngs::OsRng;
-use tracing::instrument;
 use zcash_address::ZcashAddress;
 use zcash_client_backend::zip321::TransactionRequest;
-use zcash_primitives::transaction::StakingAction;
-use zcash_protocol::value::Zatoshis;
+use zcash_primitives::bft::FinalizerAddress;
+use zcash_protocol::{PoolType, ShieldedPool, value::Zatoshis};
 
 use crate::config::ZENNIES_FOR_ZINGO_AMOUNT;
 use crate::config::get_donation_address_for_chain;
@@ -18,6 +16,7 @@ use crate::data::receivers::transaction_request_from_receivers;
 use crate::lightclient::LightClient;
 use crate::wallet::error::ProposeSendError;
 use crate::wallet::error::ProposeShieldError;
+use crate::wallet::error::WithdrawError;
 use crate::wallet::propose::StakingProposal;
 
 impl LightClient {
@@ -48,163 +47,138 @@ impl LightClient {
         Ok(proposal)
     }
 
-    /// Creates and stores a stake proposal from a transaction request.
+    /// Creates and stores a proposal that moves `amount` between two of this wallet's own pools.
+    ///
+    /// See `LightWallet::create_pool_transfer_proposal`. Confirm with
+    /// [`LightClient::send_stored_proposal`].
+    pub async fn propose_pool_transfer(
+        &mut self,
+        from: ShieldedPool,
+        to: PoolType,
+        amount: Zatoshis,
+        account_id: zip32::AccountId,
+    ) -> Result<ProportionalFeeProposal, ProposeSendError> {
+        let _ignore_error = self.pause_sync();
+        let mut wallet = self.wallet.write().await;
+        let proposal = wallet.create_pool_transfer_proposal(from, to, amount, account_id)?;
+        wallet.store_proposal(ZingoProposal::Send {
+            proposal: proposal.clone(),
+            sending_account: account_id,
+        });
+
+        Ok(proposal)
+    }
+
+    /// Stores a staking proposal so that [`LightClient::send_stored_proposal`] builds and sends it.
+    async fn store_staking_proposal(
+        &mut self,
+        proposal: &StakingProposal<ExtraFeeProposal>,
+        account_id: zip32::AccountId,
+    ) {
+        let mut wallet = self.wallet.write().await;
+        wallet.store_proposal(ZingoProposal::Crosslink {
+            proposal: proposal.proportional_fee_proposal().clone(),
+            staking_action: *proposal.staking_action(),
+            sending_account: account_id,
+        });
+    }
+
+    /// Creates and stores a proposal that stakes `amount` to `target_finalizer`.
+    ///
+    /// `target_finalizer` is the finalizer's self-certifying address; parse one from its `zfinv1`
+    /// string with [`crate::crosslink::parse_finalizer_address`]. From `FeaturenetUpgrade1` the
+    /// amount must be a power of 10 zats.
     pub async fn propose_stake(
         &mut self,
-        request: TransactionRequest, // NOTE: request is an empty BTreeMap!!
         amount: Zatoshis,
-        target_finalizer: [u8; 32],
+        target_finalizer: FinalizerAddress,
         account_id: zip32::AccountId,
     ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
-        let mut unique_pubkey = [0u8; 32];
-        rand::RngCore::fill_bytes(&mut OsRng, &mut unique_pubkey);
-
+        let _ignore_error = self.pause_sync();
         let proposal = self
             .wallet
             .write()
             .await
-            .create_stake_proposal(request, amount, unique_pubkey, target_finalizer, account_id)
+            .create_stake_proposal(amount, target_finalizer, account_id)
             .await?;
-
-        let staking_action = StakingAction {
-            kind: zcash_primitives::transaction::StakingActionKind::CreateNewDelegationBond,
-            amount_zats: amount.into(),
-            arg32_0: unique_pubkey,
-            arg32_1: [0u8; 32],
-            arg32_2: target_finalizer,
-            arg32_3: [0u8; 32],
-            arg64_0: [0u8; 64],
-            arg64_1: [0u8; 64],
-        };
-
-        let mut wallet = self.wallet.write().await;
-
-        wallet.store_proposal(ZingoProposal::Crosslink {
-            proposal: proposal.clone().proportional_fee_proposal().clone(),
-            staking_action,
-            sending_account: account_id,
-        });
+        self.store_staking_proposal(&proposal, account_id).await;
 
         Ok(proposal)
     }
 
+    /// The node's view of a bond, or `None` when the node cannot be asked; the proposal is then
+    /// built from the wallet's own history and the node has the final say.
+    async fn node_bond_info(&self, bond_key: [u8; 32]) -> Option<crate::crosslink::BondInfo> {
+        match self.get_bond_info(bond_key).await {
+            Ok(info) => Some(info),
+            Err(err) => {
+                tracing::warn!("building without the node's bond info: {err}");
+                None
+            }
+        }
+    }
+
+    /// Creates and stores a proposal that begins unbonding the bond `bond_key`.
     pub async fn propose_begin_unstake(
         &mut self,
-        request: TransactionRequest, // NOTE: request is an empty BTreeMap!!
-        finalizer: [u8; 32],
-        unique_pubkey: [u8; 32],
+        bond_key: [u8; 32],
         account_id: zip32::AccountId,
     ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
+        let _ignore_error = self.pause_sync();
+        let bond_info = self.node_bond_info(bond_key).await;
         let proposal = self
             .wallet
             .write()
             .await
-            .create_unbonding_start_proposal(request, unique_pubkey, unique_pubkey, account_id)
+            .create_unbonding_start_proposal(bond_key, bond_info.as_ref(), account_id)
             .await?;
-
-        let staking_action = StakingAction {
-            kind: zcash_primitives::transaction::StakingActionKind::BeginDelegationUnbonding,
-            amount_zats: 0,
-            arg32_0: unique_pubkey,
-            arg32_1: [0u8; 32],
-            arg32_2: finalizer,
-            arg32_3: [0u8; 32],
-            arg64_0: [0u8; 64],
-            arg64_1: [0u8; 64],
-        };
-
-        let mut wallet = self.wallet.write().await;
-
-        wallet.store_proposal(ZingoProposal::Crosslink {
-            proposal: proposal.clone().proportional_fee_proposal().clone(),
-            staking_action,
-            sending_account: account_id,
-        });
+        self.store_staking_proposal(&proposal, account_id).await;
 
         Ok(proposal)
     }
 
+    /// Creates and stores a proposal that retargets the bond `bond_key` to `to_finalizer`.
     pub async fn propose_retarget_bond(
         &mut self,
-        request: TransactionRequest, // NOTE: request is an empty BTreeMap!!
-        finalizer: [u8; 32],
-        unique_pubkey: [u8; 32],
+        bond_key: [u8; 32],
+        to_finalizer: FinalizerAddress,
         account_id: zip32::AccountId,
     ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
+        let _ignore_error = self.pause_sync();
+        let bond_info = self.node_bond_info(bond_key).await;
         let proposal = self
             .wallet
             .write()
             .await
-            .create_retarget_proposal(request, unique_pubkey, unique_pubkey, account_id)
+            .create_retarget_proposal(bond_key, to_finalizer, bond_info.as_ref(), account_id)
             .await?;
-
-        let staking_action = StakingAction {
-            kind: zcash_primitives::transaction::StakingActionKind::RetargetDelegationBond,
-            amount_zats: 0,
-            arg32_0: unique_pubkey,
-            arg32_1: [0u8; 32],
-            arg32_2: finalizer,
-            arg32_3: [0u8; 32],
-            arg64_0: [0u8; 64],
-            arg64_1: [0u8; 64],
-        };
-
-        let mut wallet = self.wallet.write().await;
-
-        wallet.store_proposal(ZingoProposal::Crosslink {
-            proposal: proposal.clone().proportional_fee_proposal().clone(),
-            staking_action,
-            sending_account: account_id,
-        });
+        self.store_staking_proposal(&proposal, account_id).await;
 
         Ok(proposal)
     }
 
-    #[instrument(
-        level = "info",
-        name = "propose_withdraw_stake",
-        skip(self, request, finalizer, unique_pubkey, amount, account_id)
-    )]
-    pub async fn propose_withdraw_stake(
+    /// Withdraws the unbonded bond `bond_key` into this wallet's Ironwood pool.
+    ///
+    /// Unlike the other staking operations this builds and broadcasts immediately, because the
+    /// bond's value enters the transaction from the staking pool rather than from a note; see
+    /// [`crate::wallet::LightWallet::withdraw_bond`].
+    pub async fn withdraw_bond(
         &mut self,
-        request: TransactionRequest, // NOTE: request is an empty BTreeMap!!
-        finalizer: [u8; 32],
-        unique_pubkey: [u8; 32],
-        amount: Zatoshis,
+        bond_key: [u8; 32],
         account_id: zip32::AccountId,
-    ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
-        let proposal = self
+    ) -> Result<zcash_protocol::TxId, WithdrawError> {
+        let _ignore_error = self.pause_sync();
+        let mut client = zingo_netutils::get_client(self.indexer_uri())
+            .await
+            .map_err(|e| WithdrawError::RecordFailed(e.to_string()))?;
+        let txid = self
             .wallet
             .write()
             .await
-            .create_withdraw_bond_proposal(
-                request,
-                unique_pubkey,
-                unique_pubkey,
-                amount,
-                account_id,
-            )
+            .withdraw_bond(&mut client, bond_key, account_id)
             .await?;
-
-        let staking_action = StakingAction {
-            kind: zcash_primitives::transaction::StakingActionKind::WithdrawDelegationBond,
-            amount_zats: amount.into_u64(),
-            arg32_0: unique_pubkey,
-            arg32_1: [0u8; 32],
-            arg32_2: finalizer,
-            arg32_3: [0u8; 32],
-            arg64_0: [0u8; 64],
-            arg64_1: [0u8; 64],
-        };
-
-        let mut wallet = self.wallet.write().await;
-        wallet.store_proposal(ZingoProposal::Crosslink {
-            proposal: proposal.clone().proportional_fee_proposal().clone(),
-            staking_action,
-            sending_account: account_id,
-        });
-
-        Ok(proposal)
+        let _ignore_error = self.resume_sync();
+        Ok(txid)
     }
 
     /// Creates and stores a proposal for sending all shielded funds from a specified account to a given `address`.
@@ -337,13 +311,14 @@ mod shielding {
     use bip0039::Mnemonic;
     use pepper_sync::config::SyncConfig;
     use zcash_protocol::consensus::Parameters;
-    use zcash_transparent::address::TransparentAddress;
     use zingo_test_vectors::seeds;
 
     use crate::{
         config::ZingoConfigBuilder,
         lightclient::LightClient,
-        wallet::{LightWallet, WalletBase, WalletSettings, error::ProposeShieldError},
+        wallet::{
+            LightWallet, SeedDerivation, WalletBase, WalletSettings, error::ProposeShieldError,
+        },
     };
 
     fn create_basic_client() -> LightClient {
@@ -355,6 +330,7 @@ mod shielding {
                     mnemonic: Mnemonic::from_phrase(seeds::HOSPITAL_MUSEUM_SEED.to_string())
                         .unwrap(),
                     no_of_accounts: 1.try_into().unwrap(),
+                    seed_derivation: SeedDerivation::Zip32Standard,
                 },
                 419200.into(),
                 WalletSettings {

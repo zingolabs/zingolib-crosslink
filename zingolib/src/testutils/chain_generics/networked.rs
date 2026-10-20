@@ -3,7 +3,7 @@
 use http::Uri;
 use zcash_protocol::consensus::BlockHeight;
 
-use crate::{config::DEFAULT_TESTNET_LIGHTWALLETD_SERVER, lightclient::LightClient};
+use crate::{config::DEFAULT_TESTNET_INDEXER_URI, lightclient::LightClient};
 
 use super::conduct_chain::ConductChain;
 
@@ -11,16 +11,16 @@ use super::conduct_chain::ConductChain;
 /// allows using existing `ChainGeneric` functions with `TestNet` wallets
 pub struct NetworkedTestEnvironment {
     indexer_uri: Uri,
-    latest_known_server_height: Option<BlockHeight>,
+    latest_known_indexer_height: Option<BlockHeight>,
 }
 
 impl NetworkedTestEnvironment {
-    async fn update_server_height(&mut self) {
-        let latest = crate::grpc_connector::get_latest_block(self.lightserver_uri().unwrap())
+    async fn update_indexer_height(&mut self) {
+        let latest = crate::grpc_connector::get_latest_block(self.indexer_uri().unwrap())
             .await
             .unwrap()
             .height as u32;
-        self.latest_known_server_height = Some(BlockHeight::from(latest));
+        self.latest_known_indexer_height = Some(BlockHeight::from(latest));
         crate::testutils::timestamped_test_log(
             format!("Networked Test Chain is now at height {latest}").as_str(),
         );
@@ -30,9 +30,8 @@ impl NetworkedTestEnvironment {
 impl ConductChain for NetworkedTestEnvironment {
     async fn setup() -> Self {
         Self {
-            indexer_uri: <Uri as std::str::FromStr>::from_str(DEFAULT_TESTNET_LIGHTWALLETD_SERVER)
-                .unwrap(),
-            latest_known_server_height: None,
+            indexer_uri: <Uri as std::str::FromStr>::from_str(DEFAULT_TESTNET_INDEXER_URI).unwrap(),
+            latest_known_indexer_height: None,
         }
     }
 
@@ -45,18 +44,18 @@ impl ConductChain for NetworkedTestEnvironment {
     }
 
     async fn increase_chain_height(&mut self) {
-        let before_height = self.latest_known_server_height;
-        // loop until the server height increases
+        let before_height = self.latest_known_indexer_height;
+        // loop until the indexer height increases
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            self.update_server_height().await;
-            if self.latest_known_server_height != before_height {
+            self.update_indexer_height().await;
+            if self.latest_known_indexer_height != before_height {
                 break;
             }
         }
     }
 
-    fn lightserver_uri(&self) -> Option<Uri> {
+    fn indexer_uri(&self) -> Option<Uri> {
         Some(self.indexer_uri.clone())
     }
 

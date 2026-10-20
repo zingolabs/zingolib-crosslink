@@ -7,6 +7,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     convert::Infallible,
     fmt::Debug,
+    marker::PhantomData,
     ops::Range,
     sync::{
         Arc,
@@ -23,19 +24,20 @@ use zcash_client_backend::proto::compact_formats::CompactBlock;
 use zcash_keys::{address::UnifiedAddress, encoding::encode_payment_address};
 use zcash_primitives::{
     block::BlockHash,
-    transaction::{StakingAction, TxId, components::transparent::OutPoint},
+    transaction::{StakingAction, TxId},
 };
 use zcash_protocol::{
-    PoolType, ShieldedProtocol,
+    PoolType, ShieldedPool,
     consensus::{self, BlockHeight},
     memo::Memo,
     value::Zatoshis,
 };
-use zcash_transparent::address::Script;
+use zcash_transparent::{address::Script, bundle::OutPoint};
 
 use zingo_status::confirmation_status::ConfirmationStatus;
 
 use crate::{
+    Ironwood, Orchard, Sapling,
     client::FetchRequest,
     error::{ServerError, SyncModeError},
     keys::{self, KeyId, transparent::TransparentAddressId},
@@ -86,6 +88,8 @@ pub struct InitialSyncState {
     pub(crate) previously_scanned_sapling_outputs: u32,
     /// Total number of orchard outputs scanned in previous sync sessions.
     pub(crate) previously_scanned_orchard_outputs: u32,
+    /// Total number of ironwood outputs scanned in previous sync sessions.
+    pub(crate) previously_scanned_ironwood_outputs: u32,
 }
 
 impl InitialSyncState {
@@ -99,10 +103,13 @@ impl InitialSyncState {
                 sapling_final_tree_size: 0,
                 orchard_initial_tree_size: 0,
                 orchard_final_tree_size: 0,
+                ironwood_initial_tree_size: 0,
+                ironwood_final_tree_size: 0,
             },
             previously_scanned_blocks: 0,
             previously_scanned_sapling_outputs: 0,
             previously_scanned_orchard_outputs: 0,
+            previously_scanned_ironwood_outputs: 0,
         }
     }
 }
@@ -129,6 +136,10 @@ pub struct SyncState {
     /// There is an edge case where a range may include two (or more) shards. However, this only occurs when the lower
     /// shards are already scanned so will cause no issues when punching in the higher scan priorites.
     pub(crate) orchard_shard_ranges: Vec<Range<BlockHeight>>,
+    /// The block ranges that contain all ironwood outputs of complete ironwood shards.
+    ///
+    /// See `orchard_shard_ranges` for the edge case.
+    pub(crate) ironwood_shard_ranges: Vec<Range<BlockHeight>>,
     /// Scan targets for relevant transactions to the wallet.
     pub(crate) scan_targets: BTreeSet<ScanTarget>,
     /// Initial sync state.
@@ -143,6 +154,7 @@ impl SyncState {
             scan_ranges: Vec::new(),
             sapling_shard_ranges: Vec::new(),
             orchard_shard_ranges: Vec::new(),
+            ironwood_shard_ranges: Vec::new(),
             scan_targets: BTreeSet::new(),
             initial_sync_state: InitialSyncState::new(),
         }
@@ -164,6 +176,12 @@ impl SyncState {
     #[must_use]
     pub fn orchard_shard_ranges(&self) -> &[Range<BlockHeight>] {
         &self.orchard_shard_ranges
+    }
+
+    /// Ironwood shard ranges
+    #[must_use]
+    pub fn ironwood_shard_ranges(&self) -> &[Range<BlockHeight>] {
+        &self.ironwood_shard_ranges
     }
 
     /// Returns true if all scan ranges are scanned.
@@ -282,6 +300,8 @@ pub struct TreeBounds {
     pub sapling_final_tree_size: u32,
     pub orchard_initial_tree_size: u32,
     pub orchard_final_tree_size: u32,
+    pub ironwood_initial_tree_size: u32,
+    pub ironwood_final_tree_size: u32,
 }
 
 /// Output ID for a given pool type.
@@ -345,6 +365,8 @@ pub struct NullifierMap {
     pub sapling: BTreeMap<sapling_crypto::Nullifier, ScanTarget>,
     /// Orchard nullifer map
     pub orchard: BTreeMap<orchard::note::Nullifier, ScanTarget>,
+    /// Ironwood nullifer map
+    pub ironwood: BTreeMap<orchard::note::Nullifier, ScanTarget>,
 }
 
 impl NullifierMap {
@@ -354,6 +376,7 @@ impl NullifierMap {
         Self {
             sapling: BTreeMap::new(),
             orchard: BTreeMap::new(),
+            ironwood: BTreeMap::new(),
         }
     }
 
@@ -361,6 +384,7 @@ impl NullifierMap {
     pub fn clear(&mut self) {
         self.sapling.clear();
         self.orchard.clear();
+        self.ironwood.clear();
     }
 }
 
@@ -450,9 +474,10 @@ pub struct WalletTransaction {
     pub(crate) transparent_coins: Vec<TransparentCoin>,
     pub(crate) sapling_notes: Vec<SaplingNote>,
     pub(crate) orchard_notes: Vec<OrchardNote>,
+    pub(crate) ironwood_notes: Vec<IronwoodNote>,
     pub(crate) outgoing_sapling_notes: Vec<OutgoingSaplingNote>,
     pub(crate) outgoing_orchard_notes: Vec<OutgoingOrchardNote>,
-    // pub(crate) staking_data: Option<StakingAction>,
+    pub(crate) outgoing_ironwood_notes: Vec<OutgoingIronwoodNote>,
 }
 
 impl WalletTransaction {
@@ -513,6 +538,17 @@ impl WalletTransaction {
         self.orchard_notes.iter_mut().collect()
     }
 
+    /// Ironwood notes
+    #[must_use]
+    pub fn ironwood_notes(&self) -> &[IronwoodNote] {
+        &self.ironwood_notes
+    }
+
+    /// Ironwood notes mutable
+    pub fn ironwood_notes_mut(&mut self) -> Vec<&mut IronwoodNote> {
+        self.ironwood_notes.iter_mut().collect()
+    }
+
     /// Outgoing sapling notes
     #[must_use]
     pub fn outgoing_sapling_notes(&self) -> &[OutgoingSaplingNote] {
@@ -523,6 +559,12 @@ impl WalletTransaction {
     #[must_use]
     pub fn outgoing_orchard_notes(&self) -> &[OutgoingOrchardNote] {
         &self.outgoing_orchard_notes
+    }
+
+    /// Outgoing ironwood notes
+    #[must_use]
+    pub fn outgoing_ironwood_notes(&self) -> &[OutgoingIronwoodNote] {
+        &self.outgoing_ironwood_notes
     }
 
     /// Returns nullifers from sapling bundle.
@@ -544,6 +586,20 @@ impl WalletTransaction {
     pub fn orchard_nullifiers(&self) -> Vec<&orchard::note::Nullifier> {
         self.transaction
             .orchard_bundle()
+            .map_or_else(Vec::new, |bundle| {
+                bundle
+                    .actions()
+                    .iter()
+                    .map(orchard::Action::nullifier)
+                    .collect::<Vec<_>>()
+            })
+    }
+
+    /// Returns nullifers from ironwood bundle.
+    /// Returns empty vec if bundle is `None`.
+    pub fn ironwood_nullifiers(&self) -> Vec<&orchard::note::Nullifier> {
+        self.transaction
+            .ironwood_bundle()
             .map_or_else(Vec::new, |bundle| {
                 bundle
                     .actions()
@@ -648,8 +704,10 @@ impl WalletTransaction {
             transparent_coins: Vec::new(),
             sapling_notes: Vec::new(),
             orchard_notes: Vec::new(),
+            ironwood_notes: Vec::new(),
             outgoing_sapling_notes: Vec::new(),
             outgoing_orchard_notes: Vec::new(),
+            outgoing_ironwood_notes: Vec::new(),
         }
     }
 }
@@ -679,8 +737,11 @@ impl WalletTransaction {
         let orchard_value_sent = self
             .total_outgoing_note_value::<OutgoingOrchardNote>()
             .saturating_sub(self.total_output_value::<OrchardNote>());
+        let ironwood_value_sent = self
+            .total_outgoing_note_value::<OutgoingIronwoodNote>()
+            .saturating_sub(self.total_output_value::<IronwoodNote>());
 
-        transparent_value_sent + sapling_value_sent + orchard_value_sent
+        transparent_value_sent + sapling_value_sent + orchard_value_sent + ironwood_value_sent
     }
 
     /// Returns total sum of all output values.
@@ -689,6 +750,7 @@ impl WalletTransaction {
         self.total_output_value::<TransparentCoin>()
             + self.total_output_value::<SaplingNote>()
             + self.total_output_value::<OrchardNote>()
+            + self.total_output_value::<IronwoodNote>()
     }
 
     /// Returns total sum of output values for a given pool.
@@ -719,8 +781,10 @@ impl std::fmt::Debug for WalletTransaction {
             .field("transparent_coins", &self.transparent_coins)
             .field("sapling_notes", &self.sapling_notes)
             .field("orchard_notes", &self.orchard_notes)
+            .field("ironwood_notes", &self.ironwood_notes)
             .field("outgoing_sapling_notes", &self.outgoing_sapling_notes)
             .field("outgoing_orchard_notes", &self.outgoing_orchard_notes)
+            .field("outgoing_ironwood_notes", &self.outgoing_ironwood_notes)
             .finish()
     }
 }
@@ -783,7 +847,7 @@ pub trait NoteInterface: OutputInterface {
     type Nullifier: Copy;
 
     /// Note's associated shielded protocol.
-    const SHIELDED_PROTOCOL: ShieldedProtocol;
+    const SHIELDED_PROTOCOL: ShieldedPool;
 
     /// Decrypted note with recipient and value
     fn note(&self) -> &Self::ZcashNote;
@@ -876,8 +940,11 @@ impl OutputInterface for TransparentCoin {
 }
 
 /// Wallet note, shielded output with metadata relevant to the wallet.
+///
+/// `P` is the pool marker ([`Sapling`], [`Orchard`] or [`Ironwood`]). Orchard and Ironwood notes share their
+/// note and nullifier types, so the marker is what keeps the two pools' notes distinct.
 #[derive(Debug, Clone)]
-pub struct WalletNote<N, Nf: Copy> {
+pub struct WalletNote<N, Nf: Copy, P> {
     /// Output ID.
     pub(crate) output_id: OutputId,
     /// Identifier for key used to decrypt output.
@@ -898,16 +965,18 @@ pub struct WalletNote<N, Nf: Copy> {
     /// scanned, meaning the nullifiers were discarded due to memory constraints and will be re-fetched later in the
     /// sync process.
     pub(crate) refetch_nullifier_ranges: Vec<Range<BlockHeight>>,
+    /// Pool marker.
+    pub(crate) pool: PhantomData<P>,
 }
 
 /// Sapling note.
-pub type SaplingNote = WalletNote<sapling_crypto::Note, sapling_crypto::Nullifier>;
+pub type SaplingNote = WalletNote<sapling_crypto::Note, sapling_crypto::Nullifier, Sapling>;
 
 impl OutputInterface for SaplingNote {
     type KeyId = KeyId;
     type Input = sapling_crypto::Nullifier;
 
-    const POOL_TYPE: PoolType = PoolType::Shielded(ShieldedProtocol::Sapling);
+    const POOL_TYPE: PoolType = PoolType::Shielded(ShieldedPool::Sapling);
 
     fn output_id(&self) -> OutputId {
         self.output_id
@@ -946,7 +1015,7 @@ impl NoteInterface for SaplingNote {
     type ZcashNote = sapling_crypto::Note;
     type Nullifier = Self::Input;
 
-    const SHIELDED_PROTOCOL: ShieldedProtocol = ShieldedProtocol::Sapling;
+    const SHIELDED_PROTOCOL: ShieldedPool = ShieldedPool::Sapling;
 
     fn note(&self) -> &Self::ZcashNote {
         &self.note
@@ -970,13 +1039,16 @@ impl NoteInterface for SaplingNote {
 }
 
 /// Orchard note.
-pub type OrchardNote = WalletNote<orchard::Note, orchard::note::Nullifier>;
+pub type OrchardNote = WalletNote<orchard::Note, orchard::note::Nullifier, Orchard>;
+
+/// Ironwood note.
+pub type IronwoodNote = WalletNote<orchard::Note, orchard::note::Nullifier, Ironwood>;
 
 impl OutputInterface for OrchardNote {
     type KeyId = KeyId;
     type Input = orchard::note::Nullifier;
 
-    const POOL_TYPE: PoolType = PoolType::Shielded(ShieldedProtocol::Orchard);
+    const POOL_TYPE: PoolType = PoolType::Shielded(ShieldedPool::Orchard);
 
     fn output_id(&self) -> OutputId {
         self.output_id
@@ -1015,7 +1087,73 @@ impl NoteInterface for OrchardNote {
     type ZcashNote = orchard::Note;
     type Nullifier = Self::Input;
 
-    const SHIELDED_PROTOCOL: ShieldedProtocol = ShieldedProtocol::Orchard;
+    const SHIELDED_PROTOCOL: ShieldedPool = ShieldedPool::Orchard;
+
+    fn note(&self) -> &Self::ZcashNote {
+        &self.note
+    }
+
+    fn nullifier(&self) -> Option<Self::Nullifier> {
+        self.spend_link()
+    }
+
+    fn position(&self) -> Option<Position> {
+        self.position
+    }
+
+    fn memo(&self) -> &Memo {
+        &self.memo
+    }
+
+    fn refetch_nullifier_ranges(&self) -> &[Range<BlockHeight>] {
+        &self.refetch_nullifier_ranges
+    }
+}
+
+impl OutputInterface for IronwoodNote {
+    type KeyId = KeyId;
+    type Input = orchard::note::Nullifier;
+
+    const POOL_TYPE: PoolType = PoolType::Shielded(ShieldedPool::Ironwood);
+
+    fn output_id(&self) -> OutputId {
+        self.output_id
+    }
+
+    fn key_id(&self) -> KeyId {
+        self.key_id
+    }
+
+    fn spending_transaction(&self) -> Option<TxId> {
+        self.spending_transaction
+    }
+
+    fn set_spending_transaction(&mut self, spending_transaction: Option<TxId>) {
+        self.spending_transaction = spending_transaction;
+    }
+
+    fn value(&self) -> u64 {
+        self.note.value().inner()
+    }
+
+    fn spend_link(&self) -> Option<Self::Input> {
+        self.nullifier
+    }
+
+    fn transaction_inputs(transaction: &WalletTransaction) -> Vec<&Self::Input> {
+        transaction.ironwood_nullifiers()
+    }
+
+    fn transaction_outputs(transaction: &WalletTransaction) -> &[Self] {
+        &transaction.ironwood_notes
+    }
+}
+
+impl NoteInterface for IronwoodNote {
+    type ZcashNote = orchard::Note;
+    type Nullifier = Self::Input;
+
+    const SHIELDED_PROTOCOL: ShieldedPool = ShieldedPool::Ironwood;
 
     fn note(&self) -> &Self::ZcashNote {
         &self.note
@@ -1048,7 +1186,7 @@ pub trait OutgoingNoteInterface: Sized {
     type Error: Debug + std::error::Error;
 
     /// Note's associated shielded protocol.
-    const SHIELDED_PROTOCOL: ShieldedProtocol;
+    const SHIELDED_PROTOCOL: ShieldedPool;
 
     /// Output ID.
     fn output_id(&self) -> OutputId;
@@ -1086,8 +1224,10 @@ pub trait OutgoingNoteInterface: Sized {
 }
 
 /// Note sent from this capability to a recipient.
+///
+/// `P` is the pool marker, see [`WalletNote`].
 #[derive(Debug, Clone, PartialEq)]
-pub struct OutgoingNote<N> {
+pub struct OutgoingNote<N, P> {
     /// Output ID.
     pub(crate) output_id: OutputId,
     /// Identifier for key used to decrypt output.
@@ -1098,17 +1238,19 @@ pub struct OutgoingNote<N> {
     pub(crate) memo: Memo,
     /// Recipient's full unified address from encoded memo.
     pub(crate) recipient_full_unified_address: Option<UnifiedAddress>,
+    /// Pool marker.
+    pub(crate) pool: PhantomData<P>,
 }
 
 /// Outgoing sapling note.
-pub type OutgoingSaplingNote = OutgoingNote<sapling_crypto::Note>;
+pub type OutgoingSaplingNote = OutgoingNote<sapling_crypto::Note, Sapling>;
 
 impl OutgoingNoteInterface for OutgoingSaplingNote {
     type ZcashNote = sapling_crypto::Note;
     type Address = sapling_crypto::PaymentAddress;
     type Error = Infallible;
 
-    const SHIELDED_PROTOCOL: ShieldedProtocol = ShieldedProtocol::Sapling;
+    const SHIELDED_PROTOCOL: ShieldedPool = ShieldedPool::Sapling;
 
     fn output_id(&self) -> OutputId {
         self.output_id
@@ -1163,14 +1305,17 @@ impl OutgoingNoteInterface for OutgoingSaplingNote {
 }
 
 /// Outgoing orchard note.
-pub type OutgoingOrchardNote = OutgoingNote<orchard::Note>;
+pub type OutgoingOrchardNote = OutgoingNote<orchard::Note, Orchard>;
+
+/// Outgoing ironwood note.
+pub type OutgoingIronwoodNote = OutgoingNote<orchard::Note, Ironwood>;
 
 impl OutgoingNoteInterface for OutgoingOrchardNote {
     type ZcashNote = orchard::Note;
     type Address = orchard::Address;
     type Error = ParseError;
 
-    const SHIELDED_PROTOCOL: ShieldedProtocol = ShieldedProtocol::Orchard;
+    const SHIELDED_PROTOCOL: ShieldedPool = ShieldedPool::Orchard;
 
     fn output_id(&self) -> OutputId {
         self.output_id
@@ -1221,6 +1366,63 @@ impl OutgoingNoteInterface for OutgoingOrchardNote {
     }
 }
 
+impl OutgoingNoteInterface for OutgoingIronwoodNote {
+    type ZcashNote = orchard::Note;
+    type Address = orchard::Address;
+    type Error = ParseError;
+
+    const SHIELDED_PROTOCOL: ShieldedPool = ShieldedPool::Ironwood;
+
+    fn output_id(&self) -> OutputId {
+        self.output_id
+    }
+
+    fn key_id(&self) -> KeyId {
+        self.key_id
+    }
+
+    fn value(&self) -> u64 {
+        self.note.value().inner()
+    }
+
+    fn note(&self) -> &Self::ZcashNote {
+        &self.note
+    }
+
+    fn memo(&self) -> &Memo {
+        &self.memo
+    }
+
+    fn recipient(&self) -> Self::Address {
+        self.note.recipient()
+    }
+
+    fn recipient_full_unified_address(&self) -> Option<&UnifiedAddress> {
+        self.recipient_full_unified_address.as_ref()
+    }
+
+    fn encoded_recipient<P>(&self, parameters: &P) -> Result<String, Self::Error>
+    where
+        P: consensus::Parameters + consensus::NetworkConstants,
+    {
+        // Ironwood shares the Orchard receiver encoding.
+        keys::encode_orchard_receiver(parameters, &self.note().recipient())
+    }
+
+    fn encoded_recipient_full_unified_address<P>(&self, consensus_parameters: &P) -> Option<String>
+    where
+        P: consensus::Parameters + consensus::NetworkConstants,
+    {
+        self.recipient_full_unified_address
+            .as_ref()
+            .map(|unified_address| unified_address.encode(consensus_parameters))
+    }
+
+    fn transaction_outgoing_notes(transaction: &WalletTransaction) -> &[Self] {
+        &transaction.outgoing_ironwood_notes
+    }
+}
+
 // TODO: allow consumer to define shard store. memory shard store has infallible error type but other may not so error
 // handling will need to replace expects
 /// Type alias for sapling memory shard store
@@ -1244,6 +1446,12 @@ pub struct ShardTrees {
         { orchard::NOTE_COMMITMENT_TREE_DEPTH as u8 },
         { witness::SHARD_HEIGHT },
     >,
+    /// Ironwood shard tree. Ironwood reuses the Orchard tree hash, in its own tree.
+    pub ironwood: ShardTree<
+        OrchardShardStore,
+        { orchard::NOTE_COMMITMENT_TREE_DEPTH as u8 },
+        { witness::SHARD_HEIGHT },
+    >,
 }
 
 impl ShardTrees {
@@ -1252,6 +1460,7 @@ impl ShardTrees {
     pub fn new() -> Self {
         let mut sapling = ShardTree::new(MemoryShardStore::empty(), MAX_REORG_ALLOWANCE as usize);
         let mut orchard = ShardTree::new(MemoryShardStore::empty(), MAX_REORG_ALLOWANCE as usize);
+        let mut ironwood = ShardTree::new(MemoryShardStore::empty(), MAX_REORG_ALLOWANCE as usize);
 
         sapling
             .checkpoint(BlockHeight::from_u32(0))
@@ -1259,8 +1468,15 @@ impl ShardTrees {
         orchard
             .checkpoint(BlockHeight::from_u32(0))
             .expect("should never fail");
+        ironwood
+            .checkpoint(BlockHeight::from_u32(0))
+            .expect("should never fail");
 
-        Self { sapling, orchard }
+        Self {
+            sapling,
+            orchard,
+            ironwood,
+        }
     }
 }
 
