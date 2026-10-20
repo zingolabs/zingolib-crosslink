@@ -5,6 +5,7 @@
 //! views render the state. Side effects leave the reducer only as [`Command`]s.
 
 pub mod action;
+pub mod onboarding;
 pub mod reduce;
 pub mod roles;
 pub mod state;

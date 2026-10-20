@@ -138,46 +138,235 @@ pub enum ReceiveKind {
     Transparent,
 }
 
-/// First-run wizard step order. The network is not a step: the key's prefix names it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WizardStep {
-    Ufvk,
-    Server,
-    Birthday,
-}
-
-/// First-run wizard fields.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Wizard {
-    pub step: WizardStep,
-    /// Read from the key once it is entered.
-    pub network: Option<Network>,
-    pub server: String,
-    /// The server came from the command line, so it is not replaced by a network default.
-    pub server_from_flag: bool,
-    pub ufvk: String,
-    pub birthday: String,
-    pub error: Option<String>,
-}
-
-impl Wizard {
-    pub fn new(server: Option<String>) -> Self {
-        Self {
-            step: WizardStep::Ufvk,
-            network: None,
-            server_from_flag: server.is_some(),
-            server: server.unwrap_or_default(),
-            ufvk: String::new(),
-            birthday: String::new(),
-            error: None,
+/// Seconds between blocks, for turning a date into a height. Mainnet is fixed by consensus;
+/// the crosslink featurenets run faster, so their figure is an estimate.
+impl Network {
+    pub fn block_spacing_secs(self) -> u64 {
+        match self {
+            Network::Mainnet => 75,
+            Network::Testnet | Network::Regtest => 15,
         }
+    }
+}
+
+/// What kind of key material a wallet file holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WalletKind {
+    /// A seed phrase: the wallet can spend and stake.
+    Seed,
+    /// A viewing key only.
+    Watch,
+    /// Not recorded yet; the file was made by an older version and has not been opened since.
+    Unknown,
+}
+
+impl WalletKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            WalletKind::Seed => "seed",
+            WalletKind::Watch => "watch",
+            WalletKind::Unknown => "?",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "seed" => Some(WalletKind::Seed),
+            "watch" => Some(WalletKind::Watch),
+            _ => None,
+        }
+    }
+}
+
+/// One wallet file in the data directory, as the opening list shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WalletEntry {
+    /// The file name without its `.dat` suffix.
+    pub name: String,
+    pub network: Network,
+    pub kind: WalletKind,
+    pub birthday: Option<u32>,
+    /// Seconds since the file was last written, when the file system says.
+    pub age_secs: Option<u64>,
+}
+
+/// The choices on the setup menu, in order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuItem {
+    Create,
+    Restore,
+    Watch,
+    Quit,
+}
+
+impl MenuItem {
+    pub const ALL: [MenuItem; 4] = [
+        MenuItem::Create,
+        MenuItem::Restore,
+        MenuItem::Watch,
+        MenuItem::Quit,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MenuItem::Create => "create a new wallet",
+            MenuItem::Restore => "restore from a seed phrase",
+            MenuItem::Watch => "watch with a viewing key",
+            MenuItem::Quit => "quit",
+        }
+    }
+
+    pub fn detail(self) -> &'static str {
+        match self {
+            MenuItem::Create => "24-word seed · spend and stake",
+            MenuItem::Restore => "spend and stake",
+            MenuItem::Watch => "balances and bonds · cannot spend",
+            MenuItem::Quit => "",
+        }
+    }
+}
+
+/// How the user answers the birthday question.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BirthdayMode {
+    /// A number pasted from the app, which shows it under the viewing key.
+    FromApp,
+    Height,
+    Date,
+    /// Scan from Sapling activation.
+    Unknown,
+}
+
+impl BirthdayMode {
+    pub const ALL: [BirthdayMode; 4] = [
+        BirthdayMode::FromApp,
+        BirthdayMode::Height,
+        BirthdayMode::Date,
+        BirthdayMode::Unknown,
+    ];
+}
+
+/// The screens of the first-run flow, in the order they are reached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// The wallets already in the data directory.
+    Wallets,
+    /// Create, restore, or watch.
+    Menu,
+    Create,
+    Restore,
+    Watch,
+    Birthday,
+    Name,
+}
+
+/// What a new wallet is built from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeyMaterial {
+    /// A BIP-39 phrase.
+    Seed(String),
+    /// A unified full viewing key.
+    Ufvk(String),
+}
+
+/// The chain tip as the server last reported it, with the wall-clock time of the report so a
+/// date can be turned into a height without asking the clock again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tip {
+    pub network: Network,
+    pub height: u32,
+    pub at_unix: u64,
+}
+
+/// The first-run flow: list, menu, one branch, birthday, name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Onboarding {
+    pub step: Step,
+    pub wallets: Vec<WalletEntry>,
+    /// The list has been read at least once. Until then the list screen says so.
+    pub listed: bool,
+    pub wallet_sel: usize,
+    pub menu_sel: usize,
+    /// Network for a seed wallet. A viewing key names its own.
+    pub network: Network,
+    pub tip: Option<Tip>,
+    pub tip_error: Option<String>,
+    /// A tip request is out for this network.
+    pub tip_pending: Option<Network>,
+    /// The phrase generated for a new wallet.
+    pub seed: Option<String>,
+    /// The seed shown on one line instead of the numbered grid.
+    pub seed_line: bool,
+    /// Words of the phrase being restored, and the one being typed.
+    pub words: Vec<String>,
+    pub draft: String,
+    pub key: String,
+    pub birthday_mode: Option<BirthdayMode>,
+    pub birthday_sel: usize,
+    pub birthday_input: String,
+    /// A number that came with the paste, read as the birthday.
+    pub birthday_hint: Option<u32>,
+    pub birthday: Option<u32>,
+    /// The accepted key material and the network it is for.
+    pub material: Option<(Network, KeyMaterial)>,
+    pub name: String,
+    pub error: Option<String>,
+    /// The server came from the command line.
+    pub server: Option<String>,
+}
+
+impl Onboarding {
+    pub fn new(network: Network, server: Option<String>) -> Self {
+        Self {
+            step: Step::Wallets,
+            wallets: Vec::new(),
+            listed: false,
+            wallet_sel: 0,
+            menu_sel: 0,
+            network,
+            tip: None,
+            tip_error: None,
+            tip_pending: None,
+            seed: None,
+            seed_line: false,
+            words: Vec::new(),
+            draft: String::new(),
+            key: String::new(),
+            birthday_mode: None,
+            birthday_sel: 1,
+            birthday_input: String::new(),
+            birthday_hint: None,
+            birthday: None,
+            material: None,
+            name: String::new(),
+            error: None,
+            server,
+        }
+    }
+
+    pub fn menu_item(&self) -> MenuItem {
+        MenuItem::ALL[self.menu_sel.min(MenuItem::ALL.len() - 1)]
+    }
+
+    /// The network the wallet being set up is for: the key's, once there is one.
+    pub fn target_network(&self) -> Network {
+        self.material.as_ref().map_or(self.network, |(n, _)| *n)
+    }
+
+    pub fn tip_for(&self, network: Network) -> Option<Tip> {
+        self.tip.filter(|t| t.network == network)
+    }
+
+    /// Whether the material is a viewing key.
+    pub fn is_watch(&self) -> bool {
+        matches!(self.material, Some((_, KeyMaterial::Ufvk(_))))
     }
 }
 
 /// Lifecycle phase of the application.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Phase {
-    Wizard(Wizard),
+    Onboarding(Box<Onboarding>),
     Loading(String),
     Fatal(String),
     Main,
@@ -194,6 +383,7 @@ pub struct WalletInfo {
     pub server: String,
     /// Whether the viewing key has an orchard component.
     pub has_orchard: bool,
+    pub kind: WalletKind,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -710,8 +900,10 @@ pub struct State {
     pub exit: bool,
     /// Set after the first quit request. A second one forces an immediate exit.
     pub quit_requested: bool,
-    /// The wizard that produced the pending create request, restored if it fails.
-    pub wizard_backup: Option<Wizard>,
+    /// The flow that produced the pending open request, restored if it fails.
+    pub onboarding_backup: Option<Onboarding>,
+    /// The dither field behind idle panes. Off unless asked for on the command line.
+    pub dither: crate::theme::Dither,
     /// Index into [`crate::theme::THEMES`].
     pub theme: usize,
     pub color_depth: crate::theme::ColorDepth,
@@ -740,10 +932,16 @@ impl State {
             ticks: 0,
             exit: false,
             quit_requested: false,
-            wizard_backup: None,
+            onboarding_backup: None,
+            dither: crate::theme::Dither::Off,
             theme: crate::theme::choose(None, None, false),
             color_depth: crate::theme::ColorDepth::TrueColor,
         }
+    }
+
+    /// Seconds since start, on the tick clock. Animations run on this.
+    pub fn elapsed_secs(&self) -> f32 {
+        self.ticks as f32 * crate::TICK_SECS
     }
 
     pub fn has_orchard(&self) -> bool {

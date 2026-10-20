@@ -4,38 +4,47 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-/// Watch-only terminal wallet for Zcash crosslink delegators.
+/// Terminal wallet for Zcash crosslink delegators.
 ///
-/// Opens the wallet file if one exists, otherwise walks through creating one from a unified
-/// full viewing key. Pass --ufvk and --birthday to skip the first-run screen.
+/// Starts on the list of wallets in the data directory, from which a wallet is opened or a new
+/// one is created, restored from a seed phrase, or set up watch-only from a viewing key. Pass
+/// --wallet to open one straight away, or --ufvk and --birthday to create a watch-only wallet
+/// without the screens.
 #[derive(Parser, Debug, Clone)]
 #[command(name = "delegator-tui", version, about)]
 pub struct Cli {
-    /// Network of the wallet to open: mainnet, testnet, or regtest. Defaults to mainnet. When
-    /// creating a wallet the key's prefix decides, and this only has to agree with it.
+    /// Network for a wallet made from a seed phrase, and for --wallet: mainnet, testnet, or
+    /// regtest. A viewing key names its own network. Defaults to mainnet.
     #[arg(long, short = 'c', value_parser = ["mainnet", "testnet", "regtest"])]
     pub chain: Option<String>,
 
-    /// Lightwalletd URL. Defaults to zec.rocks for mainnet and testnet, 127.0.0.1:9067 for
-    /// regtest.
+    /// Indexer URL. Defaults to zec.rocks for mainnet and testnet, 127.0.0.1:9067 for regtest.
     #[arg(long)]
     pub server: Option<String>,
 
-    /// Directory that holds the wallet file. Defaults to the platform Zcash data directory.
+    /// Directory that holds the wallet files. Defaults to the platform Zcash data directory,
+    /// with a subdirectory per network.
     #[arg(long, value_name = "DIR")]
     pub data_dir: Option<PathBuf>,
 
-    /// Wallet file name inside the data directory.
-    #[arg(long, default_value = "delegator-tui.dat", value_name = "NAME")]
-    pub wallet_name: String,
+    /// Open this wallet instead of showing the list. The file is <NAME>.dat in the data
+    /// directory of --chain. With --ufvk, the name the new wallet gets.
+    #[arg(long, short = 'w', value_name = "NAME")]
+    pub wallet: Option<String>,
 
-    /// Create the wallet from this unified full viewing key. Fails if a wallet file exists.
+    /// Create a watch-only wallet from this unified full viewing key. Fails if the wallet file
+    /// exists.
     #[arg(long, value_name = "UFVK", requires = "birthday")]
     pub ufvk: Option<String>,
 
     /// Block height the viewing key was created at. Required with --ufvk.
     #[arg(long, value_name = "HEIGHT")]
     pub birthday: Option<u32>,
+
+    /// How spending keys are derived from a seed phrase: zip32, the standard, or crosslink, the
+    /// truncated form the zebra-crosslink node uses.
+    #[arg(long, default_value = "zip32", value_parser = ["zip32", "crosslink"])]
+    pub seed_derivation: String,
 
     /// Draw QR codes with '#' characters instead of Unicode blocks.
     #[arg(long)]
@@ -57,4 +66,14 @@ pub struct Cli {
     /// palette otherwise.
     #[arg(long, default_value = "auto", value_parser = ["auto", "24bit", "256"])]
     pub color_depth: String,
+
+    /// Paint an animated dither gradient (shade blocks) in the empty part of the screen. Needs
+    /// a 24-bit colour terminal and a palette theme; a flat screen otherwise.
+    #[arg(long)]
+    pub experimental_dither: bool,
+
+    /// The same gradient in braille dots: finer, but the glyphs depend on the terminal font.
+    /// Takes precedence over --experimental-dither.
+    #[arg(long)]
+    pub experimental_dither_braille: bool,
 }

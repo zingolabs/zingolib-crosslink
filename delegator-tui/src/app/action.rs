@@ -2,7 +2,9 @@
 
 use std::time::Instant;
 
-use super::state::{ChainRange, Network, SyncMode, WalletData, WalletInfo};
+use super::state::{
+    ChainRange, KeyMaterial, Network, SyncMode, Tip, WalletData, WalletEntry, WalletInfo,
+};
 
 /// A normalised key press. The terminal layer maps raw events onto this.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,6 +72,12 @@ pub enum Action {
     Paste(String),
     Resize(u16, u16),
     Tick(Instant),
+    /// The wallet files in the data directory.
+    WalletsListed(Vec<WalletEntry>),
+    /// The chain tip a server reported, or why it could not.
+    TipFetched(Result<Tip, (Network, String)>),
+    /// A fresh 24-word phrase for a new wallet.
+    SeedGenerated(String),
     WalletOpened(WalletInfo),
     OpenFailed(String),
     DataLoaded(WalletData),
@@ -80,21 +88,30 @@ pub enum Action {
     Shutdown,
 }
 
-/// How the backend should open or create the wallet.
+/// How the backend should open or create the wallet. `name` is the file name without `.dat`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpenSpec {
-    Read,
+    Read {
+        network: Network,
+        name: String,
+    },
     Create {
         network: Network,
-        server: String,
-        ufvk: String,
+        name: String,
+        material: KeyMaterial,
         birthday: u32,
+        server: Option<String>,
     },
 }
 
 /// Side effects requested by the reducer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
+    /// Read the data directory and report its wallet files.
+    ListWallets,
+    /// Ask this network's server for its tip.
+    FetchTip(Network),
+    GenerateSeed,
     Open(OpenSpec),
     Refresh,
     NewUnifiedAddress {
