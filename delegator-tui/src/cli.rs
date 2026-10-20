@@ -27,7 +27,7 @@ pub struct Cli {
     #[arg(long, value_name = "DIR")]
     pub data_dir: Option<PathBuf>,
 
-    /// Open this wallet instead of showing the list. The file is <NAME>.dat in the data
+    /// Open this wallet instead of showing the list. The file is NAME.dat in the data
     /// directory of --chain. With --ufvk, the name the new wallet gets.
     #[arg(long, short = 'w', value_name = "NAME")]
     pub wallet: Option<String>,
