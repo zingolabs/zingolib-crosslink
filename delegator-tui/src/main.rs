@@ -55,27 +55,13 @@ fn init_logging(path: &std::path::Path) -> Result<(), String> {
 }
 
 async fn run(cli: Cli) -> Result<(), String> {
-    let flag_network = match &cli.chain {
-        Some(chain) => Some(Network::parse(chain).ok_or("unknown chain")?),
-        None => None,
+    let network = match &cli.network {
+        Some(name) => Network::parse(name).ok_or("unknown network")?,
+        None => Network::Stable,
     };
-    // a key names its own network; the flag only has to agree with it
-    let network = match (&cli.ufvk, flag_network) {
-        (Some(ufvk), flag) => {
-            let from_key = delegator_tui::app::onboarding::check_ufvk(ufvk)?;
-            if let Some(flag) = flag
-                && flag != from_key
-            {
-                return Err(format!(
-                    "--chain {} does not match the key, which is for {}",
-                    flag.name(),
-                    from_key.name()
-                ));
-            }
-            from_key
-        }
-        (None, flag) => flag.unwrap_or(Network::Mainnet),
-    };
+    if let Some(ufvk) = &cli.ufvk {
+        delegator_tui::app::onboarding::check_ufvk(ufvk)?;
+    }
     let config = BackendConfig {
         data_dir: cli.data_dir.clone(),
         server: cli.server.clone(),
@@ -127,7 +113,11 @@ async fn run(cli: Cli) -> Result<(), String> {
         }
         (
             Phase::Loading("Opening wallet".into()),
-            Command::Open(OpenSpec::Read { network, name }),
+            Command::Open(OpenSpec::Read {
+                network,
+                name,
+                verified: false,
+            }),
         )
     } else {
         (
@@ -138,12 +128,10 @@ async fn run(cli: Cli) -> Result<(), String> {
 
     let mut state = State::new(phase, now);
     state.ascii_qr = cli.ascii_qr;
-    state.dither = if cli.experimental_dither_braille {
-        theme::Dither::Braille
-    } else if cli.experimental_dither {
-        theme::Dither::Blocks
-    } else {
-        theme::Dither::Off
+    state.dither = match cli.dither.as_str() {
+        "braille" => theme::Dither::Braille,
+        "off" => theme::Dither::Off,
+        _ => theme::Dither::Blocks,
     };
 
     // flag, then saved preference, then NO_COLOR, then the default
@@ -167,7 +155,11 @@ async fn run(cli: Cli) -> Result<(), String> {
 
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let (act_tx, mut act_rx) = mpsc::unbounded_channel();
-    let backend = backend::spawn(config, cmd_rx, act_tx.clone());
+    let backend = if cli.fake {
+        backend::fake::spawn(network, cmd_rx, act_tx.clone())
+    } else {
+        backend::spawn(config, cmd_rx, act_tx.clone())
+    };
 
     // terminal
     let default_hook = std::panic::take_hook();

@@ -140,6 +140,25 @@ const fn catppuccin(
 /// Every theme, in the order the picker lists them.
 pub const THEMES: &[ThemeDef] = &[
     ThemeDef {
+        id: "srcery",
+        name: "Srcery",
+        // srcery.sh: a warm dark palette with a cream foreground and a gold accent
+        kind: Kind::Palette(Palette {
+            bg: rgb(0x1c1b19),
+            surface: rgb(0x3b3935),
+            fg: rgb(0xfce8c3),
+            muted: rgb(0x918175),
+            border: rgb(0x312f2c),
+            accent: rgb(0xfbb829),
+            positive: rgb(0x98bc37),
+            negative: rgb(0xf75341),
+            warning: rgb(0xff8700),
+            info: rgb(0x68a8e4),
+            orchard: rgb(0xff5c8f),
+            sapling: rgb(0xff5f00),
+        }),
+    },
+    ThemeDef {
         id: "lightwallet",
         name: "Lightwallet",
         // the warm palette of lwtui, the lightwallet-tools explorer: gold for values and
@@ -376,7 +395,7 @@ pub const THEMES: &[ThemeDef] = &[
 ];
 
 /// Used when nothing else picks a theme.
-pub const DEFAULT_THEME: &str = "lightwallet";
+pub const DEFAULT_THEME: &str = "srcery";
 /// Used when `NO_COLOR` is set and nothing more explicit picks a theme.
 pub const NO_COLOR_THEME: &str = "mono";
 

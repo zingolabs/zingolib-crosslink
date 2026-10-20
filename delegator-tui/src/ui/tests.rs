@@ -14,7 +14,7 @@ use crate::app::{
     Overlay, Phase, Pool, RangePriority, Screen, SpendState, State, SyncMode, TxKind, TxRow,
     TxStatus, ValueTransferRow, WalletEntry, WalletInfo, WalletKind,
 };
-use crate::app::{BirthdayMode, KeyMaterial, Onboarding, Step, Tip};
+use crate::app::{BirthdayMode, Evidence, KeyMaterial, Onboarding, Step, Tip};
 use crate::theme::{ColorDepth, THEMES, index_of};
 
 fn draw(state: &State, width: u16, height: u16) -> Buffer {
@@ -39,7 +39,7 @@ fn populated() -> State {
     let mut s = State::new(Phase::Main, Instant::now());
     s.size = (100, 40);
     s.wallet = Some(WalletInfo {
-        network: Network::Mainnet,
+        network: Network::Stable,
         wallet_name: "main".into(),
         wallet_path: "/tmp/main.dat".into(),
         birthday: 2_500_000,
@@ -435,22 +435,25 @@ fn the_last_find_sits_on_the_bottom_row() {
 }
 
 #[test]
-fn the_network_appears_only_when_it_is_not_mainnet() {
+fn the_header_names_the_chain_and_warns_on_nightly() {
     let mut s = populated();
-    assert!(
-        !render(&s, 100, 40)
-            .lines()
-            .next()
-            .unwrap()
-            .contains("mainnet")
-    );
-    s.wallet.as_mut().unwrap().network = Network::Testnet;
     assert!(
         render(&s, 100, 40)
             .lines()
             .next()
             .unwrap()
-            .contains("testnet")
+            .contains("stable")
+    );
+    s.wallet.as_mut().unwrap().network = Network::Nightly;
+    let buffer = draw(&s, 100, 40);
+    let header: String = (0..100)
+        .map(|x| buffer[(x, 0)].symbol().to_string())
+        .collect();
+    let at = col_of(&header, "nightly");
+    assert_ne!(
+        buffer[(at, 0)].fg,
+        buffer[(0, 1)].fg,
+        "nightly is coloured as a warning"
     );
 }
 
@@ -606,19 +609,21 @@ fn onboarding_states() -> Vec<(Step, State)> {
     let now = Instant::now();
     let mut out = Vec::new();
     let base = {
-        let mut o = Onboarding::new(Network::Mainnet, None);
+        let mut o = Onboarding::new(Network::Stable, None);
         o.listed = true;
         o.wallets = vec![WalletEntry {
             name: "main".into(),
-            network: Network::Mainnet,
+            network: Network::Stable,
             kind: WalletKind::Seed,
             birthday: Some(2_604_500),
             age_secs: Some(120),
+            evidence: Evidence::Meta,
         }];
         o.tip = Some(Tip {
-            network: Network::Mainnet,
+            network: Network::Stable,
             height: 3_000_000,
             at_unix: 1_800_000_000,
+            spacing_secs: 75,
         });
         o.error = Some("something to show".into());
         o
@@ -641,9 +646,9 @@ fn onboarding_states() -> Vec<(Step, State)> {
                 o.draft = "ab".into();
                 o.birthday_hint = Some(2_604_500);
             }
-            Step::Watch => o.key = "uview1".to_string() + &"k".repeat(300) + " 2604500",
+            Step::Watch => o.key = "uviewtest1".to_string() + &"k".repeat(300) + " 2604500",
             Step::Birthday | Step::Name => {
-                o.material = Some((Network::Mainnet, KeyMaterial::Ufvk("uview1k".into())));
+                o.material = Some((Network::Stable, KeyMaterial::Ufvk("uviewtest1k".into())));
                 o.birthday = Some(2_604_500);
                 o.name = "watch".into();
             }
@@ -675,7 +680,7 @@ fn startup_phases_render() {
             Step::Create => {
                 assert!(out.contains(" 1 abandon"), "{out}");
                 assert!(out.contains("24 art"), "{out}");
-                assert!(out.contains("Birthday 2,999,900"), "{out}");
+                assert!(out.contains("2,999,900 on crosslink"), "{out}");
             }
             Step::Restore => {
                 assert!(out.contains("12 of 24 words"), "{out}");
@@ -683,12 +688,15 @@ fn startup_phases_render() {
                 assert!(out.contains("birthday 2,604,500 from the paste"));
             }
             Step::Watch => {
-                assert!(out.contains("mainnet viewing key"), "{out}");
+                assert!(
+                    out.contains("viewing key for the crosslink chains"),
+                    "{out}"
+                );
                 assert!(out.contains("birthday 2,604,500 from the paste"));
             }
             Step::Birthday => {
                 assert!(out.contains("I know roughly the date"));
-                assert!(out.contains("419,200"), "the sapling floor: {out}");
+                assert!(out.contains("scan from 1,"), "the floor is block 1: {out}");
             }
             Step::Name => assert!(out.contains("watch")),
         }
@@ -706,13 +714,13 @@ fn startup_phases_render() {
         panic!()
     };
     o.birthday_mode = Some(BirthdayMode::Unknown);
-    assert!(render(&s, 80, 24).contains("Scan the whole chain?"));
+    assert!(render(&s, 80, 24).contains("scan the whole chain?"));
     let Phase::Onboarding(o) = &mut s.phase else {
         panic!()
     };
     o.birthday_mode = Some(BirthdayMode::Height);
-    o.birthday_input = "99".into();
-    assert!(render(&s, 80, 24).contains("must be at least 419,200"));
+    o.birthday_input = "0".into();
+    assert!(render(&s, 80, 24).contains("must be at least 1,"));
 
     let s = State::new(Phase::Loading("Opening wallet".into()), now);
     assert!(render(&s, 80, 24).contains("Opening wallet"));

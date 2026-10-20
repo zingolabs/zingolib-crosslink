@@ -12,6 +12,7 @@ mod help;
 mod home;
 mod onboarding;
 mod receive;
+mod sigil;
 mod sync;
 mod themes;
 mod transactions;
@@ -274,9 +275,14 @@ fn screen_tabs(state: &State, t: &Theme, width: u16) -> Vec<Span<'static>> {
         && width >= 100
     {
         spans.push(Span::styled(w.wallet_name.clone(), t.text));
-        if w.network != Network::Mainnet {
-            spans.push(Span::styled(format!(" {}", w.network.name()), t.warning));
-        }
+        spans.push(Span::styled(
+            format!(" {}", w.network.name()),
+            if w.network == Network::Stable {
+                t.muted
+            } else {
+                t.warning
+            },
+        ));
         spans.push(Span::styled("  ·  ", t.muted));
     }
     for (i, screen) in Screen::ALL.iter().enumerate() {

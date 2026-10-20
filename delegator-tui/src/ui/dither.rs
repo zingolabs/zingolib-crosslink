@@ -50,7 +50,8 @@ pub fn band(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
     let last_content = (area.y..area.y + area.height)
         .rev()
         .find(|&y| (area.x + 1..area.x + area.width).any(|x| buffer[(x, y)].symbol() != " "));
-    let start = last_content.map_or(area.y, |y| y + 1);
+    // one clear row between the content and the water
+    let start = last_content.map_or(area.y, |y| y + 2);
     let end = area.y + area.height;
     if start >= end {
         return;

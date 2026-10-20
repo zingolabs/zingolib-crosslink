@@ -5,7 +5,7 @@
 
 use super::action::{Command, Key, OpenSpec};
 use super::state::{
-    BirthdayMode, KeyMaterial, MenuItem, Network, Onboarding, Phase, State, Step, Tip,
+    BirthdayMode, Evidence, KeyMaterial, MenuItem, Network, Onboarding, Phase, State, Step, Tip,
 };
 use crate::format;
 
@@ -168,6 +168,7 @@ fn wallets_key(o: &mut Onboarding, key: Key) -> Vec<Command> {
                 let spec = OpenSpec::Read {
                     network: entry.network,
                     name: entry.name.clone(),
+                    verified: entry.evidence != Evidence::Unverified,
                 };
                 vec![Command::Open(spec)]
             } else {
@@ -192,9 +193,8 @@ fn menu_key(o: &mut Onboarding, key: Key) -> Vec<Command> {
         }
         Key::Char('n') => {
             o.network = match o.network {
-                Network::Mainnet => Network::Testnet,
-                Network::Testnet => Network::Regtest,
-                Network::Regtest => Network::Mainnet,
+                Network::Stable => Network::Nightly,
+                Network::Nightly => Network::Stable,
             };
             o.tip_error = None;
             o.tip_pending = None;
@@ -240,7 +240,7 @@ fn jump(o: &mut Onboarding, text: &str) -> Vec<Command> {
         o.draft.clear();
         o.birthday_hint = number;
     } else if let Some(first) = words.first()
-        && Network::from_ufvk(first).is_some()
+        && first.starts_with("uview")
     {
         o.step = Step::Watch;
         o.key = text.to_string();
@@ -397,8 +397,8 @@ fn watch_key(o: &mut Onboarding, key: Key) -> Vec<Command> {
                 return Vec::new();
             };
             match check_ufvk(ufvk) {
-                Ok(network) => {
-                    o.material = Some((network, KeyMaterial::Ufvk(ufvk.to_string())));
+                Ok(()) => {
+                    o.material = Some((o.network, KeyMaterial::Ufvk(ufvk.to_string())));
                     o.birthday_hint = number;
                     go_to_birthday(o);
                 }
@@ -411,20 +411,19 @@ fn watch_key(o: &mut Onboarding, key: Key) -> Vec<Command> {
     Vec::new()
 }
 
-/// The network a viewing key is for, or what the text is instead.
-pub fn check_ufvk(s: &str) -> Result<Network, String> {
-    if let Some(n) = Network::from_ufvk(s) {
-        return Ok(n);
-    }
+/// Whether a viewing key is one these chains can use, or what the text is instead.
+pub fn check_ufvk(s: &str) -> Result<(), String> {
     if s.starts_with("zxview") {
-        return Err("a legacy Sapling key · export the unified key (uview1…) from the app".into());
+        return Err(
+            "a legacy Sapling key · export the unified key (uviewtest1…) from the app".into(),
+        );
     }
     if s.starts_with("u1") || s.starts_with("utest1") {
         return Err(
             "that is an address, not a viewing key · in the app: settings › viewing key".into(),
         );
     }
-    Err("not a unified full viewing key: expected uview1, uviewtest1 or uviewregtest1".into())
+    Network::check_ufvk_prefix(s)
 }
 
 fn go_to_birthday(o: &mut Onboarding) {
@@ -562,7 +561,7 @@ pub fn height_for_date(network: Network, tip: Tip, date_unix: u64) -> Option<u32
     if date_unix > tip.at_unix {
         return None;
     }
-    let behind = (tip.at_unix - date_unix + DATE_MARGIN_SECS) / network.block_spacing_secs();
+    let behind = (tip.at_unix - date_unix + DATE_MARGIN_SECS) / tip.spacing_secs.max(1);
     let blocks = u32::try_from(behind).unwrap_or(u32::MAX);
     Some(
         tip.height
@@ -578,13 +577,14 @@ fn go_to_name(o: &mut Onboarding) {
     }
 }
 
-/// `main`, `watch`, or the network name, then `-2`, `-3`, … past the names in use.
+/// `main` or `watch` on the stable chain, `nightly` or `nightly-watch` on the other, then
+/// `-2`, `-3`, … past the names in use.
 pub fn default_name(o: &Onboarding) -> String {
     let base = match (o.target_network(), o.is_watch()) {
-        (Network::Mainnet, false) => "main".to_string(),
-        (Network::Mainnet, true) => "watch".to_string(),
-        (n, false) => n.name().to_string(),
-        (n, true) => format!("{}-watch", n.name()),
+        (Network::Stable, false) => "main".to_string(),
+        (Network::Stable, true) => "watch".to_string(),
+        (Network::Nightly, false) => "nightly".to_string(),
+        (Network::Nightly, true) => "nightly-watch".to_string(),
     };
     let taken = |name: &str| o.wallets.iter().any(|w| w.name == name);
     if !taken(&base) {
@@ -668,13 +668,13 @@ mod tests {
     use super::*;
     use crate::app::action::Action;
     use crate::app::reduce::reduce;
-    use crate::app::state::{WalletEntry, WalletKind};
+    use crate::app::state::{Evidence, WalletEntry, WalletKind};
 
     const PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art";
 
     fn start() -> State {
         State::new(
-            Phase::Onboarding(Box::new(Onboarding::new(Network::Mainnet, None))),
+            Phase::Onboarding(Box::new(Onboarding::new(Network::Stable, None))),
             Instant::now(),
         )
     }
@@ -703,10 +703,11 @@ mod tests {
             .iter()
             .map(|n| WalletEntry {
                 name: n.to_string(),
-                network: Network::Mainnet,
+                network: Network::Stable,
                 kind: WalletKind::Seed,
                 birthday: Some(1),
                 age_secs: None,
+                evidence: Evidence::Meta,
             })
             .collect();
         reduce(state, Action::WalletsListed(wallets))
@@ -717,6 +718,7 @@ mod tests {
             network,
             height,
             at_unix: 1_800_000_000,
+            spacing_secs: 75,
         }))
     }
 
@@ -726,7 +728,7 @@ mod tests {
         assert_eq!(o(&s).step, Step::Wallets);
         let cmds = listed(&mut s, &[]);
         assert_eq!(o(&s).step, Step::Menu);
-        assert_eq!(cmds, vec![Command::FetchTip(Network::Mainnet)]);
+        assert_eq!(cmds, vec![Command::FetchTip(Network::Stable)]);
         // esc on the menu with nothing to go back to quits
         assert_eq!(keys(&mut s, &[Key::Esc]), vec![Command::ForceQuit]);
     }
@@ -740,14 +742,15 @@ mod tests {
         assert_eq!(
             cmds,
             vec![Command::Open(OpenSpec::Read {
-                network: Network::Mainnet,
-                name: "test".into()
+                network: Network::Stable,
+                name: "test".into(),
+                verified: true,
             })]
         );
         // the row after the last wallet is "new"
         let cmds = keys(&mut s, &[Key::Char('j'), Key::Enter]);
         assert_eq!(o(&s).step, Step::Menu);
-        assert_eq!(cmds, vec![Command::FetchTip(Network::Mainnet)]);
+        assert_eq!(cmds, vec![Command::FetchTip(Network::Stable)]);
         // and esc goes back to the list this time
         keys(&mut s, &[Key::Esc]);
         assert_eq!(o(&s).step, Step::Wallets);
@@ -768,7 +771,7 @@ mod tests {
         assert_eq!(o(&s).step, Step::Create);
         assert!(o(&s).error.is_some());
         reduce(&mut s, Action::SeedGenerated(PHRASE.into()));
-        reduce(&mut s, tip(Network::Mainnet, 3_000_000));
+        reduce(&mut s, tip(Network::Stable, 3_000_000));
         assert_eq!(
             keys(&mut s, &[Key::Char('y')]),
             vec![Command::Copy("2999900".into())],
@@ -786,7 +789,7 @@ mod tests {
         assert_eq!(
             cmds,
             vec![Command::Open(OpenSpec::Create {
-                network: Network::Mainnet,
+                network: Network::Stable,
                 name: "mainx".into(),
                 material: KeyMaterial::Seed(PHRASE.into()),
                 birthday: 2_999_900,
@@ -807,7 +810,7 @@ mod tests {
         listed(&mut s, &["main"]);
         keys(&mut s, &[Key::Char('n'), Key::Enter]);
         reduce(&mut s, Action::SeedGenerated(PHRASE.into()));
-        reduce(&mut s, tip(Network::Mainnet, 3_000_000));
+        reduce(&mut s, tip(Network::Stable, 3_000_000));
         keys(&mut s, &[Key::Enter]);
         for _ in 0..10 {
             keys(&mut s, &[Key::Backspace]);
@@ -883,16 +886,20 @@ mod tests {
         assert!(o(&s).error.as_deref().unwrap().contains("address"));
         keys(&mut s, &[Key::Esc]);
         assert!(o(&s).key.is_empty());
+        reduce(&mut s, Action::Paste("uview1mainnetkey".into()));
+        keys(&mut s, &[Key::Enter]);
+        assert!(o(&s).error.as_deref().unwrap().contains("mainnet"));
+        keys(&mut s, &[Key::Esc]);
         reduce(&mut s, Action::Paste("uviewtest1xyz".into()));
         keys(&mut s, &[Key::Enter]);
         assert_eq!(o(&s).step, Step::Birthday);
         assert_eq!(o(&s).birthday_mode, None);
-        assert_eq!(o(&s).target_network(), Network::Testnet);
+        assert_eq!(o(&s).target_network(), Network::Stable, "the menu's chain");
         // "I don't know" scans from the floor, which is block 1 on the crosslink testnet
         keys(&mut s, &[Key::Char('4'), Key::Char('y')]);
         assert_eq!(o(&s).step, Step::Name);
         assert_eq!(o(&s).birthday, Some(1));
-        assert_eq!(o(&s).name, "testnet-watch");
+        assert_eq!(o(&s).name, "watch");
     }
 
     #[test]
@@ -900,13 +907,13 @@ mod tests {
         let mut s = start();
         listed(&mut s, &[]);
         keys(&mut s, &[Key::Char('3')]);
-        reduce(&mut s, Action::Paste("uview1xyz".into()));
+        reduce(&mut s, Action::Paste("uviewtest1xyz".into()));
         keys(&mut s, &[Key::Enter]);
         // height below sapling
         keys(&mut s, &[Key::Char('2')]);
-        type_str(&mut s, "42");
+        type_str(&mut s, "0");
         keys(&mut s, &[Key::Enter]);
-        assert!(o(&s).error.as_deref().unwrap().contains("419,200"));
+        assert!(o(&s).error.as_deref().unwrap().contains("at least 1"));
         // a date in height mode
         keys(&mut s, &[Key::Esc, Key::Char('2')]);
         type_str(&mut s, "2024-05");
@@ -918,16 +925,16 @@ mod tests {
         keys(&mut s, &[Key::Enter]);
         assert!(o(&s).error.as_deref().unwrap().contains("tip"));
         // with the tip: two weeks early, never above the tip
-        reduce(&mut s, tip(Network::Mainnet, 3_000_000));
+        reduce(&mut s, tip(Network::Stable, 3_000_000));
         keys(&mut s, &[Key::Enter]);
         assert_eq!(o(&s).step, Step::Name);
         let b = o(&s).birthday.unwrap();
-        assert!(b < 3_000_000 && b > 419_200, "{b}");
+        assert!(b < 3_000_000 && b > 1, "{b}");
         // the paste mode finds the number in whatever came with it
         let mut s = start();
         listed(&mut s, &[]);
         keys(&mut s, &[Key::Char('3')]);
-        reduce(&mut s, Action::Paste("uview1xyz".into()));
+        reduce(&mut s, Action::Paste("uviewtest1xyz".into()));
         keys(&mut s, &[Key::Enter, Key::Char('1')]);
         reduce(&mut s, Action::Paste("birthday 2604500".into()));
         keys(&mut s, &[Key::Enter]);
@@ -937,19 +944,20 @@ mod tests {
     #[test]
     fn dates_become_heights_two_weeks_early() {
         let t = Tip {
-            network: Network::Mainnet,
+            network: Network::Stable,
             height: 3_000_000,
             at_unix: 1_800_000_000,
+            spacing_secs: 75,
         };
         let day = 24 * 60 * 60;
         // the moment of the tip itself: only the margin
         assert_eq!(
-            height_for_date(Network::Mainnet, t, t.at_unix),
+            height_for_date(Network::Stable, t, t.at_unix),
             Some(3_000_000 - 14 * day / 75)
         );
-        assert_eq!(height_for_date(Network::Mainnet, t, t.at_unix + 1), None);
+        assert_eq!(height_for_date(Network::Stable, t, t.at_unix + 1), None);
         // far back, the floor holds
-        assert_eq!(height_for_date(Network::Mainnet, t, 0), Some(419_200));
+        assert_eq!(height_for_date(Network::Stable, t, 0), Some(1));
         assert!(parse_date("2024-05").is_ok());
         assert!(parse_date("2024-05-17").is_ok());
         assert!(parse_date("2024-13-01").is_err());
@@ -962,31 +970,32 @@ mod tests {
         listed(&mut s, &[]);
         assert_eq!(
             keys(&mut s, &[Key::Char('n')]),
-            vec![Command::FetchTip(Network::Testnet)]
+            vec![Command::FetchTip(Network::Nightly)]
         );
-        assert_eq!(o(&s).network, Network::Testnet);
+        assert_eq!(o(&s).network, Network::Nightly);
         reduce(&mut s, Action::Paste("hello there".into()));
         assert_eq!(o(&s).step, Step::Menu);
         assert!(o(&s).error.is_some());
-        reduce(&mut s, Action::Paste("uview1abc 123".into()));
+        reduce(&mut s, Action::Paste("uviewtest1abc 123".into()));
         assert_eq!(o(&s).step, Step::Watch);
-        assert_eq!(o(&s).key, "uview1abc 123");
+        assert_eq!(o(&s).key, "uviewtest1abc 123");
     }
 
     #[test]
     fn default_names_avoid_what_exists() {
-        let mut o = Onboarding::new(Network::Mainnet, None);
-        o.material = Some((Network::Mainnet, KeyMaterial::Ufvk("k".into())));
+        let mut o = Onboarding::new(Network::Stable, None);
+        o.material = Some((Network::Stable, KeyMaterial::Ufvk("k".into())));
         assert_eq!(default_name(&o), "watch");
         o.wallets.push(WalletEntry {
             name: "watch".into(),
-            network: Network::Mainnet,
+            network: Network::Stable,
             kind: WalletKind::Watch,
             birthday: None,
             age_secs: None,
+            evidence: Evidence::Meta,
         });
         assert_eq!(default_name(&o), "watch-2");
-        o.material = Some((Network::Regtest, KeyMaterial::Seed("s".into())));
-        assert_eq!(default_name(&o), "regtest");
+        o.material = Some((Network::Nightly, KeyMaterial::Seed("s".into())));
+        assert_eq!(default_name(&o), "nightly");
     }
 }

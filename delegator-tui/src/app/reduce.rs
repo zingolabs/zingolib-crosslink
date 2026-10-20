@@ -484,7 +484,7 @@ mod tests {
     fn main_state() -> State {
         let mut s = State::new(Phase::Main, now());
         s.wallet = Some(WalletInfo {
-            network: Network::Mainnet,
+            network: Network::Stable,
             wallet_name: "w.dat".into(),
             wallet_path: "/tmp/w.dat".into(),
             birthday: 100,
@@ -868,15 +868,22 @@ mod tests {
     }
 
     #[test]
-    fn network_is_read_from_the_key_prefix() {
-        assert_eq!(Network::from_ufvk("uview1abc"), Some(Network::Mainnet));
-        assert_eq!(Network::from_ufvk("uviewtest1abc"), Some(Network::Testnet));
-        assert_eq!(
-            Network::from_ufvk("uviewregtest1abc"),
-            Some(Network::Regtest)
+    fn only_testnet_keys_pass_the_prefix_check() {
+        assert!(Network::check_ufvk_prefix("uviewtest1abc").is_ok());
+        assert!(
+            Network::check_ufvk_prefix("uview1abc")
+                .unwrap_err()
+                .contains("mainnet")
         );
-        assert_eq!(Network::from_ufvk("u1abc"), None);
-        assert_eq!(Network::from_ufvk("uviewx1"), None);
+        assert!(
+            Network::check_ufvk_prefix("uviewregtest1abc")
+                .unwrap_err()
+                .contains("regtest")
+        );
+        assert!(Network::check_ufvk_prefix("u1abc").is_err());
+        assert_eq!(Network::parse("featurenet"), Some(Network::Stable));
+        assert_eq!(Network::parse("NIGHTLY"), Some(Network::Nightly));
+        assert_eq!(Network::parse("mainnet"), None);
     }
 
     #[test]

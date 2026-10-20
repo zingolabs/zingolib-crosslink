@@ -10,32 +10,50 @@ Delegator, which does both.
 cargo run --release -p delegator-tui
 ```
 
+It knows two chains, the crosslink featurenet (`stable`, the live chain) and the crosslink
+`nightly`, and nothing else: wallet files for mainnet, the public Zcash testnet, or regtest are
+never listed. `--network` picks the chain for new wallets and their indexers; `--fake` runs on
+a made-up wallet with no network at all, to look at every screen.
+
 ## The first screen
 
-Launch shows the wallets in the data directory: name, network, kind (seed or watch), birthday,
-and when the file was last written. `Enter` opens one. `n`, or the last row, starts the setup
-menu: create a new wallet, restore from a seed phrase, or watch with a viewing key. A seed
-phrase or a viewing key pasted on the list or the menu goes straight to the matching branch.
-With no wallets yet the menu comes first.
+Launch shows the crosslink wallets in the data directory: name, chain, kind (seed or watch),
+birthday, and when the file was last written, with the sigil of the chosen one. `Enter` opens
+one. `n`, or the last row, starts the setup menu: create a new wallet, restore from a seed
+phrase, or watch with a viewing key. A seed phrase or a viewing key pasted on the list or the
+menu goes straight to the matching branch. With no wallets yet the menu comes first.
 
-- **Create** shows the 24 words and the birthday together. `Enter` writes the wallet; there is
-  no check that the words were written down. `r` shows them on one line, `y` copies the
-  birthday (never the words). `n` on the menu picks the network for a seed wallet.
+- **Create** shows the 24 words, the birthday in big digits, and the seed's sigil. `Enter`
+  writes the wallet; there is no check that the words were written down. `r` shows the words
+  on one line, `y` copies the birthday (never the words).
 - **Restore** takes the words typed or pasted; a number after them is read as the birthday,
   the way the app puts both on the clipboard.
-- **Watch** takes the key from Zingo Delegator (settings › viewing key). Its prefix names the
-  network.
+- **Watch** takes the key from Zingo Delegator (settings › viewing key). The two crosslink
+  chains share their keys, so the chain is the one chosen on the menu (`n` switches it).
 - **Birthday** can be pasted from the app, typed as a height, given as a date (placed two weeks
-  early for safety, from the chain tip the server reports), or left unknown, which scans from
-  the start of Sapling.
+  early for safety, using the block spacing measured from the chain), or left unknown, which
+  scans from block 1.
 - **Name** becomes the file name, `<name>.dat`. Each wallet also gets `<name>.meta` (what the
-  list shows) and, when a server was given, `<name>.server`.
+  list shows) and, when an indexer was given, `<name>.server`.
+
+The key legend is always on the last row, with the chain tip (`T:`) and the chain on its
+right. Errors show on the row above it.
 
 `--wallet NAME` opens a wallet without the list. `--ufvk` and `--birthday` create a watch-only
-wallet without the screens, named `watch` unless `--wallet` says otherwise. The testnet here is
-the crosslink testnet, so its server must be a crosslink node; the default zec.rocks testnet
-server does not serve that chain. `--seed-derivation crosslink` derives spending keys the way
-the zebra-crosslink node does; the default is standard ZIP-32. See `--help` for the rest.
+wallet without the screens, named `watch` unless `--wallet` says otherwise.
+`--seed-derivation crosslink` derives spending keys the way the zebra-crosslink node does; the
+default is standard ZIP-32. See `--help` for the rest.
+
+## Which chain a wallet file is on
+
+Both crosslink chains share their parameters with the public Zcash testnet, so a wallet file
+alone says only `test`. The list reads the first bytes of each `.dat` to drop mainnet and
+regtest files, then takes the chain from the `.meta` file beside the wallet, else from the
+`.server` file when that names a built-in crosslink indexer (a public-testnet indexer drops the
+file too). A testnet file with neither is listed as unverified; when it opens, its newest synced
+block is asked for from the stable and the nightly indexers and the hash decides the chain. A
+file whose block is on neither is refused as a wallet from another network. Wallets with no
+blocks yet keep the chain chosen on the menu.
 
 ## Screens and keys
 
@@ -50,28 +68,39 @@ view switches between its inputs and outputs and its value transfers with `v`.
 
 ## Look
 
-The first-run screens are laid out like zingolib-tui's wizard: a title row with the step count
-on the right, a rule under it, the body two columns in, `> ` fields with a block cursor, the
-key hints under the field, and errors in bold beneath. Once a wallet is open, the chrome
-follows [lwtui](https://github.com/auzum197/lightwallet-tools/tree/main/tools/tui), the
-lightwallet-tools block explorer: a one-line header with the shimmering title, a status mark
-and the screen names; a pane with a rule on its left; dim key hints on the last line. Its warm
-palette is the default theme, `lightwallet`.
+The first-run screens are laid out like zingolib-tui's wizard, a title row with the step
+count on the right, a rule under it, the body two columns in, and dressed after athanor's
+lockscreen: prompts that speak (`@ paste the viewing key:`), input boxes in a double gold
+frame, the birthday in big digits, a sigil for each key (an 8×8 glyph from a hash of it,
+mirrored so it reads as a figure), and a roguelike status line. With 110 columns and 30 rows
+or more, lwtui's dither field fills the left of the screen like a lake; on smaller terminals it
+runs in the free rows under the content. `--dither braille` draws it in dots, `--dither off`
+removes it. Once a wallet is open, the chrome follows
+[lwtui](https://github.com/auzum197/lightwallet-tools/tree/main/tools/tui): a one-line header
+with the shimmering title, a status mark and the screen names; a pane with a rule on its left;
+dim key hints on the last line; the field in the free part of the home screen.
 
-`--experimental-dither` paints lwtui's drifting dither field over the empty part of the home
-screen, in shade blocks; `--experimental-dither-braille` uses braille dots, finer where the
-terminal font has them. Both need a 24-bit colour terminal and a palette theme.
+The default theme is [srcery](https://srcery.sh/).
+
+## Faker mode
+
+`--fake` replaces the wallet task with one that makes everything up: three wallets on the
+list, a history with every transaction kind (payments with memos, bonds created, unbonded,
+withdrawn and retargeted), bonded funds, addresses of both kinds, and a sync that scans,
+finds transactions as you watch, finishes, rests and starts again. New addresses, pause, resume
+and rescan all answer. The data comes from a fixed seed, so a screen looks the same on every
+run. Nothing is written to disk.
 
 ## Themes
 
-Lightwallet, Nord, Catppuccin (Latte, Frappé, Macchiato, Mocha), Vitesse (Dark, Light, Black),
-Vercel (Dark, Light), Gruvbox (Dark, Light), your terminal's own colours, and monochrome. Press
+Srcery, Lightwallet, Nord, Catppuccin (Latte, Frappé, Macchiato, Mocha), Vitesse (Dark, Light,
+Black), Vercel (Dark, Light), Gruvbox (Dark, Light), your terminal's own colours, and monochrome. Press
 `c` to open the picker: moving previews the theme live, `Enter` keeps and saves it, `Esc`
 reverts.
 
 The choice is saved in `delegator-tui/config` under the platform configuration directory. The
 starting theme is the first of `--theme`, the saved choice, monochrome when `NO_COLOR` is set,
-and Lightwallet.
+and Srcery.
 
 Colours are 24-bit when `COLORTERM` says the terminal supports it, and mapped to the nearest
 of the 256 xterm colours otherwise. Force either with `--color-depth 24bit` or

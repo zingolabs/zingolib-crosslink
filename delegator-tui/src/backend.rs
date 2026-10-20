@@ -4,7 +4,10 @@
 //! pepper-sync on this branch publishes no event stream, so the task reads the wallet's sync
 //! status on every tick and reports what changed since the last one.
 
+pub mod fake;
+
 use std::collections::HashSet;
+use std::io::Read as _;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -15,7 +18,7 @@ use pepper_sync::wallet::{OrchardNote, OutputInterface, SaplingNote, Transparent
 use tokio::sync::mpsc;
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::value::Zatoshis;
-use zingolib::config::{ChainType, ZingoConfig, chain_from_str};
+use zingolib::config::{ChainType, IndexerList, IndexerNetwork, ZingoConfig, chain_from_str};
 use zingolib::data::PollReport;
 use zingolib::lightclient::LightClient;
 use zingolib::wallet::error::BalanceError;
@@ -28,10 +31,10 @@ use zingolib::wallet::summary::data::{
 use zingolib::wallet::{LightWallet, SeedDerivation, WalletBase, WalletSettings};
 
 use crate::app::{
-    Action, AddressKind, AddressRow, Balance, ChainRange, Command, InputRow, KeyMaterial, Network,
-    OpenSpec, OutputRole, OutputRow, Pool, PoolBalance, RangePriority, SpendState, SyncMode,
-    SyncNote, Tip, TxKind, TxRow, TxStatus, ValueTransferRow, WalletData, WalletEntry, WalletInfo,
-    WalletKind,
+    Action, AddressKind, AddressRow, Balance, ChainRange, Command, Evidence, InputRow, KeyMaterial,
+    Network, OpenSpec, OutputRole, OutputRow, Pool, PoolBalance, RangePriority, SpendState,
+    SyncMode, SyncNote, Tip, TxKind, TxRow, TxStatus, ValueTransferRow, WalletData, WalletEntry,
+    WalletInfo, WalletKind,
 };
 
 /// Pause between the end of one sync session and the start of the next.
@@ -117,12 +120,13 @@ impl BackendConfig {
             .map(str::to_string)
             .or_else(|| self.server.clone())
             .or_else(|| self.saved_server(network, name))
-            .unwrap_or_else(|| network.default_server().to_string());
+            .unwrap_or_else(|| network.default_server());
         parse_server(&raw)
     }
 
     fn client_config(&self, network: Network, name: &str, server: http::Uri) -> ZingoConfig {
         let mut config = ZingoConfig::build(chain_type(network))
+            .set_indexer_network(network.indexer_network())
             .set_lightwalletd_uri(server)
             .set_wallet_dir(self.wallet_dir(network))
             .set_wallet_settings(wallet_settings())
@@ -131,8 +135,8 @@ impl BackendConfig {
         config
     }
 
-    /// Every wallet file under the data directories, newest first. Each network has its own
-    /// directory by default; with `--data-dir` they are one, read once.
+    /// Every crosslink wallet file under the data directory, newest first. Files for other
+    /// chains are left out: see [`classify`].
     pub fn list_wallets(&self) -> Vec<WalletEntry> {
         let mut seen_dirs = Vec::new();
         let mut out = Vec::new();
@@ -163,15 +167,26 @@ impl BackendConfig {
                     .ok()
                     .and_then(|t| SystemTime::now().duration_since(t).ok())
                     .map(|d| d.as_secs());
-                let mut found = WalletEntry {
-                    name: name.to_string(),
-                    network,
-                    kind: WalletKind::Unknown,
-                    birthday: None,
-                    age_secs,
-                };
-                read_meta(&self.meta_path(network, name), &mut found);
-                out.push(found);
+                match classify(
+                    &path,
+                    &self.meta_path(network, name),
+                    &self.server_path(network, name),
+                ) {
+                    Ok(Some((found_network, kind, birthday, evidence))) => out.push(WalletEntry {
+                        name: name.to_string(),
+                        network: found_network,
+                        kind,
+                        birthday,
+                        age_secs,
+                        evidence,
+                    }),
+                    Ok(None) => {
+                        tracing::info!("{} is not a crosslink wallet; not listed", path.display())
+                    }
+                    Err(e) => {
+                        tracing::warn!("{} is not readable as a wallet: {e}", path.display())
+                    }
+                }
             }
         }
         out.sort_by_key(|w| (w.age_secs.unwrap_or(u64::MAX), w.name.clone()));
@@ -179,11 +194,105 @@ impl BackendConfig {
     }
 }
 
-/// Fills `entry` from its meta file, when there is one.
-fn read_meta(path: &Path, entry: &mut WalletEntry) {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return;
+/// The chain name a wallet file was written for: `main`, `test`, or `regtest`. Files older
+/// than format 32 keep the name further in and are not read; none of them are crosslink
+/// wallets anyway.
+pub fn file_chain(path: &Path) -> std::io::Result<Option<String>> {
+    let mut file = std::fs::File::open(path)?;
+    let mut version = [0u8; 8];
+    file.read_exact(&mut version)?;
+    if u64::from_le_bytes(version) < 32 {
+        return Ok(None);
+    }
+    // a little-endian u64 length and the UTF-8 name, as zingolib's `write_string` does it
+    let mut len = [0u8; 8];
+    file.read_exact(&mut len)?;
+    let len = u64::from_le_bytes(len);
+    if len > 32 {
+        return Ok(None);
+    }
+    let mut name = vec![0u8; len as usize];
+    file.read_exact(&mut name)?;
+    Ok(String::from_utf8(name).ok())
+}
+
+/// Whether `path` is a crosslink wallet, and which chain it is on.
+///
+/// The file's own chain name rules out mainnet and regtest. Both crosslink chains write the
+/// testnet name, as does the public Zcash testnet, so the chain comes from the meta file beside
+/// the wallet, else from the indexer saved beside it when that is a known crosslink node (a
+/// public-testnet indexer rules the file out). With neither, the file is listed as unverified
+/// and checked against the indexer's blocks when it opens.
+#[allow(clippy::type_complexity)]
+pub fn classify(
+    path: &Path,
+    meta: &Path,
+    server: &Path,
+) -> std::io::Result<Option<(Network, WalletKind, Option<u32>, Evidence)>> {
+    if file_chain(path)?.as_deref() != Some("test") {
+        return Ok(None);
+    }
+    let mut entry = WalletEntry {
+        name: String::new(),
+        network: Network::Stable,
+        kind: WalletKind::Unknown,
+        birthday: None,
+        age_secs: None,
+        evidence: Evidence::Unverified,
     };
+    if read_meta(meta, &mut entry) {
+        return Ok(Some((
+            entry.network,
+            entry.kind,
+            entry.birthday,
+            Evidence::Meta,
+        )));
+    }
+    if let Ok(saved) = std::fs::read_to_string(server)
+        && let Ok(uri) = parse_server(saved.trim())
+    {
+        match network_of_indexer(&uri) {
+            Some(Ok(network)) => {
+                return Ok(Some((
+                    network,
+                    entry.kind,
+                    entry.birthday,
+                    Evidence::Server,
+                )));
+            }
+            Some(Err(())) => return Ok(None),
+            None => {}
+        }
+    }
+    Ok(Some((
+        entry.network,
+        entry.kind,
+        entry.birthday,
+        Evidence::Unverified,
+    )))
+}
+
+/// Which crosslink chain a built-in indexer serves, `Err` for a known indexer of another
+/// network, `None` for an indexer the library does not list.
+fn network_of_indexer(uri: &http::Uri) -> Option<Result<Network, ()>> {
+    let same = |a: &http::Uri| a.host() == uri.host() && a.port_u16() == uri.port_u16();
+    IndexerList::builtin()
+        .iter()
+        .find(|(_, indexer)| same(&indexer.uri))
+        .map(|(network, _)| match network {
+            IndexerNetwork::CrosslinkFeaturenet => Ok(Network::Stable),
+            n if n == IndexerNetwork::CROSSLINK_NIGHTLY => Ok(Network::Nightly),
+            _ => Err(()),
+        })
+}
+
+/// Fills `entry` from its meta file, when there is one. Returns whether the file named the
+/// chain.
+fn read_meta(path: &Path, entry: &mut WalletEntry) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let mut named = false;
     for line in text.lines() {
         let Some((key, value)) = line.split_once('=') else {
             continue;
@@ -192,6 +301,7 @@ fn read_meta(path: &Path, entry: &mut WalletEntry) {
             ("network", v) => {
                 if let Some(n) = Network::parse(v) {
                     entry.network = n;
+                    named = true;
                 }
             }
             ("kind", v) => {
@@ -203,11 +313,13 @@ fn read_meta(path: &Path, entry: &mut WalletEntry) {
             _ => {}
         }
     }
+    named
 }
 
-/// Asks `server` for its chain tip.
+/// Asks `server` for its chain tip, and measures the block spacing from the times of the tip
+/// and a block a thousand back.
 async fn fetch_tip(network: Network, server: http::Uri) -> Result<Tip, String> {
-    use zcash_client_backend::proto::service::Empty;
+    use zcash_client_backend::proto::service::{BlockId, Empty};
     let mut client = zingo_netutils::get_client(server.clone())
         .await
         .map_err(|e| format!("cannot connect to {server}: {e}"))?;
@@ -221,10 +333,72 @@ async fn fetch_tip(network: Network, server: http::Uri) -> Result<Tip, String> {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    let mut spacing_secs = network.block_spacing_secs();
+    let back = height.saturating_sub(1000).max(1);
+    if back < height {
+        let block = |h: u32| BlockId {
+            height: u64::from(h),
+            hash: Vec::new(),
+        };
+        if let (Ok(newest), Ok(oldest)) = (
+            client.get_block(block(height)).await,
+            client.get_block(block(back)).await,
+        ) {
+            let (newest, oldest) = (newest.into_inner(), oldest.into_inner());
+            let seconds = u64::from(newest.time.saturating_sub(oldest.time));
+            let blocks = u64::from(height - back);
+            if seconds > 0 {
+                spacing_secs = (seconds / blocks).clamp(1, 600);
+            }
+        }
+    }
     Ok(Tip {
         network,
         height,
         at_unix,
+        spacing_secs,
+    })
+}
+
+/// The chain a wallet file's blocks are on: asks each crosslink chain's indexer for the block
+/// at the wallet's newest synced height and compares hashes.
+async fn chain_of_blocks(
+    config: &BackendConfig,
+    name: &str,
+    newest: (u32, [u8; 32]),
+) -> Result<Network, String> {
+    use zcash_client_backend::proto::service::BlockId;
+    let (height, hash) = newest;
+    let mut failures = Vec::new();
+    for network in Network::ALL {
+        let Ok(uri) = config.server_uri(network, name, None) else {
+            continue;
+        };
+        let Ok(mut client) = zingo_netutils::get_client(uri.clone()).await else {
+            failures.push(format!("{} did not answer", network.name()));
+            continue;
+        };
+        match client
+            .get_block(BlockId {
+                height: u64::from(height),
+                hash: Vec::new(),
+            })
+            .await
+        {
+            Ok(block) => {
+                if block.into_inner().hash == hash {
+                    return Ok(network);
+                }
+            }
+            Err(e) => failures.push(format!("{}: {}", network.name(), e.message())),
+        }
+    }
+    Err(if failures.len() == Network::ALL.len() {
+        format!("no crosslink indexer answered ({})", failures.join("; "))
+    } else {
+        format!(
+            "block {height} of this wallet is on neither crosslink chain; the file is from another network"
+        )
     })
 }
 
@@ -251,11 +425,9 @@ fn parse_server(raw: &str) -> Result<http::Uri, String> {
 /// The chain parameters zingolib uses on this branch. Its testnet is the crosslink testnet,
 /// where every upgrade is active from block 1, not the public Zcash testnet.
 pub fn chain_type(network: Network) -> ChainType {
-    match network {
-        Network::Mainnet => ChainType::Mainnet,
-        Network::Testnet => chain_from_str("testnet").expect("a known chain name"),
-        Network::Regtest => chain_from_str("regtest").expect("a known chain name"),
-    }
+    // both crosslink chains share the featurenet schedule
+    let _ = network;
+    chain_from_str("testnet").expect("a known chain name")
 }
 
 fn wallet_settings() -> WalletSettings {
@@ -316,7 +488,7 @@ struct Backend {
 impl Backend {
     fn new(config: BackendConfig, actions: mpsc::UnboundedSender<Action>) -> Self {
         Self {
-            network: Network::Mainnet,
+            network: Network::Stable,
             wallet_name: String::new(),
             config,
             actions,
@@ -511,7 +683,16 @@ impl Backend {
 
     async fn open(&mut self, spec: OpenSpec) -> Result<(LightClient, WalletInfo), String> {
         let (lc, network, name) = match spec {
-            OpenSpec::Read { network, name } => {
+            OpenSpec::Read {
+                network,
+                name,
+                verified,
+            } => {
+                let network = if verified {
+                    network
+                } else {
+                    self.verify_chain(network, &name).await?
+                };
                 let server = self.config.server_uri(network, &name, None)?;
                 let config = self.config.client_config(network, &name, server);
                 let lc = LightClient::create_from_wallet_path(config)
@@ -598,6 +779,29 @@ impl Backend {
             tracing::warn!("cannot write the wallet's meta file: {e}");
         }
         Ok((lc, info))
+    }
+
+    /// Which crosslink chain an unverified wallet file is on, from its newest synced block.
+    /// A file with no blocks yet keeps `fallback`.
+    async fn verify_chain(&self, fallback: Network, name: &str) -> Result<Network, String> {
+        let path = self.config.wallet_path(fallback, name);
+        let newest = tokio::task::spawn_blocking(move || -> Result<_, String> {
+            let file = std::fs::File::open(&path)
+                .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+            let wallet = LightWallet::read(std::io::BufReader::new(file), chain_type(fallback))
+                .map_err(|e| format!("cannot read wallet: {e}"))?;
+            Ok(wallet
+                .wallet_blocks
+                .iter()
+                .next_back()
+                .map(|(height, block)| (u32::from(*height), block.block_hash().0)))
+        })
+        .await
+        .map_err(|e| format!("wallet read task failed: {e}"))??;
+        match newest {
+            None => Ok(fallback),
+            Some(newest) => chain_of_blocks(&self.config, name, newest).await,
+        }
     }
 
     async fn launch(&mut self) {
@@ -1235,7 +1439,7 @@ mod tests {
     async fn probe_default_testnet_server() {
         use zcash_client_backend::proto::service::Empty;
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let uri = parse_server(Network::Testnet.default_server()).unwrap();
+        let uri = parse_server(&Network::Stable.default_server()).unwrap();
         let mut client = zingo_netutils::get_client(uri).await.expect("connect");
         let info = client
             .get_lightd_info(Empty {})
@@ -1257,7 +1461,7 @@ mod tests {
             server: None,
             seed_derivation: SeedDerivation::Zip32Standard,
         };
-        let uri = config.server_uri(Network::Testnet, "probe", None).unwrap();
+        let uri = config.server_uri(Network::Stable, "probe", None).unwrap();
         let mut client = zingo_netutils::get_client(uri.clone())
             .await
             .expect("connect");
@@ -1267,7 +1471,7 @@ mod tests {
             .unwrap()
             .into_inner()
             .block_height;
-        let zc = config.client_config(Network::Testnet, "probe", uri);
+        let zc = config.client_config(Network::Stable, "probe", uri);
         let mut lc = LightClient::new(
             zc,
             BlockHeight::from_u32(tip as u32),
@@ -1295,8 +1499,8 @@ mod tests {
             server: std::env::var("DELEGATOR_PROBE_SERVER").ok(),
             seed_derivation: SeedDerivation::Zip32Standard,
         };
-        let uri = config.server_uri(Network::Testnet, "probe", None).unwrap();
-        let zc = config.client_config(Network::Testnet, "probe", uri);
+        let uri = config.server_uri(Network::Stable, "probe", None).unwrap();
+        let zc = config.client_config(Network::Stable, "probe", uri);
         let mut lc = LightClient::create_from_wallet_path(zc).unwrap();
         eprintln!("birthday {}", lc.wallet.read().await.birthday);
         let result = tokio::time::timeout(Duration::from_secs(120), lc.sync_and_await()).await;
@@ -1315,19 +1519,20 @@ mod tests {
             server: None,
             seed_derivation: SeedDerivation::Zip32Standard,
         };
+        let builtin = format!("{}/", Network::Stable.default_server());
         assert_eq!(
             config
-                .server_uri(Network::Regtest, "w", None)
+                .server_uri(Network::Stable, "w", None)
                 .unwrap()
                 .to_string(),
-            "http://127.0.0.1:9067/"
+            builtin
         );
         config
-            .save_server(Network::Regtest, "w", "my.node:1234")
+            .save_server(Network::Stable, "w", "my.node:1234")
             .unwrap();
         assert_eq!(
             config
-                .server_uri(Network::Regtest, "w", None)
+                .server_uri(Network::Stable, "w", None)
                 .unwrap()
                 .to_string(),
             "http://my.node:1234/"
@@ -1335,10 +1540,15 @@ mod tests {
         // another wallet in the same directory has its own
         assert_eq!(
             config
-                .server_uri(Network::Regtest, "other", None)
+                .server_uri(Network::Stable, "other", None)
                 .unwrap()
                 .to_string(),
-            "http://127.0.0.1:9067/"
+            builtin
+        );
+        // the nightly chain has its own first indexer
+        assert_ne!(
+            Network::Nightly.default_server(),
+            Network::Stable.default_server()
         );
         // a flag still wins
         let flagged = BackendConfig {
@@ -1347,15 +1557,32 @@ mod tests {
         };
         assert_eq!(
             flagged
-                .server_uri(Network::Regtest, "w", None)
+                .server_uri(Network::Stable, "w", None)
                 .unwrap()
                 .to_string(),
             "https://other:443/"
         );
     }
 
+    /// A real wallet file for `chain`, written the way zingolib writes it.
+    fn wallet_file(dir: &Path, name: &str, chain: ChainType) {
+        let mut wallet = LightWallet::new(
+            chain,
+            WalletBase::FreshEntropy {
+                no_of_accounts: NonZeroU32::new(1).unwrap(),
+                seed_derivation: SeedDerivation::Zip32Standard,
+            },
+            BlockHeight::from_u32(500_000),
+            wallet_settings(),
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        wallet.write(&mut bytes, &chain).unwrap();
+        std::fs::write(dir.join(super::wallet_file(name)), bytes).unwrap();
+    }
+
     #[test]
-    fn the_list_reads_wallet_files_and_their_meta() {
+    fn the_list_keeps_crosslink_wallets_and_hides_the_rest() {
         let dir = tempfile::tempdir().unwrap();
         let config = BackendConfig {
             data_dir: Some(dir.path().to_path_buf()),
@@ -1363,28 +1590,58 @@ mod tests {
             seed_derivation: SeedDerivation::Zip32Standard,
         };
         assert!(config.list_wallets().is_empty());
-        std::fs::write(dir.path().join("main.dat"), b"x").unwrap();
-        std::fs::write(dir.path().join("old.dat"), b"x").unwrap();
+        let testnet = chain_type(Network::Stable);
+        wallet_file(dir.path(), "main", testnet);
+        wallet_file(dir.path(), "old", testnet);
+        wallet_file(dir.path(), "by-server", testnet);
+        wallet_file(dir.path(), "public", testnet);
+        wallet_file(dir.path(), "zcash", ChainType::Mainnet);
+        wallet_file(dir.path(), "local", chain_from_str("regtest").unwrap());
         std::fs::write(dir.path().join("notes.txt"), b"x").unwrap();
+        std::fs::write(dir.path().join("junk.dat"), b"not a wallet").unwrap();
         std::fs::write(
             dir.path().join("main.meta"),
-            "network = testnet\nkind = seed\nbirthday = 118000\n",
+            "network = nightly\nkind = seed\nbirthday = 118000\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("by-server.server"),
+            format!("{}\n", Network::Nightly.default_server()),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("public.server"),
+            "https://testnet.zec.rocks:443\n",
         )
         .unwrap();
         let list = config.list_wallets();
-        assert_eq!(list.len(), 2, "only .dat files count");
+        let names: Vec<&str> = list.iter().map(|w| w.name.as_str()).collect();
+        assert_eq!(
+            names.len(),
+            3,
+            "mainnet, regtest, the public testnet and junk stay out: {names:?}"
+        );
         let main = list.iter().find(|w| w.name == "main").unwrap();
-        assert_eq!(main.network, Network::Testnet);
+        assert_eq!(main.network, Network::Nightly);
         assert_eq!(main.kind, WalletKind::Seed);
         assert_eq!(main.birthday, Some(118_000));
+        assert_eq!(main.evidence, Evidence::Meta);
         assert!(main.age_secs.is_some());
+        let by_server = list.iter().find(|w| w.name == "by-server").unwrap();
+        assert_eq!(by_server.network, Network::Nightly);
+        assert_eq!(by_server.evidence, Evidence::Server);
         let old = list.iter().find(|w| w.name == "old").unwrap();
         assert_eq!(old.kind, WalletKind::Unknown, "no meta file yet");
-        assert_eq!(old.birthday, None);
+        assert_eq!(old.evidence, Evidence::Unverified);
+        assert_eq!(
+            old.network,
+            Network::Stable,
+            "until the blocks say otherwise"
+        );
         // the meta file is what a saved WalletInfo writes
         config
             .save_meta(&WalletInfo {
-                network: Network::Mainnet,
+                network: Network::Stable,
                 wallet_name: "old".into(),
                 wallet_path: String::new(),
                 birthday: 2_604_500,
@@ -1399,8 +1656,25 @@ mod tests {
             .find(|w| w.name == "old")
             .unwrap();
         assert_eq!(
-            (old.kind, old.birthday),
-            (WalletKind::Watch, Some(2_604_500))
+            (old.kind, old.birthday, old.evidence),
+            (WalletKind::Watch, Some(2_604_500), Evidence::Meta)
         );
+    }
+
+    #[test]
+    fn the_file_header_names_the_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        wallet_file(dir.path(), "t", chain_type(Network::Stable));
+        wallet_file(dir.path(), "m", ChainType::Mainnet);
+        assert_eq!(
+            file_chain(&dir.path().join("t.dat")).unwrap().as_deref(),
+            Some("test")
+        );
+        assert_eq!(
+            file_chain(&dir.path().join("m.dat")).unwrap().as_deref(),
+            Some("main")
+        );
+        std::fs::write(dir.path().join("short.dat"), b"abc").unwrap();
+        assert!(file_chain(&dir.path().join("short.dat")).is_err());
     }
 }

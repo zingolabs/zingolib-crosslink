@@ -10,66 +10,87 @@ pub const EVENT_LOG_CAP: usize = 100;
 /// Progress samples kept for the ETA rate window.
 const PROGRESS_WINDOW: usize = 12;
 
-/// Zcash network the wallet watches.
+/// The crosslink chains this wallet knows: the featurenet and the nightly. They share chain
+/// parameters, so a wallet file alone cannot tell them apart; the indexer it syncs from can.
+/// Mainnet, the public testnet, and regtest wallets are not for this program and never show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Network {
-    Mainnet,
-    Testnet,
-    Regtest,
+    /// The crosslink featurenet, "stable": the live chain.
+    Stable,
+    /// The crosslink nightly, run from the node's dev branch.
+    Nightly,
 }
 
 impl Network {
-    pub const ALL: [Network; 3] = [Network::Mainnet, Network::Testnet, Network::Regtest];
+    pub const ALL: [Network; 2] = [Network::Stable, Network::Nightly];
 
     pub fn name(self) -> &'static str {
         match self {
-            Network::Mainnet => "mainnet",
-            Network::Testnet => "testnet",
-            Network::Regtest => "regtest",
+            Network::Stable => "stable",
+            Network::Nightly => "nightly",
+        }
+    }
+
+    /// What the list and the header call it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Network::Stable => "crosslink stable",
+            Network::Nightly => "crosslink nightly",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "mainnet" => Some(Network::Mainnet),
-            "testnet" => Some(Network::Testnet),
-            "regtest" => Some(Network::Regtest),
+        match s.trim().to_ascii_lowercase().as_str() {
+            "stable" | "featurenet" | "crosslink" | "crosslink-featurenet" | "testnet" => {
+                Some(Network::Stable)
+            }
+            "nightly" | "crosslink-nightly" => Some(Network::Nightly),
             _ => None,
         }
     }
 
-    /// Default indexer for the network.
-    pub fn default_server(self) -> &'static str {
+    /// The indexer group zingolib keeps for this chain.
+    pub fn indexer_network(self) -> zingolib::config::IndexerNetwork {
         match self {
-            Network::Mainnet => zingolib::config::DEFAULT_INDEXER_URI,
-            Network::Testnet => zingolib::config::DEFAULT_TESTNET_INDEXER_URI,
-            Network::Regtest => "http://127.0.0.1:9067",
+            Network::Stable => zingolib::config::IndexerNetwork::CrosslinkFeaturenet,
+            Network::Nightly => zingolib::config::IndexerNetwork::CROSSLINK_NIGHTLY,
         }
     }
 
-    /// The block Sapling activated at, the lowest birthday a wallet can have. The testnet here
-    /// is the crosslink testnet, live from block 1.
+    /// The first built-in indexer for the chain.
+    pub fn default_server(self) -> String {
+        zingolib::config::IndexerList::builtin()
+            .first(&self.indexer_network())
+            .map(|i| i.uri.to_string().trim_end_matches('/').to_string())
+            .unwrap_or_else(|| "http://127.0.0.1:18234".to_string())
+    }
+
+    /// The lowest birthday a wallet can have. Both crosslink chains are live from block 1.
     pub fn sapling_activation(self) -> u32 {
-        match self {
-            Network::Mainnet => 419_200,
-            Network::Testnet | Network::Regtest => 1,
-        }
+        1
     }
 
-    /// Bech32m human-readable prefix of a unified full viewing key on this network.
-    pub fn ufvk_prefix(self) -> &'static str {
-        match self {
-            Network::Mainnet => "uview1",
-            Network::Testnet => "uviewtest1",
-            Network::Regtest => "uviewregtest1",
-        }
+    /// Seconds between blocks when the server has not told us: the crosslink featurenets run
+    /// faster than mainnet. [`Tip::spacing_secs`] is the measured figure once a tip is known.
+    pub fn block_spacing_secs(self) -> u64 {
+        15
     }
 
-    /// The network a unified full viewing key is encoded for, read from its prefix.
-    pub fn from_ufvk(ufvk: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|n| ufvk.starts_with(n.ufvk_prefix()))
+    /// Bech32m human-readable prefix of a unified full viewing key on these chains.
+    pub const UFVK_PREFIX: &'static str = "uviewtest1";
+
+    /// Whether `ufvk` is encoded for the crosslink chains (testnet parameters), or what it is
+    /// instead.
+    pub fn check_ufvk_prefix(ufvk: &str) -> Result<(), String> {
+        if ufvk.starts_with(Self::UFVK_PREFIX) {
+            Ok(())
+        } else if ufvk.starts_with("uviewregtest1") {
+            Err("a regtest key · this wallet is for the crosslink testnets, whose keys start with uviewtest1".into())
+        } else if ufvk.starts_with("uview1") {
+            Err("a mainnet key · this wallet is for the crosslink testnets, whose keys start with uviewtest1".into())
+        } else {
+            Err("not a unified full viewing key: expected a prefix of uviewtest1".into())
+        }
     }
 }
 
@@ -138,17 +159,6 @@ pub enum ReceiveKind {
     Transparent,
 }
 
-/// Seconds between blocks, for turning a date into a height. Mainnet is fixed by consensus;
-/// the crosslink featurenets run faster, so their figure is an estimate.
-impl Network {
-    pub fn block_spacing_secs(self) -> u64 {
-        match self {
-            Network::Mainnet => 75,
-            Network::Testnet | Network::Regtest => 15,
-        }
-    }
-}
-
 /// What kind of key material a wallet file holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WalletKind {
@@ -188,6 +198,20 @@ pub struct WalletEntry {
     pub birthday: Option<u32>,
     /// Seconds since the file was last written, when the file system says.
     pub age_secs: Option<u64>,
+    /// How the file was tied to its chain.
+    pub evidence: Evidence,
+}
+
+/// How a wallet file was found to belong to a crosslink chain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Evidence {
+    /// The meta file beside it says so.
+    Meta,
+    /// The indexer saved beside it is a known crosslink node.
+    Server,
+    /// Only the chain parameters match: testnet, not mainnet or regtest. The chain is checked
+    /// against the indexer's blocks when the wallet opens.
+    Unverified,
 }
 
 /// The choices on the setup menu, in order.
@@ -276,6 +300,8 @@ pub struct Tip {
     pub network: Network,
     pub height: u32,
     pub at_unix: u64,
+    /// Seconds per block, measured from the chain, or the network's guess.
+    pub spacing_secs: u64,
 }
 
 /// The first-run flow: list, menu, one branch, birthday, name.

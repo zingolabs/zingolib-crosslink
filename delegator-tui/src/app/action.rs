@@ -94,6 +94,9 @@ pub enum OpenSpec {
     Read {
         network: Network,
         name: String,
+        /// The chain is known from the meta or server file; otherwise the backend checks the
+        /// wallet's blocks against the indexers first.
+        verified: bool,
     },
     Create {
         network: Network,
