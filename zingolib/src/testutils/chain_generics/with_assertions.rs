@@ -121,8 +121,8 @@ where
 
     timestamped_test_log("following proposal, preparing to unwind if an assertion fails.");
 
-    let server_height_at_send = BlockHeight::from(
-        crate::grpc_connector::get_latest_block(environment.lightserver_uri().unwrap())
+    let indexer_height_at_send = BlockHeight::from(
+        crate::grpc_connector::get_latest_block(environment.indexer_uri().unwrap())
             .await
             .unwrap()
             .height as u32,
@@ -212,7 +212,7 @@ where
         for status in sender_mempool_statuses {
             assert_eq!(
                 status,
-                ConfirmationStatus::Mempool(server_height_at_send + 1)
+                ConfirmationStatus::Mempool(indexer_height_at_send + 1)
             );
         }
 
@@ -242,7 +242,7 @@ where
             for status in recipient_mempool_statuses {
                 assert_eq!(
                     status,
-                    ConfirmationStatus::Mempool(server_height_at_send + 1)
+                    ConfirmationStatus::Mempool(indexer_height_at_send + 1)
                 );
             }
             recipients_mempool_outputs.push(recipient_mempool_outputs);
@@ -351,7 +351,7 @@ where
         for status in recipient_confirmed_statuses {
             assert_eq!(
                 status,
-                ConfirmationStatus::Confirmed(server_height_at_send + 1)
+                ConfirmationStatus::Confirmed(indexer_height_at_send + 1)
             );
         }
         recipients_confirmed_outputs.push(recipient_confirmed_outputs);

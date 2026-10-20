@@ -68,9 +68,9 @@ pub enum TransmissionError {
     /// Transaction to transmit does not have `Calculated` status: {0}
     #[error("Transaction to transmit does not have `Calculated` status: {0}")]
     IncorrectTransactionStatus(TxId),
-    /// Txid reported by server does not match calculated txid.
+    /// Txid reported by indexer does not match calculated txid.
     #[error(
-        "Server error: txid reported by the server does not match calculated txid.\ncalculated txid:\n{0}\ntxid from server: {1}"
+        "Indexer error: txid reported by the indexer does not match calculated txid.\ncalculated txid:\n{0}\ntxid from indexer: {1}"
     )]
-    IncorrectTxidFromServer(TxId, TxId),
+    IncorrectTxidFromIndexer(TxId, TxId),
 }

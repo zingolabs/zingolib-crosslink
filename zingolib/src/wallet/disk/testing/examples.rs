@@ -9,7 +9,7 @@ use zcash_protocol::{PoolType, ShieldedPool};
 use zingo_test_vectors::seeds;
 
 use super::super::LightWallet;
-use crate::config::{ChainType, DEFAULT_LIGHTWALLETD_SERVER};
+use crate::config::{ChainType, DEFAULT_INDEXER_URI};
 use crate::lightclient::LightClient;
 use crate::wallet::WalletSettings;
 
@@ -278,7 +278,7 @@ impl NetworkSeedVersion {
         let config = match self {
             NetworkSeedVersion::Regtest(_) => {
                 // Probably should be undefined. For the purpose of these tests, I hope it doesnt matter.
-                let lightwalletd_uri = DEFAULT_LIGHTWALLETD_SERVER.parse::<Uri>().unwrap();
+                let lightwalletd_uri = DEFAULT_INDEXER_URI.parse::<Uri>().unwrap();
 
                 crate::config::load_clientconfig(
                     lightwalletd_uri,

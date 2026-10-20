@@ -60,7 +60,7 @@ impl ConductChain for LibtonodeEnvironment {
         );
     }
 
-    fn lightserver_uri(&self) -> Option<http::Uri> {
+    fn indexer_uri(&self) -> Option<http::Uri> {
         Some(localhost_uri(self.local_net.indexer().listen_port()))
     }
 

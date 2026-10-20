@@ -57,6 +57,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `zingo_netutils::get_client` bounds the connection attempt with `CONNECT_TIMEOUT` (10 s).
 - `docs/featurenet-e2e.md`: the running log of the end-to-end run against the live featurenet.
 ### Changed
+- The lightwalletd endpoint is an indexer, and is now named so: `LightClient::{indexer_uri,
+  set_indexer}` (were `server_uri`, `set_server`), `DEFAULT_INDEXER_URI` and
+  `DEFAULT_TESTNET_INDEXER_URI` (were `DEFAULT_LIGHTWALLETD_SERVER`,
+  `DEFAULT_TESTNET_LIGHTWALLETD_SERVER`), `TransmissionError::IncorrectTxidFromIndexer`, the
+  `info` key `indexer_uri`, and in `zingo-cli` the `--indexer` flag and `change_indexer` command
+  (were `--server`, `change_server`). Test helpers follow (`ConductChain::indexer_uri`).
 - removed `dev` branch reference from `zingo_common_components` crate and pointed to version `0.2`
 - `crosslink_monolith` pinned to `0735e958` (NU6.3 at height 1, `FeaturenetUpgrade1` at 55296,
   self-certifying finalizer addresses, `StakingAction` as an enum, bond spending keys in the

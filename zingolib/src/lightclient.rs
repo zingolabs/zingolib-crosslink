@@ -73,7 +73,7 @@ pub struct LightClient {
     save_handle: Option<JoinHandle<std::io::Result<()>>>,
 }
 
-/// What a indexer reported to a probe.
+/// What an indexer reported to a probe.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexerInfo {
     /// The indexer's tip height.
@@ -157,7 +157,7 @@ impl LightClient {
         )
     }
 
-    /// The birthday a fresh wallet gets without consulting the server: the higher of
+    /// The birthday a fresh wallet gets without consulting the indexer: the higher of
     /// [`chain_height` - 100] and sapling activation height.
     pub fn default_fresh_wallet_birthday(
         config: &ZingoConfig,
@@ -170,9 +170,9 @@ impl LightClient {
         sapling_activation_height.max(chain_height - 100)
     }
 
-    /// The birthday a fresh wallet should get against the configured server.
+    /// The birthday a fresh wallet should get against the configured indexer.
     ///
-    /// Normally [`Self::default_fresh_wallet_birthday`]. When the server serves no Ironwood note
+    /// Normally [`Self::default_fresh_wallet_birthday`]. When the indexer serves no Ironwood note
     /// commitment tree state at `chain_height` although the pool is active there (the crosslink
     /// node currently serves none), the wallet cannot recover the Ironwood frontier at a later
     /// birthday and must rebuild the tree from scanned blocks, so the birthday is the pool's
@@ -180,7 +180,7 @@ impl LightClient {
     ///
     /// # Error
     ///
-    /// Returns an error if the server cannot be reached.
+    /// Returns an error if the indexer cannot be reached.
     pub async fn fresh_wallet_birthday(
         config: &ZingoConfig,
         chain_height: BlockHeight,
@@ -203,7 +203,7 @@ impl LightClient {
                 .await?;
         if tree_state.ironwood_tree.is_empty() {
             tracing::warn!(
-                "server serves no Ironwood tree state at height {chain_height}. the wallet birthday is set to the Ironwood activation height {ironwood_activation_height} so the Ironwood tree can be rebuilt from scanned blocks."
+                "indexer serves no Ironwood tree state at height {chain_height}. the wallet birthday is set to the Ironwood activation height {ironwood_activation_height} so the Ironwood tree can be rebuilt from scanned blocks."
             );
             Ok(ironwood_activation_height)
         } else {
@@ -276,21 +276,21 @@ impl LightClient {
         self.tor_client.as_ref()
     }
 
-    /// Returns URI of the server the lightclient is connected to.
-    pub fn server_uri(&self) -> http::Uri {
+    /// Returns URI of the indexer the lightclient is connected to.
+    pub fn indexer_uri(&self) -> http::Uri {
         self.config.get_lightwalletd_uri()
     }
 
-    /// Set the server uri.
+    /// Set the indexer uri.
     ///
     /// The URI is also recorded at the head of the endpoint list for this client's chain, so
     /// [`Self::indexers`] and the probes include it.
-    pub fn set_server(&self, server: http::Uri) {
-        if server.host().is_some() && server.port().is_some() {
+    pub fn set_indexer(&self, indexer: http::Uri) {
+        if indexer.host().is_some() && indexer.port().is_some() {
             self.config
-                .prefer_indexer(Indexer::new(server.clone(), "configured"));
+                .prefer_indexer(Indexer::new(indexer.clone(), "configured"));
         }
-        *self.config.lightwalletd_uri.write().unwrap() = server;
+        *self.config.lightwalletd_uri.write().unwrap() = indexer;
     }
 
     /// The endpoints listed for this client's chain, most preferred first.
@@ -304,7 +304,7 @@ impl LightClient {
         self.config.add_indexer(indexer);
     }
 
-    /// How long a indexer probe waits, connection included, before it is reported unreachable.
+    /// How long an indexer probe waits, connection included, before it is reported unreachable.
     pub const INDEXER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
     /// Probes every endpoint listed for this client's chain concurrently with `GetLightdInfo`,
@@ -388,15 +388,15 @@ impl LightClient {
         self.tor_client = None;
     }
 
-    /// Returns server information.
+    /// Returns indexer information.
     // TODO: return concrete struct with from json impl
     pub async fn do_info(&self) -> String {
-        match crate::grpc_connector::get_info(self.server_uri()).await {
+        match crate::grpc_connector::get_info(self.indexer_uri()).await {
             Ok(i) => {
                 let o = json::object! {
                     "version" => i.version,
                     "git_commit" => i.git_commit,
-                    "server_uri" => self.server_uri().to_string(),
+                    "indexer_uri" => self.indexer_uri().to_string(),
                     "vendor" => i.vendor,
                     "taddr_support" => i.taddr_support,
                     "chain_name" => i.chain_name,
@@ -515,10 +515,10 @@ impl LightClient {
     /// self-certifying finalizer address when the node knows it. An address whose signature does
     /// not verify is dropped by the codec rather than surfaced.
     pub async fn get_roster_info(&self) -> Result<RosterMembers, String> {
-        let uri = self.server_uri();
+        let uri = self.indexer_uri();
         let mut zcb_client = get_client(uri)
             .await
-            .map_err(|e| format!("Error connecting to server: {e}"))?;
+            .map_err(|e| format!("Error connecting to indexer: {e}"))?;
 
         let res = zcb_client
             .get_roster(Empty {})
@@ -548,9 +548,9 @@ impl LightClient {
         &self,
         bond_key: [u8; 32],
     ) -> Result<crate::crosslink::BondInfo, String> {
-        let mut zcb_client = get_client(self.server_uri())
+        let mut zcb_client = get_client(self.indexer_uri())
             .await
-            .map_err(|err| format!("Error connecting to the server: {err}"))?;
+            .map_err(|err| format!("Error connecting to the indexer: {err}"))?;
 
         match zcb_client
             .get_bond_info(BondInfoRequest {
@@ -721,7 +721,7 @@ impl LightClient {
     }
 
     pub async fn request_faucet_funds(&self, address: String) -> Result<String, String> {
-        let mut zcb_client = get_client(self.server_uri()).await.unwrap();
+        let mut zcb_client = get_client(self.indexer_uri()).await.unwrap();
         let res = zcb_client
             .request_faucet_donation(FaucetRequest { address })
             .await;

@@ -226,10 +226,10 @@ pub const ZENNIES_FOR_ZINGO_TESTNET_ADDRESS: &str = "utest19zd9laj93deq4lkay48xc
 pub const ZENNIES_FOR_ZINGO_DONATION_ADDRESS: &str = "u1p32nu0pgev5cr0u6t4ja9lcn29kaw37xch8nyglwvp7grl07f72c46hxvw0u3q58ks43ntg324fmulc2xqf4xl3pv42s232m25vaukp05s6av9z76s3evsstax4u6f5g7tql5yqwuks9t4ef6vdayfmrsymenqtshgxzj59hdydzygesqa7pdpw463hu7afqf4an29m69kfasdwr494";
 /// TODO: Add Doc Comment Here!
 pub const ZENNIES_FOR_ZINGO_AMOUNT: u64 = 1_000_000;
-/// The lightserver that handles blockchain requests
-pub const DEFAULT_LIGHTWALLETD_SERVER: &str = "https://zec.rocks:443";
+/// The indexer that handles blockchain requests
+pub const DEFAULT_INDEXER_URI: &str = "https://zec.rocks:443";
 /// Used for testnet
-pub const DEFAULT_TESTNET_LIGHTWALLETD_SERVER: &str = "https://testnet.zec.rocks";
+pub const DEFAULT_TESTNET_INDEXER_URI: &str = "https://testnet.zec.rocks";
 /// TODO: Add Doc Comment Here!
 pub const DEFAULT_WALLET_NAME: &str = "zingo-wallet.dat";
 /// TODO: Add Doc Comment Here!
@@ -267,7 +267,7 @@ pub fn load_clientconfig(
                 info!("Connected to {lightwallet_uri}");
             }
             Err(e) => {
-                info!("Couldn't resolve server: {e}");
+                info!("Couldn't resolve indexer: {e}");
             }
         }
     }
@@ -307,8 +307,8 @@ pub fn load_clientconfig(
 
 /// TODO: Add Doc Comment Here!
 #[must_use]
-pub fn construct_lightwalletd_uri(server: Option<String>) -> http::Uri {
-    match server {
+pub fn construct_lightwalletd_uri(indexer: Option<String>) -> http::Uri {
+    match indexer {
         Some(s) => {
             if s.is_empty() {
                 return http::Uri::default();
@@ -325,7 +325,7 @@ pub fn construct_lightwalletd_uri(server: Option<String>) -> http::Uri {
                 s
             }
         }
-        None => DEFAULT_LIGHTWALLETD_SERVER.to_string(),
+        None => DEFAULT_INDEXER_URI.to_string(),
     }
     .parse()
     .unwrap()
@@ -368,7 +368,7 @@ pub struct ZingoConfigBuilder {
 #[derive(Clone, Debug)]
 pub struct ZingoConfig {
     /// The endpoint every request goes to. Swap it with
-    /// [`crate::lightclient::LightClient::set_server`].
+    /// [`crate::lightclient::LightClient::set_indexer`].
     pub lightwalletd_uri: Arc<RwLock<http::Uri>>,
     /// The endpoints the client may switch between, per network; see [`IndexerList`].
     pub indexers: Arc<RwLock<IndexerList>>,
@@ -389,7 +389,7 @@ pub struct ZingoConfig {
 }
 
 impl ZingoConfigBuilder {
-    /// Set the URI of the proxy server we download blockchain information from.
+    /// Set the URI of the proxy indexer we download blockchain information from.
     /// # Examples
     /// ```
     /// use zingolib::config::ZingoConfigBuilder;
@@ -434,7 +434,7 @@ impl ZingoConfigBuilder {
     ///     .set_indexer_network(IndexerNetwork::CROSSLINK_NIGHTLY)
     ///     .create();
     /// assert_eq!(config.indexer_network, IndexerNetwork::CROSSLINK_NIGHTLY);
-    /// assert!(config.get_lightwalletd_uri().host().is_none(), "no URI chosen without a indexer list");
+    /// assert!(config.get_lightwalletd_uri().host().is_none(), "no URI chosen without an indexer list");
     /// ```
     pub fn set_indexer_network(&mut self, network: IndexerNetwork) -> &mut Self {
         self.indexer_network = Some(network);
@@ -567,31 +567,27 @@ impl ZingoConfig {
     }
 
     #[cfg(any(test, feature = "testutils"))]
-    /// create a `ZingoConfig` that helps a `LightClient` connect to a server.
+    /// create a `ZingoConfig` that helps a `LightClient` connect to an indexer.
     #[must_use]
     pub fn create_testnet() -> ZingoConfig {
         ZingoConfig::build(ChainType::Testnet(
             ConfiguredActivationHeights::crosslink_featurenet(),
         ))
-        .set_lightwalletd_uri(
-            (DEFAULT_TESTNET_LIGHTWALLETD_SERVER)
-                .parse::<http::Uri>()
-                .unwrap(),
-        )
+        .set_lightwalletd_uri((DEFAULT_TESTNET_INDEXER_URI).parse::<http::Uri>().unwrap())
         .create()
     }
 
     #[cfg(any(test, feature = "testutils"))]
-    /// create a `ZingoConfig` that helps a `LightClient` connect to a server.
+    /// create a `ZingoConfig` that helps a `LightClient` connect to an indexer.
     #[must_use]
     pub fn create_mainnet() -> ZingoConfig {
         ZingoConfig::build(ChainType::Mainnet)
-            .set_lightwalletd_uri((DEFAULT_LIGHTWALLETD_SERVER).parse::<http::Uri>().unwrap())
+            .set_lightwalletd_uri((DEFAULT_INDEXER_URI).parse::<http::Uri>().unwrap())
             .create()
     }
 
     #[cfg(feature = "testutils")]
-    /// create a `ZingoConfig` that signals a `LightClient` not to connect to a server.
+    /// create a `ZingoConfig` that signals a `LightClient` not to connect to an indexer.
     #[must_use]
     pub fn create_unconnected(chain: ChainType, dir: Option<PathBuf>) -> ZingoConfig {
         if let Some(dir) = dir {
@@ -736,7 +732,7 @@ impl ZingoConfig {
     pub fn get_lightwalletd_uri(&self) -> http::Uri {
         self.lightwalletd_uri
             .read()
-            .expect("Couldn't read configured server URI!")
+            .expect("Couldn't read configured indexer URI!")
             .clone()
     }
 
@@ -908,14 +904,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_load_clientconfig_serverless() {
+    async fn test_load_clientconfig_offline() {
         rustls::crypto::ring::default_provider()
             .install_default()
             .ok(); // another test in this process may already have installed it
         let _ = tracing_subscriber::fmt().try_init();
 
         let valid_uri = crate::config::construct_lightwalletd_uri(Some(
-            crate::config::DEFAULT_LIGHTWALLETD_SERVER.to_string(),
+            crate::config::DEFAULT_INDEXER_URI.to_string(),
         ));
         // let invalid_uri = construct_lightwalletd_uri(Some("Invalid URI".to_string()));
         let temp_dir = tempfile::TempDir::new().unwrap();
@@ -943,7 +939,7 @@ mod tests {
         assert_eq!(valid_config.get_lightwalletd_uri(), valid_uri);
         assert_eq!(valid_config.chain, crate::config::ChainType::Mainnet);
 
-        // let invalid_config = load_clientconfig_serverless(
+        // let invalid_config = load_clientconfig_offline(
         //     invalid_uri.clone(),
         //     Some(temp_path_invalid),
         //     ChainType::Mainnet,

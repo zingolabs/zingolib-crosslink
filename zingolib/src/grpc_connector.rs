@@ -10,7 +10,7 @@ use zcash_client_backend::proto::service::{
 
 pub const DEFAULT_GRPC_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Get server info.
+/// Get indexer info.
 pub async fn get_info(uri: http::Uri) -> Result<LightdInfo, String> {
     let mut client = zingo_netutils::get_client(uri.clone())
         .await

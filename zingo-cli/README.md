@@ -65,10 +65,10 @@ To run in regtest mode:
 cargo build --release -p zingo-cli --features regtest
 ```
 2. Launch a validator, see details below for an example of launching zcashd and generating blocks with zcash-cli.
-3. Launch an indexer/lightserver, see details below for an example of launching lightwalletd.
+3. Launch an indexer, see details below for an example of launching lightwalletd.
 4. Create a wallet directory (data-dir) and run zingo-cli,
 ```bash
-./target/release/zingo-cli --chain regtest --server 127.0.0.1:9067 --data-dir ~/tmp/regtest_temp
+./target/release/zingo-cli --chain regtest --indexer 127.0.0.1:9067 --data-dir ~/tmp/regtest_temp
 ```
 
 **Note:** The zcash_local_net crate will soon offer a binary for simplifying the process of launching and interacting with the local network.
@@ -118,7 +118,7 @@ insightexplorer=1
 experimentalfeatures=1
 lightwalletd=1
 
-### RPC Server Interface Options:
+### RPC Indexer Interface Options:
 # https://zcash.readthedocs.io/en/latest/rtd_pages/zcash_conf_guide.html#json-rpc-options
 rpcuser=xxxxxx
 rpcpassword=xxxxxx

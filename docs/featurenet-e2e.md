@@ -6,11 +6,11 @@ node does not provide. Companion to [crosslink-featurenet.md](crosslink-featuren
 Setup used throughout:
 
 ```text
-zingo-cli --waitsync --chain testnet --server http://45.63.75.9:18234 --data-dir <dir> <command>
+zingo-cli --waitsync --chain testnet --indexer http://45.63.75.9:18234 --data-dir <dir> <command>
 ```
 
 All three public peers (`45.63.75.9`, `70.34.220.94`, `64.177.44.176`) expose the node's embedded
-lightwalletd gRPC server on port 18234 (`GetLightdInfo`: vendor `Crosslink zebrad`, version 6.2.3).
+lightwalletd gRPC indexer on port 18234 (`GetLightdInfo`: vendor `Crosslink zebrad`, version 6.2.3).
 
 ## Node facts established before the first sync
 
@@ -49,14 +49,14 @@ The balance output also had no Ironwood lines.
 
 - `client::get_subtree_roots` tolerates `InvalidArgument`/`Unimplemented` for the Ironwood protocol
   only, logs a warning and returns no roots.
-- `client::get_tree_sizes` replaces the three places that read tree sizes from the server frontier.
+- `client::get_tree_sizes` replaces the three places that read tree sizes from the indexer frontier.
   When the tree state carries an empty `ironwood_tree` at a height where NU6.3 is active, it counts
   the Ironwood actions in `GetBlockRangeNullifiers(activation..=height)` instead. A served empty
   tree is `000000`, never an empty string, so the detection is unambiguous.
 - `add_initial_frontier` fails with `ServerError::IronwoodTreeStateUnavailable` instead of inserting
   an empty Ironwood frontier for a birthday above activation, which would silently mis-position
   every note.
-- `LightClient::fresh_wallet_birthday` probes the server; without Ironwood tree state the fresh
+- `LightClient::fresh_wallet_birthday` probes the indexer; without Ironwood tree state the fresh
   wallet's birthday is the Ironwood activation height. `zingo-cli` prints when this happens. A
   restore from seed must pass `--birthday 1` on this network.
 - `AccountBalance` gains confirmed/unconfirmed/total Ironwood balances.
@@ -115,7 +115,7 @@ The live node has the same lightwalletd gaps (no `ironwoodTree`, no Ironwood sub
 
 `recovery_info` printed the 24 words and birthday 1. A new data directory restored with
 `--seed ... --birthday 1` synced in 2 min 23 s and showed the same unconfirmed Ironwood balance.
-Restoring with `--birthday 60000` on this server fails on purpose:
+Restoring with `--birthday 60000` on this indexer fails on purpose:
 
 ```text
 error: Sync error. server error. server returned no Ironwood tree state at height 60000. the wallet birthday must be the Ironwood activation height on this server so the Ironwood tree can be rebuilt from scanned blocks.
