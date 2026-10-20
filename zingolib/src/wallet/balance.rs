@@ -301,9 +301,8 @@ impl LightWallet {
             .map(|sa| sa.bond_key())
             .collect();
 
-        let mut client = get_client(config.lightwalletd_uri.read().unwrap().clone())
-            .await
-            .unwrap();
+        let indexer_uri = config.get_lightwalletd_uri();
+        let mut client = get_client(indexer_uri).await.unwrap();
 
         // The node's status decides what is still at stake: active and unbonding bonds count,
         // withdrawn and burned ones do not, whatever the wallet's own history says.

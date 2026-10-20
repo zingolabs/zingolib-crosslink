@@ -240,6 +240,12 @@ async fn get_block_range(
     Ok(resp.into_inner())
 }
 
+/// Streams the nullifier-only form of the compact blocks in `block_range`.
+///
+/// `GetBlockRangeNullifiers` is deprecated upstream in favour of `GetBlockRange` with
+/// `poolTypes`, but that pruning depends on the server honouring the field, which the crosslink
+/// node does not yet do, so the dedicated method stays the cheaper request here.
+#[allow(deprecated)]
 async fn get_block_range_nullifiers(
     client: &mut CompactTxStreamerClient<Channel>,
     block_range: Range<BlockHeight>,

@@ -80,6 +80,9 @@ pub type ExtraFeeProposal = Proposal<ExtraFee<zip317::FeeRule>, OutputRef>;
 /// disallowed in Zingo `ShieldedProposals`
 pub(crate) type ProportionalFeeShieldProposal = Proposal<zip317::FeeRule, Infallible>;
 /// The `LightClient` holds one proposal at a time while the user decides whether to accept the fee.
+// A staking proposal carries the full `StakingAction`; one proposal lives at a time, so the size
+// difference between variants costs nothing worth boxing for.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub(crate) enum ZingoProposal {
     /// Send proposal.

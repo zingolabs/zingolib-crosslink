@@ -13,7 +13,6 @@ use zcash_keys::address::UnifiedAddress;
 use zcash_keys::encoding::AddressCodec;
 use zcash_protocol::consensus::NetworkConstants;
 use zcash_protocol::{PoolType, ShieldedPool, consensus};
-use zcash_transparent::keys::AccountPubKey;
 
 use crate::config::ZingoConfig;
 use crate::lightclient::LightClient;

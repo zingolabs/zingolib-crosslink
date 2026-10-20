@@ -196,7 +196,6 @@ mod tests {
 
         let certs = rustls_pemfile::certs(&mut cert_cursor)
             .filter_map(Result::ok)
-            .map(rustls::pki_types::CertificateDer::from)
             .collect::<Vec<_>>();
 
         let key = rustls_pemfile::private_key(&mut key_cursor)
@@ -284,7 +283,7 @@ mod tests {
             .expect("serve_connection failed");
         });
 
-        let _ = timeout(Duration::from_secs(1), ready_rx)
+        timeout(Duration::from_secs(1), ready_rx)
             .await
             .expect("server ready signal timed out")
             .expect("server dropped before ready");

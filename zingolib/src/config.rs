@@ -378,9 +378,9 @@ impl ZingoConfigBuilder {
     /// Note "chain type" is not a formal standard.
     /// # Examples
     /// ```
-    /// use zingolib::config::ZingoConfigBuilder;
-    /// use zingolib::config::ChainType::Testnet;
-    /// assert_eq!(ZingoConfigBuilder::default().set_chain(Testnet).create().chain, Testnet);
+    /// use zingolib::config::{ChainType, ConfiguredActivationHeights, ZingoConfigBuilder};
+    /// let testnet = ChainType::Testnet(ConfiguredActivationHeights::crosslink_featurenet());
+    /// assert_eq!(ZingoConfigBuilder::default().set_chain(testnet).create().chain, testnet);
     /// ```
     pub fn set_chain(&mut self, chain: ChainType) -> &mut Self {
         self.chain = chain;

@@ -49,7 +49,7 @@ impl LightClient {
 
     /// Creates and stores a proposal that moves `amount` between two of this wallet's own pools.
     ///
-    /// See [`crate::wallet::LightWallet::create_pool_transfer_proposal`]. Confirm with
+    /// See `LightWallet::create_pool_transfer_proposal`. Confirm with
     /// [`LightClient::send_stored_proposal`].
     pub async fn propose_pool_transfer(
         &mut self,
@@ -311,7 +311,6 @@ mod shielding {
     use bip0039::Mnemonic;
     use pepper_sync::config::SyncConfig;
     use zcash_protocol::consensus::Parameters;
-    use zcash_transparent::address::TransparentAddress;
     use zingo_test_vectors::seeds;
 
     use crate::{
