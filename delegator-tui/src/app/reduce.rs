@@ -546,7 +546,7 @@ fn screen_key(state: &mut State, key: Key) -> Vec<Command> {
             open_send(state);
             return Vec::new();
         }
-        Key::Char('f') => {
+        Key::Char('F') => {
             open_faucet(state);
             return Vec::new();
         }
@@ -1337,7 +1337,7 @@ mod tests {
     #[test]
     fn the_faucet_asks_first_and_pays_the_orchard_address() {
         let mut s = main_state();
-        assert!(keys(&mut s, &[Key::Char('f')]).is_empty());
+        assert!(keys(&mut s, &[Key::Char('F')]).is_empty());
         assert!(s.notice_text().unwrap().contains("no unified address"));
         s.addresses = vec![AddressRow {
             kind: AddressKind::Unified {
@@ -1349,7 +1349,7 @@ mod tests {
             address: "u1faucet".into(),
             received: 0,
         }];
-        keys(&mut s, &[Key::Char('f')]);
+        keys(&mut s, &[Key::Char('F')]);
         assert_eq!(
             s.overlay,
             Overlay::Faucet(FaucetStage::Ask {

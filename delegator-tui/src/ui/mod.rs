@@ -444,7 +444,7 @@ fn hints(state: &State) -> String {
                     ("j/k", "move"),
                     ("enter", "open"),
                     ("p", "pay"),
-                    ("f", "faucet"),
+                    ("F", "faucet"),
                     ("c", "theme"),
                 ],
                 Screen::Transactions => vec![("j/k", "move"), ("enter", "open")],
@@ -453,7 +453,7 @@ fn hints(state: &State) -> String {
                 Screen::Receive => vec![
                     ("v", "unified ⇄ transparent"),
                     ("n", "new address"),
-                    ("f", "faucet"),
+                    ("F", "faucet"),
                     ("y", "copy"),
                 ],
                 Screen::Addresses => {

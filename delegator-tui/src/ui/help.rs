@@ -30,7 +30,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
         key("", "receive: unified ⇄ transparent address"),
         key("n", "make a new address"),
         key("p", "pay: send ZEC to an address, with a memo"),
-        key("f", "ask the chain's faucet for test funds"),
+        key("F", "ask the chain's faucet for test funds"),
         key("y", "copy the txid, address or finalizer address"),
         key("space", "sync: pause or resume"),
         key("m", "sync: chain strip ⇄ chain map"),
