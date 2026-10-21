@@ -599,6 +599,30 @@ pub struct WalletInfo {
     pub spacing_secs: u64,
 }
 
+impl WalletInfo {
+    /// The frame a wallet shows the moment it is asked for, from the facts the opener already
+    /// has: its name and chain. The file's own facts arrive with
+    /// [`Action::WalletOpened`](crate::app::Action::WalletOpened),
+    /// which can take a while: the open reads the chain to verify it before it answers.
+    pub fn placeholder(
+        network: Network,
+        name: impl Into<String>,
+        kind: WalletKind,
+        birthday: u32,
+    ) -> Self {
+        Self {
+            network,
+            wallet_name: name.into(),
+            wallet_path: String::new(),
+            birthday,
+            server: String::new(),
+            has_orchard: true,
+            kind,
+            spacing_secs: network.block_spacing_secs(),
+        }
+    }
+}
+
 /// Where the chain stands on the staking calendar at one height. Staking actions other than
 /// retarget are valid only on a staking day: the first `day_window` blocks of every `period`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1173,7 +1197,7 @@ impl SyncView {
                 } else if self.sessions_done > 0 {
                     "up to date".into()
                 } else {
-                    "starting sync".into()
+                    "connecting".into()
                 }
             }
         }
@@ -1195,6 +1219,9 @@ pub struct State {
     pub size: (u16, u16),
     pub ascii_qr: bool,
     pub wallet: Option<WalletInfo>,
+    /// Whether the wallet has answered a refresh since it opened. Until then the balances are
+    /// nobody's guess: home says they are unknown instead of showing zeros.
+    pub data_loaded: bool,
     pub balance: Balance,
     pub txs: Vec<TxRow>,
     pub bonds: Vec<BondRow>,
@@ -1235,6 +1262,7 @@ impl State {
             size: (80, 24),
             ascii_qr: false,
             wallet: None,
+            data_loaded: false,
             balance: Balance::default(),
             txs: Vec::new(),
             bonds: Vec::new(),

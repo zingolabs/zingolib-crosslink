@@ -391,9 +391,6 @@ impl Fake {
     }
 
     /// A payment just made or just received, still in the mempool.
-    /// A payment just made or just received, still in the mempool.
-    /// A payment just made or just received, still in the mempool.
-    /// A payment just made or just received, still in the mempool.
     fn payment(
         &mut self,
         kind: TxKind,

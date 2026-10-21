@@ -50,6 +50,7 @@ fn populated() -> State {
         spacing_secs: 15,
         kind: WalletKind::Watch,
     });
+    s.data_loaded = true;
     s.balance.ironwood.confirmed = 100_000_000;
     s.balance.orchard.confirmed = 50_000_000;
     s.balance.transparent.confirmed = 30_000;
@@ -864,6 +865,37 @@ fn empty_wallet_has_friendly_messages() {
     s.roster.clear();
     s.screen = Screen::Bonds;
     assert!(render(&s, 80, 24).contains("No bonds yet."));
+}
+
+/// Opening a wallet shows its frame at once, from the opener's facts alone. Nothing waits on
+/// the server: no balance, no sync note, no tip, and still the header, the tabs and the lake.
+#[test]
+fn the_wallet_frame_renders_before_any_server_contact() {
+    let now = Instant::now();
+    let mut s = State::new(Phase::Main, now);
+    s.wallet = Some(WalletInfo::placeholder(
+        Network::Stable,
+        "main",
+        WalletKind::Unknown,
+        0,
+    ));
+    let out = render(&s, 100, 40);
+    assert!(out.contains("main"), "the wallet's name: {out}");
+    assert!(out.contains("stable"), "the chain: {out}");
+    assert!(out.contains("home"), "the tabs: {out}");
+    assert!(out.contains("connecting"), "the sync state: {out}");
+    assert!(
+        out.contains("unknown until the wallet connects"),
+        "the balance placeholder: {out}"
+    );
+    assert!(
+        !out.contains("Opening wallet"),
+        "no loading screen stands in front: {out}"
+    );
+    s.data_loaded = true;
+    let out = render(&s, 100, 40);
+    assert!(out.contains("ZEC"), "{out}");
+    assert!(out.contains("0 ZEC staked"), "{out}");
 }
 
 #[test]

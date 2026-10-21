@@ -139,6 +139,20 @@ impl BackendConfig {
         config
     }
 
+    /// The chain the wallet's meta file names, when there is one. A wallet the app has opened
+    /// before has one, so its next open can skip asking the indexers which chain it is on.
+    pub fn meta_network(&self, network: Network, name: &str) -> Option<Network> {
+        let mut entry = WalletEntry {
+            name: name.to_string(),
+            network,
+            kind: WalletKind::Unknown,
+            birthday: None,
+            age_secs: None,
+            evidence: Evidence::Unverified,
+        };
+        read_meta(&self.meta_path(network, name), &mut entry).then_some(entry.network)
+    }
+
     /// Every crosslink wallet file under the data directory, newest first. Files for other
     /// chains are left out: see [`classify`].
     pub fn list_wallets(&self) -> Vec<WalletEntry> {
@@ -592,18 +606,29 @@ impl Backend {
                 }
                 match self.open(spec).await {
                     Ok((lc, info)) => {
+                        let uri = lc.indexer_uri();
+                        let network = info.network;
                         self.lc = Some(lc);
                         self.send(Action::WalletOpened(info));
                         if let Some(lc) = self.lc.as_mut() {
                             lc.save_task().await;
                         }
+                        self.refresh(true).await;
                         self.launch().await;
-                        self.refresh().await;
+                        let actions = self.actions.clone();
+                        tokio::spawn(async move {
+                            if let Ok(tip) = fetch_tip(network, uri).await {
+                                let _ = actions.send(Action::SpacingMeasured {
+                                    network,
+                                    spacing_secs: tip.spacing_secs,
+                                });
+                            }
+                        });
                     }
                     Err(message) => self.send(Action::OpenFailed(message)),
                 }
             }
-            Command::Refresh => self.refresh().await,
+            Command::Refresh => self.refresh(false).await,
             Command::NewUnifiedAddress { orchard, sapling } => {
                 if let Some(lc) = self.lc.as_mut() {
                     match lc
@@ -618,7 +643,7 @@ impl Backend {
                                 "new unified address #{}",
                                 id.address_index
                             )));
-                            self.refresh().await;
+                            self.refresh(false).await;
                         }
                         Err(e) => self.send(Action::Notice(format!("cannot derive address: {e}"))),
                     }
@@ -635,7 +660,7 @@ impl Backend {
                                 "new transparent address #{}",
                                 id.address_index().index()
                             )));
-                            self.refresh().await;
+                            self.refresh(false).await;
                         }
                         Err(e) => self.send(Action::Notice(format!("cannot derive address: {e}"))),
                     }
@@ -698,7 +723,7 @@ impl Backend {
                         self.sync_note(SyncNote::Scheduled { at });
                     }
                 }
-                self.refresh().await;
+                self.refresh(false).await;
             }
             Command::Quit => {
                 self.shutdown().await;
@@ -732,7 +757,7 @@ impl Backend {
                     None => Err("no wallet is open".into()),
                 };
                 self.send(Action::SendDone(result));
-                self.refresh().await;
+                self.refresh(false).await
             }
             Command::CancelSend => {
                 if let Some(lc) = self.lc.as_mut() {
@@ -844,11 +869,7 @@ impl Backend {
         self.wallet_name = name.clone();
         self.known_txids = known;
         self.last = SyncSnapshot::default();
-        // the block spacing, for turning the calendar's block counts into time
-        let spacing_secs = match fetch_tip(network, lc.indexer_uri()).await {
-            Ok(tip) => tip.spacing_secs,
-            Err(_) => network.block_spacing_secs(),
-        };
+        let spacing_secs = network.block_spacing_secs();
         let info = WalletInfo {
             network,
             wallet_name: name,
@@ -968,7 +989,7 @@ impl Backend {
         }
         if self.dirty {
             self.dirty = false;
-            self.refresh().await;
+            self.refresh(false).await;
         }
     }
 
@@ -1029,9 +1050,13 @@ impl Backend {
         self.last = now;
     }
 
-    async fn refresh(&mut self) {
+    /// Reads what the screens show. The open-time read (`from_server = false`) uses only the
+    /// wallet file, so the last synced balances are up before any connection; every later read
+    /// also asks the server about bonds and the roster, keeping the last answers when it is
+    /// silent.
+    async fn refresh(&mut self, from_server: bool) {
         let Some(lc) = self.lc.as_ref() else { return };
-        match load(lc, &self.last_bonds, &self.last_roster).await {
+        match load(lc, &self.last_bonds, &self.last_roster, from_server).await {
             Ok(data) => {
                 self.last_bonds = data.bonds.clone();
                 self.last_roster = data.roster.clone();
@@ -1192,7 +1217,13 @@ async fn propose_send(
 /// server's word on where each stands. The wallet lock is released before the server is
 /// asked. When the server cannot be reached a bond keeps what `last` said about it, or its
 /// creation terms if it is new.
-async fn bonds(lc: &LightClient, last: &[BondRow]) -> (Vec<BondRow>, HashSet<[u8; 32]>) {
+/// creation terms if it is new. `ask_server` false skips the server entirely: the bonds show
+/// what the wallet and the last read know, which is all the file can answer for.
+async fn bonds(
+    lc: &LightClient,
+    last: &[BondRow],
+    ask_server: bool,
+) -> (Vec<BondRow>, HashSet<[u8; 32]>) {
     use zcash_client_backend::proto::service::BondInfoRequest;
     use zcash_primitives::bft::PubKeyID;
     use zcash_primitives::transaction::{StakingAction, StakingActionKind};
@@ -1253,12 +1284,16 @@ async fn bonds(lc: &LightClient, last: &[BondRow]) -> (Vec<BondRow>, HashSet<[u8
     if known.is_empty() {
         return (Vec::new(), HashSet::new());
     }
-    let mut client = match zingo_netutils::get_client(lc.indexer_uri()).await {
-        Ok(client) => Some(client),
-        Err(e) => {
-            tracing::warn!("cannot ask the server about bonds: {e:?}");
-            None
+    let mut client = if ask_server {
+        match zingo_netutils::get_client(lc.indexer_uri()).await {
+            Ok(client) => Some(client),
+            Err(e) => {
+                tracing::warn!("cannot ask the server about bonds: {e:?}");
+                None
+            }
         }
+    } else {
+        None
     };
     let mut rows = Vec::new();
     let mut finalizers = HashSet::new();
@@ -1308,10 +1343,19 @@ async fn bonds(lc: &LightClient, last: &[BondRow]) -> (Vec<BondRow>, HashSet<[u8
 }
 
 /// The chain's finalizer roster as the node reports it, largest stake first, each marked when
-/// one of this wallet's bonds points at it. `last` stands in when the node is silent.
-async fn roster(lc: &LightClient, ours: &HashSet<[u8; 32]>, last: &[RosterRow]) -> Vec<RosterRow> {
+/// one of this wallet's bonds points at it. `last` stands in when the node is silent. Roster
+/// data lives only on the chain, so `ask_server` false leaves the list to `last`.
+async fn roster(
+    lc: &LightClient,
+    ours: &HashSet<[u8; 32]>,
+    last: &[RosterRow],
+    ask_server: bool,
+) -> Vec<RosterRow> {
     use zcash_primitives::bft::PubKeyID;
 
+    if !ask_server {
+        return last.to_vec();
+    }
     let members = match lc.get_roster_info().await {
         Ok(roster) => roster.members,
         Err(e) => {
@@ -1339,11 +1383,14 @@ async fn roster(lc: &LightClient, ours: &HashSet<[u8; 32]>, last: &[RosterRow]) 
 }
 
 /// Reads everything the screens show. `last_bonds` and `last_roster` stand in if the server is
-/// silent.
+/// silent. `from_server` false keeps the read strictly local: balances, transactions and
+/// addresses come from the wallet file's last synced state, bonds keep what the wallet and the
+/// last read know, and the roster (server data only) stays empty.
 async fn load(
     lc: &LightClient,
     last_bonds: &[BondRow],
     last_roster: &[RosterRow],
+    from_server: bool,
 ) -> Result<WalletData, String> {
     let account = zip32::AccountId::ZERO;
     let balance = {
@@ -1357,8 +1404,8 @@ async fn load(
             unbonding: 0,
         }
     };
-    let (bonds, ours) = bonds(lc, last_bonds).await;
-    let roster = roster(lc, &ours, last_roster).await;
+    let (bonds, ours) = bonds(lc, last_bonds, from_server).await;
+    let roster = roster(lc, &ours, last_roster, from_server).await;
     let sum = |status: BondStatus| -> u64 {
         bonds
             .iter()
@@ -1933,7 +1980,7 @@ mod tests {
             (address, wallet.wallet_blocks.len())
         };
         eprintln!("wallet blocks held: {synced}");
-        let data = load(&lc, &[], &[]).await.unwrap();
+        let data = load(&lc, &[], &[], true).await.unwrap();
         eprintln!(
             "balance: ironwood {} orchard {} sapling {} transparent {} (pending {})",
             data.balance.ironwood.total(),
@@ -1999,7 +2046,7 @@ mod tests {
                 Ok(Err(e)) => eprintln!("SYNC ERR: {e}"),
                 Err(_) => eprintln!("SYNC STILL RUNNING"),
             }
-            let data = load(&lc, &[], &[]).await.unwrap();
+            let data = load(&lc, &[], &[], true).await.unwrap();
             eprintln!(
                 "after: ironwood {} orchard {} pending {} txs {}",
                 data.balance.ironwood.total(),
@@ -2256,5 +2303,64 @@ mod tests {
         );
         std::fs::write(dir.path().join("short.dat"), b"abc").unwrap();
         assert!(file_chain(&dir.path().join("short.dat")).is_err());
+    }
+
+    /// The open-time read shows the file's last synced state without asking any server: the
+    /// indexer here refuses every connection, and a local read never dials it.
+    #[tokio::test]
+    async fn the_first_load_reads_the_file_without_the_server() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let dir = tempfile::tempdir().unwrap();
+        let config = BackendConfig {
+            data_dir: Some(dir.path().to_path_buf()),
+            server: Some("127.0.0.1:1".into()),
+            seed_derivation: SeedDerivation::Zip32Standard,
+        };
+        wallet_file(dir.path(), "w", chain_type(Network::Stable));
+        let uri = config.server_uri(Network::Stable, "w", None).unwrap();
+        let zc = config.client_config(Network::Stable, "w", uri);
+        let lc = LightClient::create_from_wallet_path(zc).unwrap();
+        let data = load(&lc, &[], &[], false).await.unwrap();
+        assert_eq!(data.balance.total(), 0, "a fresh file holds nothing yet");
+        assert!(
+            !data.addresses.is_empty(),
+            "the addresses come from the file"
+        );
+        assert!(data.txs.is_empty());
+        assert!(data.roster.is_empty(), "the roster is the chain's to tell");
+    }
+
+    #[test]
+    fn the_meta_file_vouches_for_the_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = BackendConfig {
+            data_dir: Some(dir.path().to_path_buf()),
+            server: None,
+            seed_derivation: SeedDerivation::Zip32Standard,
+        };
+        wallet_file(dir.path(), "w", chain_type(Network::Stable));
+        assert_eq!(config.meta_network(Network::Stable, "w"), None);
+        config
+            .save_meta(&WalletInfo {
+                network: Network::Nightly,
+                wallet_name: "w".into(),
+                wallet_path: String::new(),
+                birthday: 1,
+                server: String::new(),
+                has_orchard: true,
+                spacing_secs: 15,
+                kind: WalletKind::Seed,
+            })
+            .unwrap();
+        assert_eq!(
+            config.meta_network(Network::Stable, "w"),
+            Some(Network::Nightly)
+        );
+        assert_eq!(
+            config.meta_network(Network::Nightly, "w"),
+            Some(Network::Nightly),
+            "either flag agrees with what the file names"
+        );
+        assert_eq!(config.meta_network(Network::Stable, "other"), None);
     }
 }

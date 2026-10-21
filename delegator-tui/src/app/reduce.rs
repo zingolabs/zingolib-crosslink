@@ -41,11 +41,23 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Command> {
             state.overlay = Overlay::None;
             vec![Command::Refresh]
         }
+        Action::SpacingMeasured {
+            network,
+            spacing_secs,
+        } => {
+            if let Some(wallet) = state.wallet.as_mut()
+                && wallet.network == network
+            {
+                wallet.spacing_secs = spacing_secs;
+            }
+            Vec::new()
+        }
         Action::OpenFailed(message) => {
             onboarding::open_failed(state, message);
             Vec::new()
         }
         Action::DataLoaded(data) => {
+            state.data_loaded = true;
             state.balance = data.balance;
             state.txs = data.txs;
             state.bonds = data.bonds;
@@ -1095,7 +1107,8 @@ mod tests {
     #[test]
     fn sync_label_reflects_state() {
         let mut s = main_state();
-        assert_eq!(s.sync.label(), "starting sync");
+        assert_eq!(s.sync.label(), "connecting");
+        assert!(!s.data_loaded, "nothing has arrived from the wallet yet");
         s.sync.mode = SyncMode::Running;
         s.sync.blocks_total = 10;
         s.sync.blocks_scanned = 5;
@@ -1150,6 +1163,15 @@ mod tests {
         let cmds = reduce(&mut s, Action::WalletOpened(main_state().wallet.unwrap()));
         assert_eq!(cmds, vec![Command::Refresh]);
         assert_eq!(s.phase, Phase::Main);
+        assert!(!s.data_loaded, "the balances are still unknown");
+        reduce(
+            &mut s,
+            Action::DataLoaded(WalletData {
+                txs: Vec::new(),
+                ..Default::default()
+            }),
+        );
+        assert!(s.data_loaded, "the wallet answered, so zeros are real");
     }
 
     #[test]
@@ -1196,6 +1218,28 @@ mod tests {
         let later = s.now + Duration::from_secs(10);
         reduce(&mut s, Action::Tick(later));
         assert_eq!(s.notice_text(), None);
+    }
+
+    #[test]
+    fn the_chain_measured_spacing_updates_the_open_wallet_only() {
+        let mut s = main_state();
+        assert_eq!(s.spacing_secs(), 15, "the network's guess to start");
+        reduce(
+            &mut s,
+            Action::SpacingMeasured {
+                network: Network::Stable,
+                spacing_secs: 75,
+            },
+        );
+        assert_eq!(s.spacing_secs(), 75);
+        reduce(
+            &mut s,
+            Action::SpacingMeasured {
+                network: Network::Nightly,
+                spacing_secs: 10,
+            },
+        );
+        assert_eq!(s.spacing_secs(), 75, "another chain's answer is ignored");
     }
 
     #[test]
