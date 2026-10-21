@@ -8,6 +8,7 @@ pub mod crosslink;
 pub mod data;
 pub mod grpc_connector;
 pub mod lightclient;
+pub mod perspective;
 pub mod utils;
 pub mod wallet;
 

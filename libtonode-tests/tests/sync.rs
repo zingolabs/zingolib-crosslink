@@ -70,7 +70,9 @@ async fn sync_mainnet_test() {
             let wallet = lightclient.wallet.read().await;
             tracing::info!(
                 "{}",
-                json::JsonValue::from(pepper_sync::sync_status(&*wallet).await.unwrap())
+                json::JsonValue::from(zingolib::perspective::sync_progress::SyncProgress::from(
+                    pepper_sync::sync_status(&*wallet).await.unwrap()
+                ))
             );
             tracing::info!("WALLET DEBUG:");
             tracing::info!("uas: {}", wallet.unified_addresses().len());

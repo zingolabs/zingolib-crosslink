@@ -3904,7 +3904,6 @@ dependencies = [
  "crossbeam-channel",
  "futures",
  "incrementalmerkletree",
- "json",
  "jubjub",
  "memuse",
  "orchard",

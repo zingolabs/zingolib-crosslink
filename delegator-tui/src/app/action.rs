@@ -45,8 +45,8 @@ pub enum SyncNote {
     TipMoved {
         to: u32,
     },
-    /// The wallet's own count of what has been scanned so far. `total_outputs` is an estimate
-    /// from the percentage the sync engine reports, and zero until that percentage exists.
+    /// The wallet's own count of what has been scanned so far. `total_outputs` is the sync
+    /// engine's count of outputs from the birthday to the tip, and zero until it has one.
     Progress {
         total_outputs: u64,
         scanned_outputs: u64,

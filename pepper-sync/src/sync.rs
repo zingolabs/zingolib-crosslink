@@ -59,9 +59,6 @@ pub(crate) const MAX_REORG_ALLOWANCE: u32 = 100;
 const VERIFY_BLOCK_RANGE_SIZE: u32 = 10;
 
 /// A snapshot of the current state of sync. Useful for displaying the status of sync to a user / consumer.
-///
-/// `percentage_outputs_scanned` is a much more accurate indicator of sync completion than `percentage_blocks_scanned`.
-/// `percentage_total_outputs_scanned` is the percentage of outputs scanned from birthday to chain height.
 #[derive(Debug, Clone)]
 #[allow(missing_docs)]
 pub struct SyncStatus {
@@ -69,59 +66,80 @@ pub struct SyncStatus {
     pub sync_start_height: BlockHeight,
     pub session_blocks_scanned: u32,
     pub total_blocks_scanned: u32,
-    pub percentage_session_blocks_scanned: f32,
-    pub percentage_total_blocks_scanned: f32,
+    /// Blocks in the chain between the wallet birthday and the last known
+    /// chain height, inclusive. Zero when sync has never started.
+    pub total_blocks: u32,
     pub session_sapling_outputs_scanned: u32,
     pub total_sapling_outputs_scanned: u32,
     pub session_orchard_outputs_scanned: u32,
     pub total_orchard_outputs_scanned: u32,
     pub session_ironwood_outputs_scanned: u32,
     pub total_ironwood_outputs_scanned: u32,
-    pub percentage_session_outputs_scanned: f32,
-    pub percentage_total_outputs_scanned: f32,
+    /// Numerator of the exact scan-progress ratio: outputs scanned so far
+    /// across every shielded pool. Never exceeds `total_outputs`: the sync
+    /// engine extends the tree bounds to each newly mined block under the
+    /// wallet lock before it scans that block.
+    pub total_outputs_scanned: u64,
+    /// Denominator of the exact scan-progress ratio: outputs in the chain
+    /// between the wallet birthday and the last known chain height, across
+    /// every shielded pool. Zero when sync has never started, and also when
+    /// the range from birthday to chain height contains no shielded outputs.
+    pub total_outputs: u64,
 }
 
-// TODO: complete display, scan ranges in raw form are too verbose
-impl std::fmt::Display for SyncStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "percentage complete: {}",
-            self.percentage_total_outputs_scanned
-        )
+impl SyncStatus {
+    /// Whether sync is complete: sync has started and every scan range is
+    /// fully processed ([`ScanPriority::Scanned`]), so no range still awaits
+    /// scanning, nullifier mapping, or nullifier refetching.
+    ///
+    /// This is the sync task's own terminal condition, so it holds even when
+    /// the birthday-to-chain-height range contains no shielded outputs and
+    /// the output ratio is vacuously 0 / 0.
+    pub fn is_complete(&self) -> bool {
+        self.sync_start_height != 0.into()
+            && self
+                .scan_ranges
+                .iter()
+                .all(|scan_range| scan_range.priority() == ScanPriority::Scanned)
     }
-}
 
-impl From<SyncStatus> for json::JsonValue {
-    fn from(value: SyncStatus) -> Self {
-        let scan_ranges: Vec<json::JsonValue> = value
-            .scan_ranges
+    /// ```
+    /// use pepper_sync::sync::{ScanPriority, ScanRange, SyncStatus};
+    /// use zcash_protocol::consensus::BlockHeight;
+    ///
+    /// let mut status = SyncStatus {
+    ///     scan_ranges: vec![ScanRange::from_parts(
+    ///         BlockHeight::from_u32(1)..BlockHeight::from_u32(2),
+    ///         ScanPriority::ScannedWithoutMapping,
+    ///     )],
+    ///     sync_start_height: BlockHeight::from_u32(1),
+    ///     session_blocks_scanned: 1,
+    ///     total_blocks_scanned: 1,
+    ///     total_blocks: 1,
+    ///     session_sapling_outputs_scanned: 0,
+    ///     total_sapling_outputs_scanned: 0,
+    ///     session_orchard_outputs_scanned: 0,
+    ///     total_orchard_outputs_scanned: 0,
+    ///     session_ironwood_outputs_scanned: 0,
+    ///     total_ironwood_outputs_scanned: 0,
+    ///     total_outputs_scanned: 0,
+    ///     total_outputs: 0,
+    /// };
+    /// assert!(status.nullifier_retrieval_pending());
+    /// assert!(!status.is_complete());
+    ///
+    /// status.scan_ranges = vec![ScanRange::from_parts(
+    ///     BlockHeight::from_u32(1)..BlockHeight::from_u32(2),
+    ///     ScanPriority::Scanned,
+    /// )];
+    /// assert!(!status.nullifier_retrieval_pending());
+    /// assert!(status.is_complete());
+    /// ```
+    pub fn nullifier_retrieval_pending(&self) -> bool {
+        self.scan_ranges
             .iter()
-            .map(|range| {
-                json::object! {
-                    "priority" => format!("{:?}", range.priority()),
-                    "start_block" => range.block_range().start.to_string(),
-                    "end_block" => (range.block_range().end - 1).to_string(),
-                }
-            })
-            .collect();
-
-        json::object! {
-            "scan_ranges" => scan_ranges,
-            "sync_start_height" => u32::from(value.sync_start_height),
-            "session_blocks_scanned" => value.session_blocks_scanned,
-            "total_blocks_scanned" => value.total_blocks_scanned,
-            "percentage_session_blocks_scanned" => value.percentage_session_blocks_scanned,
-            "percentage_total_blocks_scanned" => value.percentage_total_blocks_scanned,
-            "session_sapling_outputs_scanned" => value.session_sapling_outputs_scanned,
-            "total_sapling_outputs_scanned" => value.total_sapling_outputs_scanned,
-            "session_orchard_outputs_scanned" => value.session_orchard_outputs_scanned,
-            "total_orchard_outputs_scanned" => value.total_orchard_outputs_scanned,
-            "session_ironwood_outputs_scanned" => value.session_ironwood_outputs_scanned,
-            "total_ironwood_outputs_scanned" => value.total_ironwood_outputs_scanned,
-            "percentage_session_outputs_scanned" => value.percentage_session_outputs_scanned,
-            "percentage_total_outputs_scanned" => value.percentage_total_outputs_scanned,
-        }
+            .map(ScanRange::priority)
+            .any(ScanPriority::awaits_nullifier_retrieval)
     }
 }
 
@@ -135,46 +153,9 @@ pub struct SyncResult {
     pub sapling_outputs_scanned: u32,
     pub orchard_outputs_scanned: u32,
     pub ironwood_outputs_scanned: u32,
-    pub percentage_total_outputs_scanned: f32,
-}
-
-impl std::fmt::Display for SyncResult {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Sync completed succesfully:
-{{
-    sync start height: {}
-    sync end height: {}
-    blocks scanned: {}
-    sapling outputs scanned: {}
-    orchard outputs scanned: {}
-    ironwood outputs scanned: {}
-    percentage total outputs scanned: {}
-}}",
-            self.sync_start_height,
-            self.sync_end_height,
-            self.blocks_scanned,
-            self.sapling_outputs_scanned,
-            self.orchard_outputs_scanned,
-            self.ironwood_outputs_scanned,
-            self.percentage_total_outputs_scanned,
-        )
-    }
-}
-
-impl From<SyncResult> for json::JsonValue {
-    fn from(value: SyncResult) -> Self {
-        json::object! {
-            "sync_start_height" => u32::from(value.sync_start_height),
-            "sync_end_height" => u32::from(value.sync_end_height),
-            "blocks_scanned" => value.blocks_scanned,
-            "sapling_outputs_scanned" => value.sapling_outputs_scanned,
-            "orchard_outputs_scanned" => value.orchard_outputs_scanned,
-            "ironwood_outputs_scanned" => value.ironwood_outputs_scanned,
-            "percentage_total_outputs_scanned" => value.percentage_total_outputs_scanned,
-        }
-    }
+    pub total_outputs_scanned: u64,
+    pub total_outputs: u64,
+    pub nullifier_retrieval_pending: bool,
 }
 
 /// Scanning range priority levels.
@@ -205,6 +186,16 @@ pub enum ScanPriority {
 }
 
 impl ScanPriority {
+    /// Whether this priority marks a range whose blocks have been scanned but
+    /// whose nullifiers still await mapping or refetching for final spend
+    /// detection.
+    pub fn awaits_nullifier_retrieval(self) -> bool {
+        matches!(
+            self,
+            ScanPriority::ScannedWithoutMapping | ScanPriority::RefetchingNullifiers
+        )
+    }
+
     /// Returns the priority the wallet holds a range selected at this priority while its scan task is in flight.
     #[must_use]
     pub fn in_flight(self) -> ScanPriority {
@@ -576,7 +567,9 @@ where
                             orchard_outputs_scanned: sync_status.session_orchard_outputs_scanned,
                             ironwood_outputs_scanned: sync_status
                                 .session_ironwood_outputs_scanned,
-                            percentage_total_outputs_scanned: sync_status.percentage_total_outputs_scanned,
+                            total_outputs_scanned: sync_status.total_outputs_scanned,
+                            total_outputs: sync_status.total_outputs,
+                            nullifier_retrieval_pending: sync_status.nullifier_retrieval_pending(),
                         });
                     }
                     SyncMode::Running => (),
@@ -654,7 +647,9 @@ where
         sapling_outputs_scanned: sync_status.session_sapling_outputs_scanned,
         orchard_outputs_scanned: sync_status.session_orchard_outputs_scanned,
         ironwood_outputs_scanned: sync_status.session_ironwood_outputs_scanned,
-        percentage_total_outputs_scanned: sync_status.percentage_total_outputs_scanned,
+        total_outputs_scanned: sync_status.total_outputs_scanned,
+        total_outputs: sync_status.total_outputs,
+        nullifier_retrieval_pending: sync_status.nullifier_retrieval_pending(),
     })
 }
 
@@ -728,22 +723,31 @@ where
 }
 
 /// Creates a [`self::SyncStatus`] from the wallet's current [`crate::wallet::SyncState`].
-/// If there is still nullifiers to be re-fetched when scanning is complete, the percentages will be overrided to 99%
-/// until sync is complete.
 ///
 /// Intended to be called while [`self::sync`] is running in a separate task.
 pub async fn sync_status<W>(wallet: &W) -> Result<SyncStatus, SyncStatusError<W::Error>>
 where
     W: SyncWallet + SyncBlocks,
 {
+    /// Sums one per-pool trio of output counts into the pool-agnostic
+    /// total. Pure and total: this is the single definition of which
+    /// pools participate in scan-progress accounting, so every
+    /// consumer (the per-pool counts and the exact u64 ratio) agrees by
+    /// construction, and adding a pool touches exactly this function.
+    fn output_pool_total(sapling: u32, orchard: u32, ironwood: u32) -> u64 {
+        u64::from(sapling) + u64::from(orchard) + u64::from(ironwood)
+    }
+
     let (
         total_sapling_outputs_scanned,
         total_orchard_outputs_scanned,
         total_ironwood_outputs_scanned,
     ) = state::calculate_scanned_outputs(wallet).map_err(SyncStatusError::WalletError)?;
-    let total_outputs_scanned = total_sapling_outputs_scanned
-        + total_orchard_outputs_scanned
-        + total_ironwood_outputs_scanned;
+    let total_outputs_scanned = output_pool_total(
+        total_sapling_outputs_scanned,
+        total_orchard_outputs_scanned,
+        total_ironwood_outputs_scanned,
+    );
 
     let sync_state = wallet
         .get_sync_state()
@@ -754,16 +758,15 @@ where
             sync_start_height: 0.into(),
             session_blocks_scanned: 0,
             total_blocks_scanned: 0,
-            percentage_session_blocks_scanned: 0.0,
-            percentage_total_blocks_scanned: 0.0,
+            total_blocks: 0,
             session_sapling_outputs_scanned: 0,
             session_orchard_outputs_scanned: 0,
             session_ironwood_outputs_scanned: 0,
             total_sapling_outputs_scanned: 0,
             total_orchard_outputs_scanned: 0,
             total_ironwood_outputs_scanned: 0,
-            percentage_session_outputs_scanned: 0.0,
-            percentage_total_outputs_scanned: 0.0,
+            total_outputs_scanned: 0,
+            total_outputs: 0,
         });
     }
     let total_blocks_scanned = state::calculate_scanned_blocks(sync_state);
@@ -799,16 +802,14 @@ where
             .initial_sync_state
             .wallet_tree_bounds
             .ironwood_initial_tree_size;
-    let total_outputs = total_sapling_outputs + total_orchard_outputs + total_ironwood_outputs;
+    let total_outputs = output_pool_total(
+        total_sapling_outputs,
+        total_orchard_outputs,
+        total_ironwood_outputs,
+    );
 
     let session_blocks_scanned =
         total_blocks_scanned - sync_state.initial_sync_state.previously_scanned_blocks;
-    let mut percentage_session_blocks_scanned = ((session_blocks_scanned as f32
-        / (total_blocks - sync_state.initial_sync_state.previously_scanned_blocks) as f32)
-        * 100.0)
-        .clamp(0.0, 100.0);
-    let mut percentage_total_blocks_scanned =
-        ((total_blocks_scanned as f32 / total_blocks as f32) * 100.0).clamp(0.0, 100.0);
 
     let session_sapling_outputs_scanned = total_sapling_outputs_scanned
         - sync_state
@@ -822,58 +823,21 @@ where
         - sync_state
             .initial_sync_state
             .previously_scanned_ironwood_outputs;
-    let session_outputs_scanned = session_sapling_outputs_scanned
-        + session_orchard_outputs_scanned
-        + session_ironwood_outputs_scanned;
-    let previously_scanned_outputs = sync_state
-        .initial_sync_state
-        .previously_scanned_sapling_outputs
-        + sync_state
-            .initial_sync_state
-            .previously_scanned_orchard_outputs
-        + sync_state
-            .initial_sync_state
-            .previously_scanned_ironwood_outputs;
-    let mut percentage_session_outputs_scanned = ((session_outputs_scanned as f32
-        / (total_outputs - previously_scanned_outputs) as f32)
-        * 100.0)
-        .clamp(0.0, 100.0);
-    let mut percentage_total_outputs_scanned =
-        ((total_outputs_scanned as f32 / total_outputs as f32) * 100.0).clamp(0.0, 100.0);
-
-    if sync_state.scan_ranges().iter().any(|scan_range| {
-        scan_range.priority() == ScanPriority::ScannedWithoutMapping
-            || scan_range.priority() == ScanPriority::RefetchingNullifiers
-    }) {
-        if percentage_session_blocks_scanned == 100.0 {
-            percentage_session_blocks_scanned = 99.0;
-        }
-        if percentage_total_blocks_scanned == 100.0 {
-            percentage_total_blocks_scanned = 99.0;
-        }
-        if percentage_session_outputs_scanned == 100.0 {
-            percentage_session_outputs_scanned = 99.0;
-        }
-        if percentage_total_outputs_scanned == 100.0 {
-            percentage_total_outputs_scanned = 99.0;
-        }
-    }
 
     Ok(SyncStatus {
         scan_ranges: sync_state.scan_ranges.clone(),
         sync_start_height: sync_state.initial_sync_state.sync_start_height,
         session_blocks_scanned,
         total_blocks_scanned,
-        percentage_session_blocks_scanned,
-        percentage_total_blocks_scanned,
+        total_blocks,
         session_sapling_outputs_scanned,
         total_sapling_outputs_scanned,
         session_orchard_outputs_scanned,
         total_orchard_outputs_scanned,
         session_ironwood_outputs_scanned,
         total_ironwood_outputs_scanned,
-        percentage_session_outputs_scanned,
-        percentage_total_outputs_scanned,
+        total_outputs_scanned,
+        total_outputs,
     })
 }
 
