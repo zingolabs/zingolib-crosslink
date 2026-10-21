@@ -1,6 +1,6 @@
 [package]
 name = "delegator-tui"
-description = "Watch-only terminal wallet for Zcash crosslink delegators, built on zingolib."
+description = "Terminal wallet for Zcash crosslink delegators, built on zingolib."
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
@@ -17,6 +17,7 @@ zcash_protocol = { workspace = true }
 zcash_primitives = { workspace = true }
 zcash_client_backend = { workspace = true }
 zingo-netutils = { workspace = true }
+bip0039 = { workspace = true }
 
 ratatui = { workspace = true }
 crossterm = { workspace = true }

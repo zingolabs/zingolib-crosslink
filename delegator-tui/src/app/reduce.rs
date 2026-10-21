@@ -2,10 +2,9 @@
 
 use std::time::Instant;
 
-use super::action::{Action, Command, Key, OpenSpec, SyncNote};
-use super::state::{
-    DetailMode, FoundTx, Network, Overlay, Phase, ReceiveKind, Screen, State, Wizard, WizardStep,
-};
+use super::action::{Action, Command, Key, SyncNote};
+use super::onboarding;
+use super::state::{DetailMode, FoundTx, Overlay, Phase, ReceiveKind, Screen, State};
 use crate::format;
 
 pub fn reduce(state: &mut State, action: Action) -> Vec<Command> {
@@ -21,24 +20,26 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Command> {
         }
         Action::Key(key) => on_key(state, key),
         Action::Paste(text) => on_paste(state, &text),
+        Action::WalletsListed(wallets) => onboarding::wallets_listed(state, wallets),
+        Action::TipFetched(result) => {
+            onboarding::tip_fetched(state, result);
+            Vec::new()
+        }
+        Action::SeedGenerated(phrase) => {
+            onboarding::seed_generated(state, phrase);
+            Vec::new()
+        }
         Action::WalletOpened(info) => {
             state.sync.error = None;
             state.wallet = Some(info);
-            state.wizard_backup = None;
+            state.onboarding_backup = None;
             state.phase = Phase::Main;
             state.screen = Screen::Home;
             state.overlay = Overlay::None;
             vec![Command::Refresh]
         }
         Action::OpenFailed(message) => {
-            state.phase = match (state.wizard_backup.take(), &state.phase) {
-                (Some(mut wizard), _) => {
-                    wizard.step = WizardStep::Ufvk;
-                    wizard.error = Some(message);
-                    Phase::Wizard(wizard)
-                }
-                _ => Phase::Fatal(message),
-            };
+            onboarding::open_failed(state, message);
             Vec::new()
         }
         Action::DataLoaded(data) => {
@@ -172,16 +173,8 @@ fn on_sync(state: &mut State, note: SyncNote, at: Instant) {
 }
 
 fn on_paste(state: &mut State, text: &str) -> Vec<Command> {
-    let cleaned: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-    if let Phase::Wizard(wizard) = &mut state.phase {
-        match wizard.step {
-            WizardStep::Server => wizard.server.push_str(&cleaned),
-            WizardStep::Ufvk => wizard.ufvk.push_str(&cleaned),
-            WizardStep::Birthday => wizard
-                .birthday
-                .extend(cleaned.chars().filter(char::is_ascii_digit)),
-        }
-        wizard.error = None;
+    if matches!(state.phase, Phase::Onboarding(_)) {
+        return onboarding::paste(state, text);
     }
     Vec::new()
 }
@@ -209,134 +202,9 @@ fn on_key(state: &mut State, key: Key) -> Vec<Command> {
             }
             Vec::new()
         }
-        Phase::Wizard(_) => wizard_key(state, key),
+        Phase::Onboarding(_) => onboarding::key(state, key),
         Phase::Main => main_key(state, key),
     }
-}
-
-fn wizard_key(state: &mut State, key: Key) -> Vec<Command> {
-    if matches!(key, Key::CtrlC) {
-        state.exit = true;
-        return vec![Command::ForceQuit];
-    }
-    let Phase::Wizard(wizard) = &mut state.phase else {
-        return Vec::new();
-    };
-    match key {
-        Key::Esc => {
-            wizard.error = None;
-            match wizard.step {
-                WizardStep::Ufvk => {
-                    state.exit = true;
-                    return vec![Command::ForceQuit];
-                }
-                WizardStep::Server => wizard.step = WizardStep::Ufvk,
-                WizardStep::Birthday => wizard.step = WizardStep::Server,
-            }
-        }
-        Key::Enter => return wizard_enter(state),
-        Key::Backspace => {
-            wizard.error = None;
-            match wizard.step {
-                WizardStep::Server => {
-                    wizard.server.pop();
-                }
-                WizardStep::Ufvk => {
-                    wizard.ufvk.pop();
-                }
-                WizardStep::Birthday => {
-                    wizard.birthday.pop();
-                }
-            }
-        }
-        Key::Char(c) => {
-            wizard.error = None;
-            match wizard.step {
-                WizardStep::Server => wizard.server.push(c),
-                WizardStep::Ufvk => {
-                    if !c.is_whitespace() {
-                        wizard.ufvk.push(c)
-                    }
-                }
-                WizardStep::Birthday => {
-                    if c.is_ascii_digit() {
-                        wizard.birthday.push(c)
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-    Vec::new()
-}
-
-fn wizard_enter(state: &mut State) -> Vec<Command> {
-    let Phase::Wizard(wizard) = &mut state.phase else {
-        return Vec::new();
-    };
-    wizard.error = None;
-    match wizard.step {
-        WizardStep::Ufvk => {
-            if wizard.ufvk.is_empty() {
-                wizard.error = Some("paste a unified full viewing key".into());
-            } else if let Some(network) = Network::from_ufvk(&wizard.ufvk) {
-                if wizard.network != Some(network) && !wizard.server_from_flag {
-                    wizard.server = network.default_server().to_string();
-                }
-                wizard.network = Some(network);
-                wizard.step = WizardStep::Server;
-            } else {
-                wizard.error = Some(
-                    "not a unified full viewing key: expected a prefix of uview1, uviewtest1, or uviewregtest1"
-                        .into(),
-                );
-            }
-        }
-        WizardStep::Server => {
-            if wizard.server.trim().is_empty() {
-                wizard.error = Some("enter a server URL".into());
-            } else {
-                wizard.step = WizardStep::Birthday;
-            }
-        }
-        WizardStep::Birthday => {
-            let floor = wizard.network.map_or(1, Network::sapling_activation);
-            match wizard.birthday.parse::<u32>() {
-                Ok(h) if h >= floor => return submit_wizard(state),
-                Ok(_) => {
-                    wizard.error = Some(format!(
-                        "the birthday must be at least {}, where Sapling activated on {}",
-                        format::group(u64::from(floor)),
-                        wizard.network.map_or("this network", Network::name)
-                    ))
-                }
-                Err(_) => {
-                    wizard.error = Some("enter the block height the key was created at".into())
-                }
-            }
-        }
-    }
-    Vec::new()
-}
-
-fn submit_wizard(state: &mut State) -> Vec<Command> {
-    let Phase::Wizard(wizard) = &state.phase else {
-        return Vec::new();
-    };
-    let wizard: Wizard = wizard.clone();
-    let Some(network) = wizard.network else {
-        return Vec::new();
-    };
-    let birthday = wizard.birthday.parse::<u32>().unwrap_or(0);
-    let spec = OpenSpec::Create {
-        network,
-        server: wizard.server.trim().to_string(),
-        ufvk: wizard.ufvk.clone(),
-        birthday,
-    };
-    state.wizard_backup = Some(wizard);
-    state.phase = Phase::Loading("Creating wallet".into());
-    vec![Command::Open(spec)]
 }
 
 fn request_quit(state: &mut State) -> Vec<Command> {
@@ -604,8 +472,8 @@ fn move_selection(selected: &mut usize, len: usize, key: Key, rows: u16) {
 mod tests {
     use super::*;
     use crate::app::state::{
-        AddressKind, AddressRow, ChainRange, RangePriority, Stage, SyncMode, TxKind, TxRow,
-        TxStatus, WalletData, WalletInfo,
+        AddressKind, AddressRow, ChainRange, Network, RangePriority, Stage, SyncMode, TxKind,
+        TxRow, TxStatus, WalletData, WalletInfo, WalletKind,
     };
     use std::time::Duration;
 
@@ -616,12 +484,13 @@ mod tests {
     fn main_state() -> State {
         let mut s = State::new(Phase::Main, now());
         s.wallet = Some(WalletInfo {
-            network: Network::Mainnet,
+            network: Network::Stable,
             wallet_name: "w.dat".into(),
             wallet_path: "/tmp/w.dat".into(),
             birthday: 100,
             server: "https://zec.rocks:443".into(),
             has_orchard: true,
+            kind: WalletKind::Watch,
         });
         s
     }
@@ -999,99 +868,22 @@ mod tests {
     }
 
     #[test]
-    fn network_is_read_from_the_key_prefix() {
-        assert_eq!(Network::from_ufvk("uview1abc"), Some(Network::Mainnet));
-        assert_eq!(Network::from_ufvk("uviewtest1abc"), Some(Network::Testnet));
-        assert_eq!(
-            Network::from_ufvk("uviewregtest1abc"),
-            Some(Network::Regtest)
+    fn only_testnet_keys_pass_the_prefix_check() {
+        assert!(Network::check_ufvk_prefix("uviewtest1abc").is_ok());
+        assert!(
+            Network::check_ufvk_prefix("uview1abc")
+                .unwrap_err()
+                .contains("mainnet")
         );
-        assert_eq!(Network::from_ufvk("u1abc"), None);
-        assert_eq!(Network::from_ufvk("uviewx1"), None);
-    }
-
-    #[test]
-    fn a_server_flag_survives_network_detection() {
-        let mut s = State::new(
-            Phase::Wizard(Wizard::new(Some("https://my.node:443".into()))),
-            now(),
+        assert!(
+            Network::check_ufvk_prefix("uviewregtest1abc")
+                .unwrap_err()
+                .contains("regtest")
         );
-        reduce(&mut s, Action::Paste("uviewregtest1abc".into()));
-        keys(&mut s, &[Key::Enter]);
-        let Phase::Wizard(w) = &s.phase else { panic!() };
-        assert_eq!(w.network, Some(Network::Regtest));
-        assert_eq!(w.server, "https://my.node:443");
-    }
-
-    #[test]
-    fn wizard_walks_through_and_submits() {
-        let mut s = State::new(Phase::Wizard(Wizard::new(None)), now());
-        let Phase::Wizard(w) = &s.phase else { panic!() };
-        assert_eq!(w.step, WizardStep::Ufvk, "the key comes first");
-        // something that is not a viewing key is rejected
-        reduce(&mut s, Action::Paste("u1notakey".into()));
-        keys(&mut s, &[Key::Enter]);
-        let Phase::Wizard(w) = &s.phase else { panic!() };
-        assert_eq!(w.step, WizardStep::Ufvk);
-        assert!(w.error.as_deref().unwrap().contains("uviewtest1"));
-        // clear and paste a testnet key: the network and the default server follow
-        for _ in 0..20 {
-            keys(&mut s, &[Key::Backspace]);
-        }
-        reduce(&mut s, Action::Paste("uviewtest1xyz".into()));
-        keys(&mut s, &[Key::Enter]);
-        let Phase::Wizard(w) = &s.phase else { panic!() };
-        assert_eq!(w.step, WizardStep::Server);
-        assert_eq!(w.network, Some(Network::Testnet));
-        assert_eq!(w.server, Network::Testnet.default_server());
-        keys(&mut s, &[Key::Enter]);
-        // birthday: letters ignored, zero rejected
-        keys(&mut s, &[Key::Char('a'), Key::Char('0'), Key::Enter]);
-        let Phase::Wizard(w) = &s.phase else { panic!() };
-        assert_eq!(w.step, WizardStep::Birthday);
-        // a valid birthday submits; the testnet is live from block 1
-        let cmds = keys(
-            &mut s,
-            &[Key::Backspace, Key::Char('4'), Key::Char('2'), Key::Enter],
-        );
-        assert_eq!(
-            cmds,
-            vec![Command::Open(OpenSpec::Create {
-                network: Network::Testnet,
-                server: Network::Testnet.default_server().into(),
-                ufvk: "uviewtest1xyz".into(),
-                birthday: 42,
-            })]
-        );
-        assert!(matches!(s.phase, Phase::Loading(_)));
-        // failure returns to the key step with the message
-        reduce(&mut s, Action::OpenFailed("bad key".into()));
-        let Phase::Wizard(w) = &s.phase else { panic!() };
-        assert_eq!(w.step, WizardStep::Ufvk);
-        assert_eq!(w.error.as_deref(), Some("bad key"));
-        assert_eq!(w.birthday, "42", "other fields survive");
-    }
-
-    #[test]
-    fn a_mainnet_birthday_below_sapling_is_refused() {
-        let mut s = State::new(Phase::Wizard(Wizard::new(None)), now());
-        reduce(&mut s, Action::Paste("uview1abc".into()));
-        keys(&mut s, &[Key::Enter, Key::Enter]);
-        reduce(&mut s, Action::Paste("42".into()));
-        assert!(keys(&mut s, &[Key::Enter]).is_empty());
-        let Phase::Wizard(w) = &s.phase else { panic!() };
-        assert_eq!(w.step, WizardStep::Birthday);
-        assert!(w.error.as_deref().unwrap().contains("419,200"));
-    }
-
-    #[test]
-    fn wizard_esc_on_first_step_exits() {
-        let mut s = State::new(Phase::Wizard(Wizard::new(None)), now());
-        reduce(&mut s, Action::Paste("uview1abc".into()));
-        keys(&mut s, &[Key::Enter, Key::Esc]);
-        assert!(!s.exit);
-        keys(&mut s, &[Key::Esc]);
-        assert!(s.exit);
+        assert!(Network::check_ufvk_prefix("u1abc").is_err());
+        assert_eq!(Network::parse("featurenet"), Some(Network::Stable));
+        assert_eq!(Network::parse("NIGHTLY"), Some(Network::Nightly));
+        assert_eq!(Network::parse("mainnet"), None);
     }
 
     #[test]

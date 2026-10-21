@@ -11,8 +11,19 @@
 //! - Vercel: the Geist design system tokens from `vercel.com/geist/colors`
 
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::Span;
 
 use crate::app::Pool;
+
+/// The animated field behind idle panes. Off unless asked for on the command line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dither {
+    Off,
+    /// Shade blocks: near-universal glyphs.
+    Blocks,
+    /// Braille dots: finer, when the terminal font has them.
+    Braille,
+}
 
 /// How many colours the terminal can show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,6 +139,45 @@ const fn catppuccin(
 
 /// Every theme, in the order the picker lists them.
 pub const THEMES: &[ThemeDef] = &[
+    ThemeDef {
+        id: "srcery",
+        name: "Srcery",
+        // srcery.sh: a warm dark palette with a cream foreground and a gold accent
+        kind: Kind::Palette(Palette {
+            bg: rgb(0x1c1b19),
+            surface: rgb(0x3b3935),
+            fg: rgb(0xfce8c3),
+            muted: rgb(0x918175),
+            border: rgb(0x312f2c),
+            accent: rgb(0xfbb829),
+            positive: rgb(0x98bc37),
+            negative: rgb(0xf75341),
+            warning: rgb(0xff8700),
+            info: rgb(0x68a8e4),
+            orchard: rgb(0xff5c8f),
+            sapling: rgb(0xff5f00),
+        }),
+    },
+    ThemeDef {
+        id: "lightwallet",
+        name: "Lightwallet",
+        // the warm palette of lwtui, the lightwallet-tools explorer: gold for values and
+        // focus, cyan for section titles, olive for literals, coral for warnings
+        kind: Kind::Palette(Palette {
+            bg: rgb(0x181818),
+            surface: rgb(0x332e24),
+            fg: rgb(0xe8e3d3),
+            muted: rgb(0x8f8a7c),
+            border: rgb(0x2c2c28),
+            accent: rgb(0xd3a050),
+            positive: rgb(0x5fd08a),
+            negative: rgb(0xf2606e),
+            warning: rgb(0xc98443),
+            info: rgb(0xa8d5d5),
+            orchard: rgb(0xd3a050),
+            sapling: rgb(0xa0a344),
+        }),
+    },
     ThemeDef {
         id: "nord",
         name: "Nord",
@@ -345,7 +395,7 @@ pub const THEMES: &[ThemeDef] = &[
 ];
 
 /// Used when nothing else picks a theme.
-pub const DEFAULT_THEME: &str = "gruvbox-dark";
+pub const DEFAULT_THEME: &str = "srcery";
 /// Used when `NO_COLOR` is set and nothing more explicit picks a theme.
 pub const NO_COLOR_THEME: &str = "mono";
 
@@ -387,6 +437,9 @@ pub struct Theme {
     /// The block cursor in text fields.
     pub cursor: Style,
     pools: [Style; 3],
+    /// The accent and the background as raw colours, for the title shimmer and the dither
+    /// field. `None` on the terminal and monochrome themes, which have neither.
+    pub rgb: Option<(Rgb, Rgb)>,
     /// Dark modules in `fg`, light modules and the quiet zone in `bg`. Derived from the theme's
     /// own tones, so the code matches the screen while still scanning. `None` leaves QR codes
     /// in the terminal's default colours.
@@ -433,6 +486,7 @@ impl Theme {
             info: fg(p.info),
             cursor: Style::new().bg(c(p.accent)).fg(c(p.bg)),
             pools: [fg(p.orchard), fg(p.sapling), fg(p.fg)],
+            rgb: Some((p.accent, p.bg)),
             qr: Some(qr_style(&p, depth)),
         }
     }
@@ -454,6 +508,7 @@ impl Theme {
             info: fg(Color::Blue),
             cursor: Style::new().add_modifier(Modifier::REVERSED),
             pools: [fg(Color::Magenta), fg(Color::LightRed), Style::new()],
+            rgb: None,
             // the terminal's own black and bright white, whatever its palette makes of them
             qr: Some(Style::new().fg(Color::Black).bg(Color::White)),
         }
@@ -475,6 +530,7 @@ impl Theme {
             warning: Style::new(),
             info: Style::new(),
             cursor: Style::new().add_modifier(Modifier::REVERSED),
+            rgb: None,
             pools: [Style::new(); 3],
             qr: None,
         }
@@ -623,6 +679,46 @@ pub fn ansi256(Rgb(r, g, b): Rgb) -> u8 {
         grey_index
     };
     index as u8
+}
+
+/// Linear blend between two colours, `t` clamped to `0..=1`.
+pub fn lerp(a: Rgb, b: Rgb, t: f32) -> Rgb {
+    let t = t.clamp(0.0, 1.0);
+    let mix = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
+    Rgb(mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
+}
+
+/// A smooth 0 → 1 → 0 pulse over `period` seconds.
+fn pulse(secs: f32, period: f32) -> f32 {
+    0.5 - 0.5 * (secs / period * std::f32::consts::TAU).cos()
+}
+
+/// The title with a bright point travelling across it: each glyph pulses between the accent
+/// dimmed halfway to the background and the full accent, its phase offset by its position.
+/// Themes without raw colours get the plain title style.
+pub fn shimmer(t: &Theme, text: &str, secs: f32, depth: ColorDepth) -> Vec<Span<'static>> {
+    let Some((accent, bg)) = t.rgb else {
+        return vec![Span::styled(text.to_string(), t.title)];
+    };
+    let dim = lerp(accent, bg, 0.5);
+    text.chars()
+        .enumerate()
+        .map(|(i, ch)| {
+            let wave = pulse(secs * 1.1 + i as f32 * 0.13, 1.6);
+            Span::styled(
+                ch.to_string(),
+                Style::new()
+                    .fg(color(lerp(dim, accent, wave), depth))
+                    .add_modifier(Modifier::BOLD),
+            )
+        })
+        .collect()
+}
+
+/// Braille spinner frames, advancing about twelve times a second.
+pub fn spinner(secs: f32) -> char {
+    const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    FRAMES[(secs * 12.0) as usize % FRAMES.len()]
 }
 
 #[cfg(test)]

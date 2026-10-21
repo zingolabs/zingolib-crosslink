@@ -1,4 +1,4 @@
-//! delegator-tui: a watch-only terminal wallet for Zcash crosslink delegators.
+//! delegator-tui: a terminal wallet for Zcash crosslink delegators.
 
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -7,10 +7,12 @@ use clap::Parser;
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use tokio::sync::mpsc;
 
-use delegator_tui::app::{Action, Command, Network, OpenSpec, Phase, State, Wizard, reduce};
+use delegator_tui::app::{
+    Action, Command, KeyMaterial, Network, Onboarding, OpenSpec, Phase, State, reduce,
+};
 use delegator_tui::backend::{self, BackendConfig};
 use delegator_tui::cli::Cli;
-use delegator_tui::{clipboard, input, settings, theme, ui};
+use delegator_tui::{TICK_SECS, clipboard, input, settings, theme, ui};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -53,47 +55,24 @@ fn init_logging(path: &std::path::Path) -> Result<(), String> {
 }
 
 async fn run(cli: Cli) -> Result<(), String> {
-    let flag_network = match &cli.chain {
-        Some(chain) => Some(Network::parse(chain).ok_or("unknown chain")?),
-        None => None,
+    let network = match &cli.network {
+        Some(name) => Network::parse(name).ok_or("unknown network")?,
+        None => Network::Stable,
     };
-    // a key names its own network; the flag only has to agree with it
-    let network = match (&cli.ufvk, flag_network) {
-        (Some(ufvk), flag) => {
-            let from_key = Network::from_ufvk(ufvk).ok_or(
-                "not a unified full viewing key: expected a prefix of uview1, uviewtest1, or uviewregtest1",
-            )?;
-            if let Some(flag) = flag
-                && flag != from_key
-            {
-                return Err(format!(
-                    "--chain {} does not match the key, which is for {}",
-                    flag.name(),
-                    from_key.name()
-                ));
-            }
-            from_key
-        }
-        (None, flag) => flag.unwrap_or(Network::Mainnet),
-    };
+    if let Some(ufvk) = &cli.ufvk {
+        delegator_tui::app::onboarding::check_ufvk(ufvk)?;
+    }
     let config = BackendConfig {
-        network,
         data_dir: cli.data_dir.clone(),
-        wallet_name: cli.wallet_name.clone(),
         server: cli.server.clone(),
+        seed_derivation: match cli.seed_derivation.as_str() {
+            "crosslink" => zingolib::wallet::SeedDerivation::CrosslinkTruncated32,
+            _ => zingolib::wallet::SeedDerivation::Zip32Standard,
+        },
     };
     let wallet_dir = config.wallet_dir(network);
     std::fs::create_dir_all(&wallet_dir)
         .map_err(|e| format!("cannot create {}: {e}", wallet_dir.display()))?;
-    let wallet_path = config.wallet_path(network);
-    let exists = wallet_path.exists();
-
-    if cli.ufvk.is_some() && exists {
-        return Err(format!(
-            "a wallet file already exists at {}; remove it or omit --ufvk to open it",
-            wallet_path.display()
-        ));
-    }
 
     init_logging(
         &cli.log_file
@@ -103,30 +82,57 @@ async fn run(cli: Cli) -> Result<(), String> {
     tracing::info!("starting delegator-tui on {}", network.name());
 
     let now = Instant::now();
-    let (phase, initial): (Phase, Option<Command>) = if exists {
-        (
-            Phase::Loading("Opening wallet".into()),
-            Some(Command::Open(OpenSpec::Read)),
-        )
-    } else if let (Some(ufvk), Some(birthday)) = (cli.ufvk.clone(), cli.birthday) {
+    let (phase, initial): (Phase, Command) = if let (Some(ufvk), Some(birthday)) =
+        (cli.ufvk.clone(), cli.birthday)
+    {
+        let name = cli.wallet.clone().unwrap_or_else(|| "watch".to_string());
+        let path = config.wallet_path(network, &name);
+        if path.exists() {
+            return Err(format!(
+                "a wallet file already exists at {}; pass --wallet with another name, or omit --ufvk to open it",
+                path.display()
+            ));
+        }
         (
             Phase::Loading("Creating wallet".into()),
-            Some(Command::Open(OpenSpec::Create {
+            Command::Open(OpenSpec::Create {
                 network,
-                server: cli
-                    .server
-                    .clone()
-                    .unwrap_or_else(|| network.default_server().to_string()),
-                ufvk,
+                name,
+                material: KeyMaterial::Ufvk(ufvk),
                 birthday,
-            })),
+                server: cli.server.clone(),
+            }),
+        )
+    } else if let Some(name) = cli.wallet.clone() {
+        let path = config.wallet_path(network, &name);
+        if !path.exists() {
+            return Err(format!(
+                "no wallet file at {}; run without --wallet to see the list",
+                path.display()
+            ));
+        }
+        (
+            Phase::Loading("Opening wallet".into()),
+            Command::Open(OpenSpec::Read {
+                network,
+                name,
+                verified: false,
+            }),
         )
     } else {
-        (Phase::Wizard(Wizard::new(cli.server.clone())), None)
+        (
+            Phase::Onboarding(Box::new(Onboarding::new(network, cli.server.clone()))),
+            Command::ListWallets,
+        )
     };
 
     let mut state = State::new(phase, now);
     state.ascii_qr = cli.ascii_qr;
+    state.dither = match cli.dither.as_str() {
+        "braille" => theme::Dither::Braille,
+        "off" => theme::Dither::Off,
+        _ => theme::Dither::Blocks,
+    };
 
     // flag, then saved preference, then NO_COLOR, then the default
     let config_path = settings::default_path();
@@ -149,7 +155,11 @@ async fn run(cli: Cli) -> Result<(), String> {
 
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let (act_tx, mut act_rx) = mpsc::unbounded_channel();
-    let backend = backend::spawn(config, cmd_rx, act_tx.clone());
+    let backend = if cli.fake {
+        backend::fake::spawn(network, cmd_rx, act_tx.clone())
+    } else {
+        backend::spawn(config, cmd_rx, act_tx.clone())
+    };
 
     // terminal
     let default_hook = std::panic::take_hook();
@@ -213,11 +223,9 @@ async fn run(cli: Cli) -> Result<(), String> {
         }
     };
 
-    if let Some(command) = initial {
-        let _ = cmd_tx.send(command);
-    }
+    let _ = cmd_tx.send(initial);
 
-    let mut tick = tokio::time::interval(Duration::from_millis(250));
+    let mut tick = tokio::time::interval(Duration::from_secs_f32(TICK_SECS));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let result = loop {
         if let Err(e) = terminal.draw(|frame| ui::view(frame, &state)) {

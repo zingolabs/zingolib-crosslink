@@ -12,8 +12,9 @@ use super::view;
 use crate::app::{
     AddressKind, AddressRow, ChainRange, DetailMode, InputRow, Network, OutputRole, OutputRow,
     Overlay, Phase, Pool, RangePriority, Screen, SpendState, State, SyncMode, TxKind, TxRow,
-    TxStatus, ValueTransferRow, WalletInfo, Wizard, WizardStep,
+    TxStatus, ValueTransferRow, WalletEntry, WalletInfo, WalletKind,
 };
+use crate::app::{BirthdayMode, Evidence, KeyMaterial, Onboarding, Step, Tip};
 use crate::theme::{ColorDepth, THEMES, index_of};
 
 fn draw(state: &State, width: u16, height: u16) -> Buffer {
@@ -38,12 +39,13 @@ fn populated() -> State {
     let mut s = State::new(Phase::Main, Instant::now());
     s.size = (100, 40);
     s.wallet = Some(WalletInfo {
-        network: Network::Mainnet,
-        wallet_name: "delegator-tui.dat".into(),
-        wallet_path: "/tmp/delegator-tui.dat".into(),
+        network: Network::Stable,
+        wallet_name: "main".into(),
+        wallet_path: "/tmp/main.dat".into(),
         birthday: 2_500_000,
         server: "https://zec.rocks:443".into(),
         has_orchard: true,
+        kind: WalletKind::Watch,
     });
     s.balance.orchard.confirmed = 150_000_000;
     s.balance.transparent.confirmed = 30_000;
@@ -154,10 +156,27 @@ fn every_main_screen_renders() {
         let out = render(&s, 100, 40);
         let header = out.lines().next().unwrap();
         for tab in Screen::ALL {
-            assert!(header.contains(tab.title()), "{screen:?}: {tab:?} tab");
+            assert!(
+                header.contains(&tab.title().to_lowercase()),
+                "{screen:?}: {tab:?} tab"
+            );
         }
         assert!(header.contains("syncing 25%"), "{screen:?} sync state");
-        for noise in ["height", "delegator-tui.dat", "mainnet", "·"] {
+        assert!(
+            header.contains("main"),
+            "{screen:?} header names the wallet"
+        );
+        let narrow = render(&s, 80, 24);
+        let narrow_header = narrow.lines().next().unwrap();
+        assert!(
+            narrow_header.contains("sync "),
+            "{screen:?}: every tab fits at 80 columns: {narrow_header}"
+        );
+        assert!(
+            !narrow_header.contains("main"),
+            "{screen:?}: the name gives way at 80 columns"
+        );
+        for noise in ["height", ".dat", "mainnet"] {
             assert!(!header.contains(noise), "{screen:?} header shows {noise}");
         }
     }
@@ -278,7 +297,7 @@ fn sync_strip_spans_the_birthday_to_tip() {
     let out = render(&s, 100, 40);
     let strip = out.lines().find(|l| l.contains('━')).expect("a strip");
     assert!(
-        strip.trim_start().starts_with('━'),
+        strip.trim_start_matches(['▏', ' ']).starts_with('━'),
         "scanned from the birthday"
     );
     assert!(strip.contains('─'), "not yet scanned in the middle");
@@ -410,51 +429,61 @@ fn the_last_find_sits_on_the_bottom_row() {
     });
     let out = render(&s, 100, 40);
     let lines: Vec<&str> = out.lines().collect();
-    // the body ends above the separator and the footer
-    assert!(lines[37].contains("Last found"), "{}", lines[37]);
-    assert!(lines[37].contains("pending"));
+    // the body ends above the footer
+    assert!(lines[38].contains("Last found"), "{}", lines[38]);
+    assert!(lines[38].contains("pending"));
 }
 
 #[test]
-fn the_network_appears_only_when_it_is_not_mainnet() {
+fn the_header_names_the_chain_and_warns_on_nightly() {
     let mut s = populated();
-    assert!(
-        !render(&s, 100, 40)
-            .lines()
-            .next()
-            .unwrap()
-            .contains("mainnet")
-    );
-    s.wallet.as_mut().unwrap().network = Network::Testnet;
     assert!(
         render(&s, 100, 40)
             .lines()
             .next()
             .unwrap()
-            .contains("testnet")
+            .contains("stable")
+    );
+    s.wallet.as_mut().unwrap().network = Network::Nightly;
+    let buffer = draw(&s, 100, 40);
+    let header: String = (0..100)
+        .map(|x| buffer[(x, 0)].symbol().to_string())
+        .collect();
+    let at = col_of(&header, "nightly");
+    assert_ne!(
+        buffer[(at, 0)].fg,
+        buffer[(0, 1)].fg,
+        "nightly is coloured as a warning"
     );
 }
 
 #[test]
 fn the_active_tab_is_highlighted() {
     let mut s = populated();
-    s.theme = index_of("gruvbox-dark").unwrap();
-    let surface = Color::Rgb(0x50, 0x49, 0x45);
+    s.theme = index_of("lightwallet").unwrap();
+    let accent = Color::Rgb(0xd3, 0xa0, 0x50);
     for screen in Screen::ALL {
         s.screen = screen;
         let buffer = draw(&s, 100, 40);
         let header: String = (0..100)
             .map(|x| buffer[(x, 0)].symbol().to_string())
             .collect();
-        let at = header.find(screen.title()).unwrap() as u16;
+        // the tabs follow the last separator; "sync" also appears in the sync state
+        let tabs_at = header.rfind('·').unwrap();
+        let header = format!(
+            "{}{}",
+            " ".repeat(header[..tabs_at].chars().count()),
+            &header[tabs_at..]
+        );
+        let at = col_of(&header, &screen.title().to_lowercase());
         assert_eq!(
-            buffer[(at, 0)].bg,
-            surface,
-            "{screen:?} tab is not highlighted"
+            buffer[(at, 0)].fg,
+            accent,
+            "{screen:?} tab is not in the accent"
         );
         for other in Screen::ALL.into_iter().filter(|o| *o != screen) {
-            let at = header.find(other.title()).unwrap() as u16;
-            assert_ne!(buffer[(at, 0)].bg, surface, "{other:?} highlighted too");
+            let at = col_of(&header, &other.title().to_lowercase());
+            assert_ne!(buffer[(at, 0)].fg, accent, "{other:?} highlighted too");
         }
     }
 }
@@ -506,7 +535,7 @@ fn overlays_render() {
         s.overlay = overlay.clone();
         let out = render(&s, 100, 40);
         match overlay {
-            Overlay::Help => assert!(out.contains("Everywhere")),
+            Overlay::Help => assert!(out.contains("delegator-tui — keys")),
             Overlay::TxDetail {
                 mode: DetailMode::InputsOutputs,
             } => {
@@ -575,27 +604,150 @@ fn qr_fits_on_a_tall_terminal_and_explains_when_it_does_not() {
     assert!(render(&s, 100, 60).contains("Make the terminal larger"));
 }
 
+/// Every onboarding step, with the words a user relies on.
+fn onboarding_states() -> Vec<(Step, State)> {
+    let now = Instant::now();
+    let mut out = Vec::new();
+    let base = {
+        let mut o = Onboarding::new(Network::Stable, None);
+        o.listed = true;
+        o.wallets = vec![WalletEntry {
+            name: "main".into(),
+            network: Network::Stable,
+            kind: WalletKind::Seed,
+            birthday: Some(2_604_500),
+            age_secs: Some(120),
+            evidence: Evidence::Meta,
+        }];
+        o.tip = Some(Tip {
+            network: Network::Stable,
+            height: 3_000_000,
+            at_unix: 1_800_000_000,
+            spacing_secs: 75,
+        });
+        o.error = Some("something to show".into());
+        o
+    };
+    for step in [
+        Step::Wallets,
+        Step::Menu,
+        Step::Create,
+        Step::Restore,
+        Step::Watch,
+        Step::Birthday,
+        Step::Name,
+    ] {
+        let mut o = base.clone();
+        o.step = step;
+        match step {
+            Step::Create => o.seed = Some("abandon ".repeat(23) + "art"),
+            Step::Restore => {
+                o.words = vec!["abandon".into(); 12];
+                o.draft = "ab".into();
+                o.birthday_hint = Some(2_604_500);
+            }
+            Step::Watch => o.key = "uviewtest1".to_string() + &"k".repeat(300) + " 2604500",
+            Step::Birthday | Step::Name => {
+                o.material = Some((Network::Stable, KeyMaterial::Ufvk("uviewtest1k".into())));
+                o.birthday = Some(2_604_500);
+                o.name = "watch".into();
+            }
+            _ => {}
+        }
+        out.push((step, State::new(Phase::Onboarding(Box::new(o)), now)));
+    }
+    out
+}
+
 #[test]
 fn startup_phases_render() {
     let now = Instant::now();
-    let mut w = Wizard::new(None);
-    w.network = Some(Network::Testnet);
-    for step in [WizardStep::Ufvk, WizardStep::Server, WizardStep::Birthday] {
-        w.step = step;
-        w.ufvk = "uviewtest1".to_string() + &"k".repeat(300);
-        w.error = Some("something to show".into());
-        let s = State::new(Phase::Wizard(w.clone()), now);
+    for (step, s) in onboarding_states() {
         let out = render(&s, 80, 24);
-        assert!(out.contains("new watch-only wallet"), "{step:?}");
+        assert!(out.contains("delegator-tui"), "{step:?}");
         assert!(out.contains("something to show"), "{step:?}");
+        match step {
+            Step::Wallets => {
+                assert!(out.contains("main"));
+                assert!(out.contains("2,604,500"));
+                assert!(out.contains("2 min ago"));
+                assert!(out.contains("New wallet…"));
+            }
+            Step::Menu => {
+                assert!(out.contains("create a new wallet"));
+                assert!(out.contains("watch with a viewing key"));
+            }
+            Step::Create => {
+                assert!(out.contains(" 1 abandon"), "{out}");
+                assert!(out.contains("24 art"), "{out}");
+                assert!(out.contains("2,999,900 on crosslink"), "{out}");
+            }
+            Step::Restore => {
+                assert!(out.contains("12 of 24 words"), "{out}");
+                assert!(out.contains("13 ab"), "the draft shows in its slot: {out}");
+                assert!(out.contains("birthday 2,604,500 from the paste"));
+            }
+            Step::Watch => {
+                assert!(
+                    out.contains("viewing key for the crosslink chains"),
+                    "{out}"
+                );
+                assert!(out.contains("birthday 2,604,500 from the paste"));
+            }
+            Step::Birthday => {
+                assert!(out.contains("I know roughly the date"));
+                assert!(out.contains("scan from 1,"), "the floor is block 1: {out}");
+            }
+            Step::Name => assert!(out.contains("watch")),
+        }
     }
+    // the birthday input modes
+    let (_, mut s) = onboarding_states().remove(5);
+    let Phase::Onboarding(o) = &mut s.phase else {
+        panic!()
+    };
+    o.birthday_mode = Some(BirthdayMode::Date);
+    o.birthday_input = "2025-01".into();
+    let out = render(&s, 80, 24);
+    assert!(out.contains("two weeks before it"), "{out}");
+    let Phase::Onboarding(o) = &mut s.phase else {
+        panic!()
+    };
+    o.birthday_mode = Some(BirthdayMode::Unknown);
+    assert!(render(&s, 80, 24).contains("scan the whole chain?"));
+    let Phase::Onboarding(o) = &mut s.phase else {
+        panic!()
+    };
+    o.birthday_mode = Some(BirthdayMode::Height);
+    o.birthday_input = "0".into();
+    assert!(render(&s, 80, 24).contains("must be at least 1,"));
+
     let s = State::new(Phase::Loading("Opening wallet".into()), now);
     assert!(render(&s, 80, 24).contains("Opening wallet"));
     let s = State::new(Phase::Fatal("disk on fire".into()), now);
     assert!(render(&s, 80, 24).contains("disk on fire"));
     let mut s = populated();
     s.phase = Phase::ShuttingDown;
-    assert!(render(&s, 80, 24).contains("Saving the wallet"));
+    assert!(render(&s, 80, 24).contains("saving the wallet"));
+}
+
+#[test]
+fn the_wide_restore_grid_has_four_columns_and_the_narrow_one_fewer() {
+    let (_, s) = onboarding_states().remove(3);
+    let wide = render(&s, 100, 30);
+    assert!(wide.contains(" 1 abandon"));
+    assert!(
+        wide.lines()
+            .any(|l| l.contains(" 1 abandon") && l.contains(" 4 abandon")),
+        "{wide}"
+    );
+    let narrow = render(&s, 80, 24);
+    assert!(
+        narrow
+            .lines()
+            .any(|l| l.contains(" 1 abandon") && l.contains(" 4 abandon")),
+        "80 columns still fit four: {narrow}"
+    );
 }
 
 #[test]
@@ -738,10 +890,11 @@ fn every_theme_draws_every_view_at_both_depths() {
             s.theme = i;
             s.color_depth = depth;
             assert!(!every_view(&mut s).is_empty());
-            let mut w = State::new(Phase::Wizard(Wizard::new(None)), Instant::now());
-            w.theme = i;
-            w.color_depth = depth;
-            assert!(render(&w, 80, 24).contains("new watch-only wallet"));
+            for (_, mut w) in onboarding_states() {
+                w.theme = i;
+                w.color_depth = depth;
+                assert!(render(&w, 80, 24).contains("delegator-tui"));
+            }
         }
     }
 }
@@ -764,11 +917,11 @@ fn a_palette_theme_paints_its_background_and_accent() {
     let header: String = (0..100)
         .map(|x| buffer[(x, 0)].symbol().to_string())
         .collect();
-    let key = header.find("Transactions").unwrap() as u16;
+    let key = col_of(&header, "home");
     assert_eq!(
         buffer[(key, 0)].fg,
         Color::Rgb(0xfe, 0x80, 0x19),
-        "an inactive tab shows its key letter in the accent"
+        "the active screen's name is in the accent"
     );
 
     s.theme = index_of("catppuccin-latte").unwrap();
@@ -919,7 +1072,10 @@ fn change_is_listed_last_and_left_uncoloured() {
         .iter()
         .position(|l| l.contains("Sent to others"))
         .unwrap();
-    let change = lines.iter().position(|l| l.trim() == "Change").unwrap();
+    let change = lines
+        .iter()
+        .position(|l| l.trim_start_matches('▏').trim() == "Change")
+        .unwrap();
     assert!(sent < change, "change comes last");
     assert_eq!(
         fg_at(change + 1, "orchard"),
@@ -929,13 +1085,29 @@ fn change_is_listed_last_and_left_uncoloured() {
 
     // a transaction without change has no change section
     s.txs[1].outputs.retain(|o| o.role == OutputRole::Sent);
-    assert!(!render(&s, 100, 40).lines().any(|l| l.trim() == "Change"));
+    assert!(
+        !render(&s, 100, 40)
+            .lines()
+            .any(|l| l.trim_start_matches('▏').trim() == "Change")
+    );
 }
 
-/// Column where the first line containing `needle` starts, counted in cells.
+/// The cell column where `needle` starts in a row of symbols. Byte offsets would be off by the
+/// multi-byte glyphs before it.
+fn col_of(row: &str, needle: &str) -> u16 {
+    let at = row.find(needle).expect(needle);
+    row[..at].chars().count() as u16
+}
+
+/// Column where the first line containing `needle` starts, counted in cells. The pane's rule
+/// in the first column is blank for this purpose.
 fn indent_of(out: &str, needle: &str) -> usize {
     let line = out.lines().find(|l| l.contains(needle)).expect(needle);
-    line.chars().take_while(|c| *c == ' ').count()
+    blank_prefix(line)
+}
+
+fn blank_prefix(line: &str) -> usize {
+    line.chars().take_while(|c| *c == ' ' || *c == '▏').count()
 }
 
 /// Every piece of content starts at the same left edge.
@@ -969,10 +1141,7 @@ fn the_transaction_diagram_starts_at_the_content_edge() {
             let diagram = out
                 .lines()
                 .filter(|l| l.contains(['┌', '│', '┤', '├', '└']));
-            let edge = diagram
-                .map(|l| l.chars().take_while(|c| *c == ' ').count())
-                .min()
-                .expect("a diagram is drawn");
+            let edge = diagram.map(blank_prefix).min().expect("a diagram is drawn");
             assert_eq!(edge, EDGE, "{mode:?} at {width} columns");
             assert_eq!(
                 indent_of(&out, "amount"),
@@ -998,35 +1167,26 @@ fn the_qr_code_stays_beside_its_address_on_a_wide_terminal() {
 }
 
 #[test]
-fn the_bars_share_the_bodys_edges() {
+fn the_chrome_sits_on_the_left_edge_and_content_two_columns_in() {
     let mut s = populated();
-    s.theme = index_of("gruvbox-dark").unwrap();
-    let surface = Color::Rgb(0x50, 0x49, 0x45);
     let (w, h) = (100u16, 30u16);
-    let buffer = draw(&s, w, h);
     let out = render(&s, w, h);
     let lines: Vec<&str> = out.lines().collect();
-    // the active tab's pill starts on the edge, like the body's text
-    assert_eq!(
-        buffer[(EDGE as u16 - 1, 0)].bg,
-        Color::Rgb(0x28, 0x28, 0x28)
-    );
-    assert_eq!(
-        buffer[(EDGE as u16, 0)].bg,
-        surface,
-        "the Home pill starts at the edge"
-    );
-    // the status ends two columns from the right, mirroring the left
-    let header = lines[0].trim_end();
-    assert_eq!(
-        header.chars().count(),
-        usize::from(w) - EDGE,
-        "status ends at the edge"
-    );
-    // the footer's first key and the body's first word share a column
+    // the title starts in the first column, the body rows carry the rule there
+    assert!(lines[0].starts_with("delegator-tui"));
+    for row in lines.iter().take(usize::from(h) - 1).skip(1) {
+        assert!(row.starts_with('▏'), "{row}");
+    }
+    // the pane title sits on the rule's first row
+    assert!(lines[1].starts_with("▏home"), "{}", lines[1]);
+    // the footer's first key and the body's first word share the content edge, less the rule
     let footer = lines[usize::from(h) - 1];
-    assert_eq!(footer.chars().take_while(|c| *c == ' ').count(), EDGE);
+    assert!(footer.starts_with("j/k move"), "{footer}");
     assert_eq!(indent_of(&out, "Balance"), EDGE);
+    // a notice takes the footer over
+    s.set_notice("copied");
+    let out = render(&s, w, h);
+    assert!(out.lines().last().unwrap().starts_with("copied"));
 }
 
 /// A delegation bond: 0.0102 ZEC of Orchard locked into a bond, with a zero-value Orchard
