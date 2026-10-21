@@ -601,7 +601,8 @@ pub struct WalletInfo {
 
 impl WalletInfo {
     /// The frame a wallet shows the moment it is asked for, from the facts the opener already
-    /// has: its name and chain. The file's own facts arrive with [`Action::WalletOpened`],
+    /// has: its name and chain. The file's own facts arrive with
+    /// [`Action::WalletOpened`](crate::app::Action::WalletOpened),
     /// which can take a while: the open reads the chain to verify it before it answers.
     pub fn placeholder(
         network: Network,
