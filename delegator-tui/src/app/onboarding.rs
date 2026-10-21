@@ -271,10 +271,23 @@ fn split_trailing_number(text: &str) -> (Vec<&str>, Option<u32>) {
     (words, number)
 }
 
-/// The birthday of a fresh wallet: a little below the tip.
-pub fn fresh_birthday(network: Network, tip: u32) -> u32 {
-    tip.saturating_sub(FRESH_WALLET_MARGIN)
-        .max(network.sapling_activation())
+/// The birthday of a fresh wallet: a little below the tip, or the Ironwood activation height
+/// when the indexer keeps no tree state to start from.
+pub fn fresh_birthday(network: Network, tip: &Tip) -> u32 {
+    tip.settle_birthday(
+        tip.height
+            .saturating_sub(FRESH_WALLET_MARGIN)
+            .max(network.sapling_activation()),
+    )
+}
+
+/// The birthday the user chose, as this indexer allows it.
+fn settle(o: &Onboarding, wanted: u32) -> u32 {
+    let network = o.target_network();
+    match o.tip_for(network) {
+        Some(tip) => tip.settle_birthday(wanted),
+        None => wanted,
+    }
 }
 
 fn create_key(o: &mut Onboarding, key: Key) -> Vec<Command> {
@@ -293,9 +306,7 @@ fn create_key(o: &mut Onboarding, key: Key) -> Vec<Command> {
             fetch_tip(o)
         }
         Key::Char('y') => match o.tip_for(o.network) {
-            Some(tip) => vec![Command::Copy(
-                fresh_birthday(o.network, tip.height).to_string(),
-            )],
+            Some(tip) => vec![Command::Copy(fresh_birthday(o.network, &tip).to_string())],
             None => Vec::new(),
         },
         Key::Enter => {
@@ -308,7 +319,7 @@ fn create_key(o: &mut Onboarding, key: Key) -> Vec<Command> {
                 return Vec::new();
             };
             o.material = Some((o.network, KeyMaterial::Seed(seed)));
-            o.birthday = Some(fresh_birthday(o.network, tip.height));
+            o.birthday = Some(fresh_birthday(o.network, &tip));
             go_to_name(o);
             Vec::new()
         }
@@ -463,7 +474,7 @@ fn birthday_key(o: &mut Onboarding, key: Key) -> Vec<Command> {
         Key::Char('n') if mode == BirthdayMode::Unknown => o.birthday_mode = None,
         Key::Enter => match parse_birthday(o, mode) {
             Ok(height) => {
-                o.birthday = Some(height);
+                o.birthday = Some(settle(o, height));
                 go_to_name(o);
             }
             Err(e) => o.error = Some(e),
@@ -719,6 +730,7 @@ mod tests {
             height,
             at_unix: 1_800_000_000,
             spacing_secs: 75,
+            ironwood_tree: true,
         }))
     }
 
@@ -948,6 +960,7 @@ mod tests {
             height: 3_000_000,
             at_unix: 1_800_000_000,
             spacing_secs: 75,
+            ironwood_tree: true,
         };
         let day = 24 * 60 * 60;
         // the moment of the tip itself: only the margin
@@ -997,5 +1010,33 @@ mod tests {
         assert_eq!(default_name(&o), "watch-2");
         o.material = Some((Network::Nightly, KeyMaterial::Seed("s".into())));
         assert_eq!(default_name(&o), "nightly");
+    }
+
+    #[test]
+    fn an_indexer_without_ironwood_state_starts_wallets_at_the_activation_height() {
+        let bare = Tip {
+            network: Network::Stable,
+            height: 73_284,
+            at_unix: 1_800_000_000,
+            spacing_secs: 15,
+            ironwood_tree: false,
+        };
+        assert_eq!(fresh_birthday(Network::Stable, &bare), 1);
+        assert_eq!(bare.settle_birthday(50_000), 1);
+        let full = Tip {
+            ironwood_tree: true,
+            ..bare
+        };
+        assert_eq!(fresh_birthday(Network::Stable, &full), 73_184);
+        assert_eq!(full.settle_birthday(50_000), 50_000);
+        // a restore on the bare indexer is settled the same way
+        let mut s = start();
+        listed(&mut s, &[]);
+        reduce(&mut s, Action::Paste(format!("{PHRASE} 50000")));
+        keys(&mut s, &[Key::Char('1')]);
+        reduce(&mut s, Action::TipFetched(Ok(bare)));
+        keys(&mut s, &[Key::Enter, Key::Enter]);
+        assert_eq!(o(&s).step, Step::Name);
+        assert_eq!(o(&s).birthday, Some(1));
     }
 }

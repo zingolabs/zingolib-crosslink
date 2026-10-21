@@ -4,7 +4,10 @@ use std::time::Instant;
 
 use super::action::{Action, Command, Key, SyncNote};
 use super::onboarding;
-use super::state::{DetailMode, FoundTx, Overlay, Phase, ReceiveKind, Screen, State};
+use super::state::{
+    DetailMode, FaucetStage, FoundTx, Overlay, Phase, ReceiveKind, Screen, SendField, SendForm,
+    SendStage, State,
+};
 use crate::format;
 
 pub fn reduce(state: &mut State, action: Action) -> Vec<Command> {
@@ -45,6 +48,8 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Command> {
         Action::DataLoaded(data) => {
             state.balance = data.balance;
             state.txs = data.txs;
+            state.bonds = data.bonds;
+            state.roster = data.roster;
             state.addresses = data.addresses;
             clamp_selections(state);
             Vec::new()
@@ -69,11 +74,61 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Command> {
             state.exit = true;
             Vec::new()
         }
+        Action::FaucetDone(result) => {
+            let paid = result.is_ok();
+            if let Overlay::Faucet(stage) = &mut state.overlay {
+                *stage = match result {
+                    Ok(amount) => FaucetStage::Done { amount },
+                    Err(e) => FaucetStage::Failed(e),
+                };
+            }
+            if paid {
+                vec![Command::Refresh]
+            } else {
+                Vec::new()
+            }
+        }
+        Action::SendProposed(result) => {
+            if let Overlay::Send(form) = &mut state.overlay {
+                match result {
+                    Ok((fee, total)) => {
+                        form.error = None;
+                        form.stage = SendStage::Confirm { fee, total };
+                    }
+                    Err(e) => {
+                        form.error = Some(e);
+                        form.stage = SendStage::Edit;
+                    }
+                }
+            }
+            Vec::new()
+        }
+        Action::SendDone(result) => {
+            if let Overlay::Send(form) = &mut state.overlay {
+                match result {
+                    Ok(txids) => {
+                        form.error = None;
+                        form.stage = SendStage::Sent { txids };
+                        return vec![Command::Refresh];
+                    }
+                    Err(e) => {
+                        form.error = Some(e);
+                        form.stage = SendStage::Edit;
+                    }
+                }
+            }
+            Vec::new()
+        }
     }
 }
 
 fn clamp_selections(state: &mut State) {
     state.tx_selected = state.tx_selected.min(state.txs.len().saturating_sub(1));
+    state.bond_selected = state.bond_selected.min(state.bonds.len().saturating_sub(1));
+    state.bond_selected = state.bond_selected.min(state.bonds.len().saturating_sub(1));
+    state.bond_selected = state.bond_selected.min(state.bonds.len().saturating_sub(1));
+    state.bond_selected = state.bond_selected.min(state.bonds.len().saturating_sub(1));
+    state.bond_selected = state.bond_selected.min(state.bonds.len().saturating_sub(1));
     state.addr_selected = state
         .addr_selected
         .min(state.addresses.len().saturating_sub(1));
@@ -85,25 +140,27 @@ fn on_sync(state: &mut State, note: SyncNote, at: Instant) {
         SyncNote::SessionStarted {
             tip,
             birthday,
+            total_blocks,
+            scanned_blocks,
             total_outputs,
             scanned_outputs,
-            scanned_blocks,
         } => {
             sync.birthday = Some(birthday);
             sync.tip = Some(tip);
+            sync.blocks_total = total_blocks;
+            sync.blocks_scanned = scanned_blocks;
             sync.outputs_total = total_outputs;
             sync.outputs_scanned = scanned_outputs;
-            sync.blocks_scanned = scanned_blocks;
             sync.error = None;
             sync.next_launch = None;
             sync.progress_log.clear();
             sync.begin_session();
             sync.record_progress(at);
             sync.log(format!(
-                "session started at tip {}, {} of {} outputs already scanned",
+                "session started at tip {}, {} of {} blocks already scanned",
                 format::group(u64::from(tip)),
-                format::group(scanned_outputs),
-                format::group(total_outputs),
+                format::group(scanned_blocks),
+                format::group(total_blocks),
             ));
         }
         SyncNote::ScanPlanUpdated { ranges } => sync.set_scan_plan(ranges),
@@ -125,19 +182,24 @@ fn on_sync(state: &mut State, note: SyncNote, at: Instant) {
             sync.log(format!("new block {}", format::group(u64::from(to))));
         }
         SyncNote::Progress {
+            total_blocks,
+            scanned_blocks,
             total_outputs,
             scanned_outputs,
-            scanned_blocks,
         } => {
+            if total_blocks > 0 {
+                sync.blocks_total = total_blocks;
+            }
             if total_outputs > 0 {
                 sync.outputs_total = total_outputs;
             }
-            sync.outputs_scanned = scanned_outputs;
             sync.blocks_scanned = scanned_blocks;
+            sync.outputs_scanned = scanned_outputs;
             sync.record_progress(at);
         }
         SyncNote::Finished { blocks_scanned } => {
             sync.sessions_done += 1;
+            sync.blocks_scanned = sync.blocks_total;
             sync.outputs_scanned = sync.outputs_total;
             sync.error = None;
             sync.log(format!(
@@ -175,6 +237,12 @@ fn on_sync(state: &mut State, note: SyncNote, at: Instant) {
 fn on_paste(state: &mut State, text: &str) -> Vec<Command> {
     if matches!(state.phase, Phase::Onboarding(_)) {
         return onboarding::paste(state, text);
+    }
+    if let Overlay::Send(form) = &mut state.overlay
+        && form.stage == SendStage::Edit
+    {
+        let text: String = text.chars().filter(|c| form.accepts(*c)).collect();
+        form.value_mut().push_str(&text);
     }
     Vec::new()
 }
@@ -237,8 +305,8 @@ fn main_key(state: &mut State, key: Key) -> Vec<Command> {
                 Key::Char('v') => {
                     state.overlay = Overlay::TxDetail {
                         mode: match mode {
-                            DetailMode::InputsOutputs => DetailMode::ValueTransfers,
-                            DetailMode::ValueTransfers => DetailMode::InputsOutputs,
+                            DetailMode::InputsOutputs => DetailMode::WalletEvents,
+                            DetailMode::WalletEvents => DetailMode::InputsOutputs,
                         },
                     };
                     state.detail_scroll = 0;
@@ -323,7 +391,142 @@ fn main_key(state: &mut State, key: Key) -> Vec<Command> {
             }
             Vec::new()
         }
+        Overlay::Send(form) => send_key(state, *form, key),
+        Overlay::Faucet(stage) => faucet_key(state, stage, key),
         Overlay::None => screen_key(state, key),
+    }
+}
+
+/// The send form. Tab moves between fields, Enter asks the wallet for a proposal, `y` on the
+/// proposal sends it, Esc backs out of every stage but the transmission itself.
+fn send_key(state: &mut State, mut form: SendForm, key: Key) -> Vec<Command> {
+    let commands = match form.stage.clone() {
+        SendStage::Edit => match key {
+            Key::Esc => {
+                state.overlay = Overlay::None;
+                return Vec::new();
+            }
+            Key::Tab | Key::Down => {
+                form.field = form.field.next();
+                Vec::new()
+            }
+            Key::BackTab | Key::Up => {
+                form.field = form.field.previous();
+                Vec::new()
+            }
+            Key::Backspace => {
+                form.value_mut().pop();
+                Vec::new()
+            }
+            Key::Enter => match review(&form) {
+                Ok(command) => {
+                    form.error = None;
+                    form.stage = SendStage::Proposing;
+                    vec![command]
+                }
+                Err((field, message)) => {
+                    form.field = field;
+                    form.error = Some(message);
+                    Vec::new()
+                }
+            },
+            Key::Char(c) if form.accepts(c) => {
+                form.value_mut().push(c);
+                Vec::new()
+            }
+            _ => Vec::new(),
+        },
+        SendStage::Proposing => match key {
+            Key::Esc => {
+                form.stage = SendStage::Edit;
+                vec![Command::CancelSend]
+            }
+            _ => Vec::new(),
+        },
+        SendStage::Confirm { .. } => match key {
+            Key::Char('y') | Key::Enter => {
+                form.stage = SendStage::Sending;
+                vec![Command::ConfirmSend]
+            }
+            Key::Char('n') | Key::Esc => {
+                form.stage = SendStage::Edit;
+                vec![Command::CancelSend]
+            }
+            _ => Vec::new(),
+        },
+        SendStage::Sending => Vec::new(),
+        SendStage::Sent { txids } => match key {
+            Key::Char('y') => vec![Command::Copy(txids.join("\n"))],
+            Key::Esc | Key::Enter => {
+                state.overlay = Overlay::None;
+                return Vec::new();
+            }
+            _ => Vec::new(),
+        },
+    };
+    state.overlay = Overlay::Send(Box::new(form));
+    commands
+}
+
+/// Checks the form and builds the proposal command, or names the field at fault.
+fn review(form: &SendForm) -> Result<Command, (SendField, String)> {
+    let to = form.to.trim();
+    if to.is_empty() {
+        return Err((SendField::To, "type an address to send to".into()));
+    }
+    let amount = form
+        .amount_zats()
+        .map_err(|message| (SendField::Amount, message))?;
+    Ok(Command::ProposeSend {
+        to: to.to_string(),
+        amount,
+        memo: form.memo(),
+    })
+}
+
+fn faucet_key(state: &mut State, stage: FaucetStage, key: Key) -> Vec<Command> {
+    match stage {
+        FaucetStage::Ask { address } => match key {
+            Key::Char('y') | Key::Enter => {
+                state.overlay = Overlay::Faucet(FaucetStage::Requesting {
+                    address: address.clone(),
+                });
+                vec![Command::Faucet { address }]
+            }
+            Key::Char('n') | Key::Esc => {
+                state.overlay = Overlay::None;
+                Vec::new()
+            }
+            _ => Vec::new(),
+        },
+        FaucetStage::Requesting { .. } => Vec::new(),
+        FaucetStage::Done { .. } | FaucetStage::Failed(_) => {
+            if matches!(key, Key::Esc | Key::Enter | Key::Char(_)) {
+                state.overlay = Overlay::None;
+            }
+            Vec::new()
+        }
+    }
+}
+
+/// Opens the send form, or says why this wallet cannot send.
+fn open_send(state: &mut State) {
+    if state.can_spend() {
+        state.overlay = Overlay::Send(Box::default());
+    } else {
+        state.set_notice("this wallet holds a viewing key only · it cannot send");
+    }
+}
+
+/// Opens the faucet request, or says why there is nothing to pay to.
+fn open_faucet(state: &mut State) {
+    match state.faucet_address() {
+        Some(a) => {
+            state.overlay = Overlay::Faucet(FaucetStage::Ask {
+                address: a.address.clone(),
+            })
+        }
+        None => state.set_notice("no unified address with orchard yet · press n on receive"),
     }
 }
 
@@ -339,6 +542,14 @@ fn screen_key(state: &mut State, key: Key) -> Vec<Command> {
             };
             return Vec::new();
         }
+        Key::Char('p') => {
+            open_send(state);
+            return Vec::new();
+        }
+        Key::Char('F') => {
+            open_faucet(state);
+            return Vec::new();
+        }
         // each tab's key is its first letter, and works from every screen
         Key::Char('h') => {
             state.screen = Screen::Home;
@@ -346,6 +557,14 @@ fn screen_key(state: &mut State, key: Key) -> Vec<Command> {
         }
         Key::Char('t') => {
             state.screen = Screen::Transactions;
+            return Vec::new();
+        }
+        Key::Char('b') => {
+            state.screen = Screen::Bonds;
+            return Vec::new();
+        }
+        Key::Char('f') => {
+            state.screen = Screen::Finalizers;
             return Vec::new();
         }
         Key::Char('r') => {
@@ -378,6 +597,22 @@ fn screen_key(state: &mut State, key: Key) -> Vec<Command> {
                 state.detail_scroll = 0;
             }
             Vec::new()
+        }
+        Screen::Bonds => {
+            let len = state.bonds.len();
+            move_selection(&mut state.bond_selected, len, key, state.size.1);
+            match (key, state.selected_bond()) {
+                (Key::Char('y'), Some(bond)) => vec![Command::Copy(bond.finalizer.clone())],
+                _ => Vec::new(),
+            }
+        }
+        Screen::Finalizers => {
+            let len = state.roster.len();
+            move_selection(&mut state.finalizer_selected, len, key, state.size.1);
+            match (key, state.selected_finalizer()) {
+                (Key::Char('y'), Some(row)) => vec![Command::Copy(row.finalizer.clone())],
+                _ => Vec::new(),
+            }
         }
         Screen::Receive => match key {
             Key::Char('v') => {
@@ -414,7 +649,7 @@ fn screen_key(state: &mut State, key: Key) -> Vec<Command> {
             }
         }
         Screen::Sync => match key {
-            Key::Char('p') => match state.sync.p_pauses() {
+            Key::Char(' ') => match state.sync.p_pauses() {
                 Some(true) => vec![Command::PauseSync],
                 Some(false) => vec![Command::ResumeSync],
                 None => Vec::new(),
@@ -490,6 +725,7 @@ mod tests {
             birthday: 100,
             server: "https://zec.rocks:443".into(),
             has_orchard: true,
+            spacing_secs: 15,
             kind: WalletKind::Watch,
         });
         s
@@ -506,7 +742,7 @@ mod tests {
             fee: None,
             inputs: Vec::new(),
             outputs: Vec::new(),
-            value_transfers: Vec::new(),
+            wallet_events: Vec::new(),
         }
     }
 
@@ -536,6 +772,8 @@ mod tests {
         assert_eq!(s.screen, Screen::Receive, "r switches tabs even from Sync");
         keys(&mut s, &[Key::Char('h')]);
         assert_eq!(s.screen, Screen::Home);
+        keys(&mut s, &[Key::Char('b')]);
+        assert_eq!(s.screen, Screen::Bonds);
     }
 
     #[test]
@@ -604,7 +842,7 @@ mod tests {
         assert_eq!(
             s.overlay,
             Overlay::TxDetail {
-                mode: DetailMode::ValueTransfers
+                mode: DetailMode::WalletEvents
             }
         );
         keys(&mut s, &[Key::Esc]);
@@ -725,12 +963,12 @@ mod tests {
         let mut s = main_state();
         keys(&mut s, &[Key::Char('s')]);
         s.sync.mode = SyncMode::Running;
-        assert_eq!(keys(&mut s, &[Key::Char('p')]), vec![Command::PauseSync]);
+        assert_eq!(keys(&mut s, &[Key::Char(' ')]), vec![Command::PauseSync]);
         s.sync.mode = SyncMode::Paused;
-        assert_eq!(keys(&mut s, &[Key::Char('p')]), vec![Command::ResumeSync]);
+        assert_eq!(keys(&mut s, &[Key::Char(' ')]), vec![Command::ResumeSync]);
         s.sync.mode = SyncMode::NotRunning;
         s.sync.auto = false;
-        assert_eq!(keys(&mut s, &[Key::Char('p')]), vec![Command::ResumeSync]);
+        assert_eq!(keys(&mut s, &[Key::Char(' ')]), vec![Command::ResumeSync]);
         keys(&mut s, &[Key::Char('R')]);
         assert_eq!(s.overlay, Overlay::RescanConfirm);
         assert!(keys(&mut s, &[Key::Char('n')]).is_empty());
@@ -753,9 +991,10 @@ mod tests {
                 SyncNote::SessionStarted {
                     tip: 2_000_000,
                     birthday: 1,
+                    total_blocks: 2_000_000,
+                    scanned_blocks: 200_000,
                     total_outputs: 1000,
                     scanned_outputs: 100,
-                    scanned_blocks: 5,
                 },
                 t0,
             ),
@@ -781,17 +1020,21 @@ mod tests {
             &mut s,
             Action::Sync(
                 SyncNote::Progress {
+                    total_blocks: 2_000_000,
+                    scanned_blocks: 1_000_000,
                     total_outputs: 1000,
                     scanned_outputs: 500,
-                    scanned_blocks: 15,
                 },
                 t0 + Duration::from_secs(2),
             ),
         );
         assert!((s.sync.fraction() - 0.5).abs() < 1e-9);
-        assert_eq!(s.sync.blocks_scanned, 15);
+        assert_eq!(s.sync.blocks_scanned, 1_000_000);
         let eta = s.sync.eta_secs().expect("rate known after two samples");
-        assert!((2..=3).contains(&eta), "500 left at 200/s, got {eta}");
+        assert!(
+            (2..=3).contains(&eta),
+            "a million blocks left at 400,000 a second, got {eta}"
+        );
         // a range the engine is scanning now shows as live
         reduce(
             &mut s,
@@ -824,14 +1067,19 @@ mod tests {
             &mut s,
             Action::Sync(
                 SyncNote::Progress {
+                    total_blocks: 0,
+                    scanned_blocks: 1_400_000,
                     total_outputs: 0,
-                    scanned_outputs: 700,
-                    scanned_blocks: 20,
+                    scanned_outputs: 500,
                 },
                 t0 + Duration::from_secs(3),
             ),
         );
         assert!((s.sync.fraction() - 0.7).abs() < 1e-9);
+        assert!(
+            s.sync.eta_secs().is_some(),
+            "blocks moved, so there is a rate and an estimate"
+        );
         reduce(
             &mut s,
             Action::Sync(SyncNote::Finished { blocks_scanned: 20 }, t0),
@@ -839,7 +1087,7 @@ mod tests {
         assert!((s.sync.fraction() - 1.0).abs() < 1e-9);
         assert_eq!(s.sync.sessions_done, 1);
         reduce(&mut s, Action::Sync(SyncNote::Reset, t0));
-        assert_eq!(s.sync.outputs_scanned, 0);
+        assert_eq!(s.sync.blocks_scanned, 0);
         assert_eq!(s.sync.sessions_done, 0);
         assert!(s.sync.chain_ranges.is_empty());
     }
@@ -849,8 +1097,8 @@ mod tests {
         let mut s = main_state();
         assert_eq!(s.sync.label(), "starting sync");
         s.sync.mode = SyncMode::Running;
-        s.sync.outputs_total = 10;
-        s.sync.outputs_scanned = 5;
+        s.sync.blocks_total = 10;
+        s.sync.blocks_scanned = 5;
         assert_eq!(s.sync.label(), "syncing 50%");
         s.sync.mode = SyncMode::NotRunning;
         s.sync.sessions_done = 1;
@@ -948,5 +1196,177 @@ mod tests {
         let later = s.now + Duration::from_secs(10);
         reduce(&mut s, Action::Tick(later));
         assert_eq!(s.notice_text(), None);
+    }
+
+    #[test]
+    fn the_staking_calendar_follows_the_tip() {
+        use crate::app::state::StakingDay;
+        let period = StakingDay::PERIOD;
+        let window = StakingDay::DAY_WINDOW;
+        let start = StakingDay::at_height(3 * period);
+        assert!(start.open);
+        assert_eq!(start.blocks_left, window);
+        assert_eq!(start.at, 3 * period + window);
+        let last_open = StakingDay::at_height(3 * period + window - 1);
+        assert!(last_open.open);
+        assert_eq!(last_open.blocks_left, 1);
+        let closed = StakingDay::at_height(3 * period + window);
+        assert!(!closed.open);
+        assert_eq!(closed.blocks_left, period - window);
+        assert_eq!(closed.at, 4 * period);
+        assert_eq!(closed.secs_left(15), u64::from(period - window) * 15);
+        let mut s = main_state();
+        assert!(s.staking_day().is_none(), "no tip, no calendar");
+        s.sync.tip = Some(3 * period + 10);
+        assert_eq!(s.staking_day().unwrap().blocks_left, window - 10);
+        assert_eq!(s.spacing_secs(), 15);
+    }
+
+    #[test]
+    fn a_watch_wallet_cannot_open_the_send_form() {
+        let mut s = main_state();
+        assert!(keys(&mut s, &[Key::Char('p')]).is_empty());
+        assert_eq!(s.overlay, Overlay::None);
+        assert!(s.notice_text().unwrap().contains("viewing key"));
+    }
+
+    #[test]
+    fn the_send_form_reviews_proposes_confirms_and_reports() {
+        let mut s = main_state();
+        s.wallet.as_mut().unwrap().kind = WalletKind::Seed;
+        keys(&mut s, &[Key::Char('p')]);
+        assert!(matches!(s.overlay, Overlay::Send(_)));
+        // nothing typed: the review names the field
+        assert!(keys(&mut s, &[Key::Enter]).is_empty());
+        let Overlay::Send(form) = &s.overlay else {
+            panic!()
+        };
+        assert_eq!(form.field, SendField::To);
+        assert!(form.error.is_some());
+        // paste the address, tab to the amount, type it with a memo
+        reduce(&mut s, Action::Paste("u1abc def".into()));
+        let Overlay::Send(form) = &s.overlay else {
+            panic!()
+        };
+        assert_eq!(form.to, "u1abcdef", "spaces never enter an address");
+        keys(&mut s, &[Key::Tab]);
+        for c in "1.5".chars() {
+            keys(&mut s, &[Key::Char(c)]);
+        }
+        keys(&mut s, &[Key::Char('.')]);
+        keys(&mut s, &[Key::Tab]);
+        for c in "rent".chars() {
+            keys(&mut s, &[Key::Char(c)]);
+        }
+        let cmds = keys(&mut s, &[Key::Enter]);
+        assert_eq!(
+            cmds,
+            vec![Command::ProposeSend {
+                to: "u1abcdef".into(),
+                amount: 150_000_000,
+                memo: Some("rent".into()),
+            }]
+        );
+        let Overlay::Send(form) = &s.overlay else {
+            panic!()
+        };
+        assert_eq!(form.stage, SendStage::Proposing);
+        // the wallet answers with the fee
+        reduce(&mut s, Action::SendProposed(Ok((15_000, 150_015_000))));
+        let Overlay::Send(form) = &s.overlay else {
+            panic!()
+        };
+        assert_eq!(
+            form.stage,
+            SendStage::Confirm {
+                fee: 15_000,
+                total: 150_015_000
+            }
+        );
+        // back out, then go again and confirm
+        assert_eq!(keys(&mut s, &[Key::Char('n')]), vec![Command::CancelSend]);
+        let Overlay::Send(form) = &s.overlay else {
+            panic!()
+        };
+        assert_eq!(form.stage, SendStage::Edit);
+        assert_eq!(form.to, "u1abcdef", "the fields survive");
+        keys(&mut s, &[Key::Enter]);
+        reduce(&mut s, Action::SendProposed(Ok((15_000, 150_015_000))));
+        assert_eq!(keys(&mut s, &[Key::Char('y')]), vec![Command::ConfirmSend]);
+        let Overlay::Send(form) = &s.overlay else {
+            panic!()
+        };
+        assert_eq!(form.stage, SendStage::Sending);
+        assert!(keys(&mut s, &[Key::Esc]).is_empty(), "no way out mid-send");
+        let cmds = reduce(&mut s, Action::SendDone(Ok(vec!["ab12".into()])));
+        assert_eq!(cmds, vec![Command::Refresh]);
+        assert_eq!(
+            keys(&mut s, &[Key::Char('y')]),
+            vec![Command::Copy("ab12".into())]
+        );
+        keys(&mut s, &[Key::Esc]);
+        assert_eq!(s.overlay, Overlay::None);
+    }
+
+    #[test]
+    fn a_failed_proposal_returns_to_the_form_with_the_reason() {
+        let mut s = main_state();
+        s.wallet.as_mut().unwrap().kind = WalletKind::Seed;
+        keys(&mut s, &[Key::Char('p')]);
+        reduce(&mut s, Action::Paste("u1abc".into()));
+        keys(&mut s, &[Key::Tab, Key::Char('9'), Key::Enter]);
+        reduce(
+            &mut s,
+            Action::SendProposed(Err("insufficient funds".into())),
+        );
+        let Overlay::Send(form) = &s.overlay else {
+            panic!()
+        };
+        assert_eq!(form.stage, SendStage::Edit);
+        assert_eq!(form.error.as_deref(), Some("insufficient funds"));
+    }
+
+    #[test]
+    fn the_faucet_asks_first_and_pays_the_orchard_address() {
+        let mut s = main_state();
+        assert!(keys(&mut s, &[Key::Char('F')]).is_empty());
+        assert!(s.notice_text().unwrap().contains("no unified address"));
+        s.addresses = vec![AddressRow {
+            kind: AddressKind::Unified {
+                orchard: true,
+                sapling: true,
+                transparent: false,
+            },
+            index: 0,
+            address: "u1faucet".into(),
+            received: 0,
+        }];
+        keys(&mut s, &[Key::Char('F')]);
+        assert_eq!(
+            s.overlay,
+            Overlay::Faucet(FaucetStage::Ask {
+                address: "u1faucet".into()
+            })
+        );
+        assert_eq!(
+            keys(&mut s, &[Key::Char('y')]),
+            vec![Command::Faucet {
+                address: "u1faucet".into()
+            }]
+        );
+        assert!(
+            keys(&mut s, &[Key::Esc]).is_empty(),
+            "a request in flight stays"
+        );
+        let cmds = reduce(&mut s, Action::FaucetDone(Ok(1_000_000_000)));
+        assert_eq!(cmds, vec![Command::Refresh]);
+        assert_eq!(
+            s.overlay,
+            Overlay::Faucet(FaucetStage::Done {
+                amount: 1_000_000_000
+            })
+        );
+        keys(&mut s, &[Key::Esc]);
+        assert_eq!(s.overlay, Overlay::None);
     }
 }

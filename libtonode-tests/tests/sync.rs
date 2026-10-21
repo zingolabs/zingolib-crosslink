@@ -161,7 +161,7 @@ async fn sync_test() {
     //     .unwrap();
 
     // tracing::info!("{}", recipient.transaction_summaries().await.unwrap());
-    tracing::info!("{}", recipient.value_transfers(false).await.unwrap());
+    tracing::info!("{}", recipient.wallet_events(false).await.unwrap());
     tracing::info!(
         "{}",
         recipient

@@ -436,7 +436,8 @@ pub struct Theme {
     pub info: Style,
     /// The block cursor in text fields.
     pub cursor: Style,
-    pools: [Style; 3],
+    /// Ironwood, Orchard, Sapling, transparent. Ironwood takes the info colour.
+    pools: [Style; 4],
     /// The accent and the background as raw colours, for the title shimmer and the dither
     /// field. `None` on the terminal and monochrome themes, which have neither.
     pub rgb: Option<(Rgb, Rgb)>,
@@ -458,9 +459,10 @@ impl Theme {
 
     pub fn pool(&self, pool: Pool) -> Style {
         self.pools[match pool {
-            Pool::Orchard => 0,
-            Pool::Sapling => 1,
-            Pool::Transparent => 2,
+            Pool::Ironwood => 0,
+            Pool::Orchard => 1,
+            Pool::Sapling => 2,
+            Pool::Transparent => 3,
         }]
     }
 
@@ -485,7 +487,7 @@ impl Theme {
             warning: fg(p.warning),
             info: fg(p.info),
             cursor: Style::new().bg(c(p.accent)).fg(c(p.bg)),
-            pools: [fg(p.orchard), fg(p.sapling), fg(p.fg)],
+            pools: [fg(p.info), fg(p.orchard), fg(p.sapling), fg(p.fg)],
             rgb: Some((p.accent, p.bg)),
             qr: Some(qr_style(&p, depth)),
         }
@@ -507,7 +509,12 @@ impl Theme {
             warning: fg(Color::Yellow),
             info: fg(Color::Blue),
             cursor: Style::new().add_modifier(Modifier::REVERSED),
-            pools: [fg(Color::Magenta), fg(Color::LightRed), Style::new()],
+            pools: [
+                fg(Color::Cyan),
+                fg(Color::Magenta),
+                fg(Color::LightRed),
+                Style::new(),
+            ],
             rgb: None,
             // the terminal's own black and bright white, whatever its palette makes of them
             qr: Some(Style::new().fg(Color::Black).bg(Color::White)),
@@ -531,7 +538,7 @@ impl Theme {
             info: Style::new(),
             cursor: Style::new().add_modifier(Modifier::REVERSED),
             rgb: None,
-            pools: [Style::new(); 3],
+            pools: [Style::new(); 4],
             qr: None,
         }
     }
@@ -713,6 +720,13 @@ pub fn shimmer(t: &Theme, text: &str, secs: f32, depth: ColorDepth) -> Vec<Span<
             )
         })
         .collect()
+}
+
+/// A star that pulses, the loader Claude Code shows while it thinks: a dot growing into an
+/// eight-pointed star and back, eight steps a second.
+pub fn star(secs: f32) -> char {
+    const FRAMES: [char; 10] = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '✢'];
+    FRAMES[(secs * 8.0) as usize % FRAMES.len()]
 }
 
 /// Braille spinner frames, advancing about twelve times a second.

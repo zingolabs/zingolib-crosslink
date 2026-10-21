@@ -6,12 +6,15 @@
 
 mod addresses;
 mod bignum;
+mod bonds;
 mod diagram;
 mod dither;
 mod help;
 mod home;
+mod jacquard;
 mod onboarding;
 mod receive;
+mod send;
 mod sigil;
 mod sync;
 mod themes;
@@ -23,8 +26,12 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
-use crate::app::{Network, Overlay, Phase, Screen, State, SyncMode};
+use crate::app::{FaucetStage, Network, Overlay, Phase, Screen, SendStage, State, SyncMode};
+use crate::format;
 use crate::theme::{self, Theme};
+
+/// The brand on the header line.
+const TITLE: &str = "delegator-tui";
 
 pub const MIN_WIDTH: u16 = 80;
 pub const MIN_HEIGHT: u16 = 24;
@@ -142,11 +149,11 @@ pub fn header(
     indicator: Span<'static>,
     crumbs: Vec<Span<'static>>,
 ) {
-    let mut spans = theme::shimmer(t, "delegator-tui", state.elapsed_secs(), state.color_depth);
-    spans.push(Span::raw("   "));
+    let mut spans = theme::shimmer(t, TITLE, state.elapsed_secs(), state.color_depth);
+    spans.push(Span::raw(" "));
     spans.push(indicator);
     if !crumbs.is_empty() {
-        spans.push(Span::styled("  ·  ", t.muted));
+        spans.push(Span::styled(" ", t.muted));
         spans.extend(crumbs);
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -220,13 +227,17 @@ pub fn modal(
 
 fn draw_main(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
     let [header_area, body, footer_area] = split(area);
+    let indicator = sync_indicator(state, t);
+    // what is left after the title, its gap, the indicator and the separator before the tabs
+    let room =
+        usize::from(area.width).saturating_sub(TITLE.chars().count() + 1 + indicator.width() + 1);
     header(
         frame,
         header_area,
         state,
         t,
-        sync_indicator(state, t),
-        screen_tabs(state, t, area.width),
+        indicator,
+        screen_tabs(state, t, room),
     );
     let title = match &state.overlay {
         Overlay::Help | Overlay::None => state.screen.title().to_lowercase(),
@@ -235,8 +246,11 @@ fn draw_main(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
         Overlay::RescanConfirm => "rescan".into(),
         Overlay::NewUnifiedAddress { .. } => "new address".into(),
         Overlay::ThemePicker { .. } => "theme".into(),
+        Overlay::Send(_) => "send".into(),
+        Overlay::Faucet(_) => "faucet".into(),
     };
     pane(frame, body, t, &title);
+    staking_day(frame, body, state, t);
     match &state.overlay {
         Overlay::TxDetail { mode } => transactions::draw_detail(frame, body, state, t, *mode),
         Overlay::AddressQr => addresses::draw_qr(frame, body, state, t),
@@ -245,15 +259,19 @@ fn draw_main(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
             receive::draw_new_address(frame, body, t, *orchard_only)
         }
         Overlay::ThemePicker { original } => themes::draw(frame, body, state, t, *original),
+        Overlay::Send(form) => send::draw(frame, body, state, t, form),
+        Overlay::Faucet(stage) => send::draw_faucet(frame, body, state, t, stage),
         Overlay::Help | Overlay::None => match state.screen {
             Screen::Home => home::draw(frame, body, state, t),
             Screen::Transactions => transactions::draw(frame, body, state, t),
+            Screen::Bonds => bonds::draw(frame, body, state, t),
+            Screen::Finalizers => bonds::draw_finalizers(frame, body, state, t),
             Screen::Receive => receive::draw(frame, body, state, t),
             Screen::Addresses => addresses::draw(frame, body, state, t),
             Screen::Sync => sync::draw(frame, body, state, t),
         },
     }
-    if state.overlay == Overlay::None && state.screen == Screen::Home {
+    if state.overlay == Overlay::None {
         dither::band(frame, body, state, t);
     }
     if state.overlay == Overlay::Help {
@@ -268,38 +286,95 @@ fn draw_main(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
 }
 
 /// The screens as a row of names, the current one bright. Each opens with its first letter.
-/// The wallet's name comes first when the line has room for it.
-fn screen_tabs(state: &State, t: &Theme, width: u16) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    if let Some(w) = &state.wallet
-        && width >= 100
-    {
-        spans.push(Span::styled(w.wallet_name.clone(), t.text));
-        spans.push(Span::styled(
-            format!(" {}", w.network.name()),
-            if w.network == Network::Stable {
-                t.muted
+/// The wallet's name comes first when the line has room for it. When even the names do not
+/// fit in `room` cells, the other screens shrink to their letters and the current one keeps
+/// its name.
+fn screen_tabs(state: &State, t: &Theme, room: usize) -> Vec<Span<'static>> {
+    let name: Vec<Span<'static>> = match &state.wallet {
+        Some(w) => vec![
+            Span::styled(w.wallet_name.clone(), t.text),
+            Span::styled(
+                format!(" {}", w.network.name()),
+                if w.network == Network::Stable {
+                    t.muted
+                } else {
+                    t.warning
+                },
+            ),
+            Span::styled(" · ", t.muted),
+        ],
+        None => Vec::new(),
+    };
+    let tabs = |compact: bool| -> Vec<Span<'static>> {
+        let mut spans = Vec::new();
+        for (i, screen) in Screen::ALL.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw(" "));
+            }
+            let label = screen.title().to_lowercase();
+            if *screen == state.screen {
+                spans.push(Span::styled(label, t.accent.add_modifier(Modifier::BOLD)));
             } else {
-                t.warning
-            },
-        ));
-        spans.push(Span::styled("  ·  ", t.muted));
-    }
-    for (i, screen) in Screen::ALL.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::raw(" "));
+                let mut chars = label.chars();
+                let first = chars.next().map(String::from).unwrap_or_default();
+                spans.push(Span::styled(first, t.text));
+                if !compact {
+                    spans.push(Span::styled(chars.as_str().to_string(), t.muted));
+                }
+            }
         }
-        let label = screen.title().to_lowercase();
-        if *screen == state.screen {
-            spans.push(Span::styled(label, t.accent.add_modifier(Modifier::BOLD)));
-        } else {
-            let mut chars = label.chars();
-            let first = chars.next().map(String::from).unwrap_or_default();
-            spans.push(Span::styled(first, t.text));
-            spans.push(Span::styled(chars.as_str().to_string(), t.muted));
+        spans
+    };
+    let width = |spans: &[Span<'static>]| spans.iter().map(Span::width).sum::<usize>();
+    // the name first and it never yields: the tabs give up their words, then themselves
+    for (with_name, compact) in [(true, false), (true, true), (false, true)] {
+        let mut spans = if with_name { name.clone() } else { Vec::new() };
+        spans.extend(tabs(compact));
+        if width(&spans) <= room {
+            return spans;
         }
     }
-    spans
+    tabs(true)
+}
+
+/// The staking calendar on the right of the pane's title row, on every screen: whether a
+/// staking day is open, and how many blocks and how long until that changes.
+fn staking_day(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
+    let Some(day) = state.staking_day() else {
+        return;
+    };
+    let secs = day.secs_left(state.spacing_secs());
+    let (mark, word, style) = if day.open {
+        ("●", "staking day", t.positive.add_modifier(Modifier::BOLD))
+    } else {
+        ("○", "no staking day", t.warning)
+    };
+    let what = if day.open { "closes" } else { "opens" };
+    let spans = vec![
+        Span::styled(format!("{mark} {word}"), style),
+        Span::styled(
+            format!(
+                "  {what} in {} blocks ≈ {}",
+                format::group(u64::from(day.blocks_left)),
+                format::duration(secs)
+            ),
+            t.muted,
+        ),
+    ];
+    let line = Line::from(spans);
+    let width = u16::try_from(line.width()).unwrap_or(u16::MAX);
+    if width + 2 > area.width {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(line),
+        Rect {
+            x: area.x + area.width - width - 1,
+            y: area.y,
+            width,
+            height: 1,
+        },
+    );
 }
 
 /// The sync state as one mark and a word: what the user acts on.
@@ -347,13 +422,38 @@ fn hints(state: &State) -> String {
         Overlay::ThemePicker { .. } => {
             vec![("j/k", "preview"), ("enter", "keep"), ("esc", "revert")]
         }
+        Overlay::Send(form) => match form.stage {
+            SendStage::Edit => vec![
+                ("tab", "next field"),
+                ("enter", "review"),
+                ("esc", "cancel"),
+            ],
+            SendStage::Proposing => vec![("esc", "cancel")],
+            SendStage::Confirm { .. } => vec![("y", "send"), ("n", "back")],
+            SendStage::Sending => Vec::new(),
+            SendStage::Sent { .. } => vec![("y", "copy txid"), ("esc", "close")],
+        },
+        Overlay::Faucet(stage) => match stage {
+            FaucetStage::Ask { .. } => vec![("y", "ask"), ("n", "cancel")],
+            FaucetStage::Requesting { .. } => Vec::new(),
+            FaucetStage::Done { .. } | FaucetStage::Failed(_) => vec![("esc", "close")],
+        },
         Overlay::None => {
             let mut pairs = match state.screen {
-                Screen::Home => vec![("j/k", "move"), ("enter", "open"), ("c", "theme")],
+                Screen::Home => vec![
+                    ("j/k", "move"),
+                    ("enter", "open"),
+                    ("p", "pay"),
+                    ("F", "faucet"),
+                    ("c", "theme"),
+                ],
                 Screen::Transactions => vec![("j/k", "move"), ("enter", "open")],
+                Screen::Bonds => vec![("j/k", "move"), ("y", "copy finalizer")],
+                Screen::Finalizers => vec![("j/k", "move"), ("y", "copy finalizer")],
                 Screen::Receive => vec![
                     ("v", "unified ⇄ transparent"),
                     ("n", "new address"),
+                    ("F", "faucet"),
                     ("y", "copy"),
                 ],
                 Screen::Addresses => {
@@ -366,8 +466,8 @@ fn hints(state: &State) -> String {
                 }
                 Screen::Sync => {
                     let mut pairs = match state.sync.p_pauses() {
-                        Some(true) => vec![("p", "pause")],
-                        Some(false) => vec![("p", "resume")],
+                        Some(true) => vec![("space", "pause")],
+                        Some(false) => vec![("space", "resume")],
                         None => Vec::new(),
                     };
                     pairs.push(("m", if state.sync_map { "strip" } else { "chain map" }));

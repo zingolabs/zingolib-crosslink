@@ -13,6 +13,8 @@ pub enum Key {
     Enter,
     Esc,
     Backspace,
+    Tab,
+    BackTab,
     Up,
     Down,
     Left,
@@ -31,9 +33,11 @@ pub enum SyncNote {
     SessionStarted {
         tip: u32,
         birthday: u32,
+        /// Blocks between the birthday and the tip: the measure of progress.
+        total_blocks: u64,
+        scanned_blocks: u64,
         total_outputs: u64,
         scanned_outputs: u64,
-        scanned_blocks: u64,
     },
     ScanPlanUpdated {
         ranges: Vec<ChainRange>,
@@ -45,12 +49,15 @@ pub enum SyncNote {
     TipMoved {
         to: u32,
     },
-    /// The wallet's own count of what has been scanned so far. `total_outputs` is the sync
-    /// engine's count of outputs from the birthday to the tip, and zero until it has one.
+    /// The wallet's own count of what has been scanned so far. Progress is measured in blocks:
+    /// on the crosslink chains most blocks carry no shielded output, so an output count stands
+    /// still for most of a scan. The totals are estimates from the percentages the sync engine
+    /// reports, and zero until those exist; a zero leaves the last known total in place.
     Progress {
+        total_blocks: u64,
+        scanned_blocks: u64,
         total_outputs: u64,
         scanned_outputs: u64,
-        scanned_blocks: u64,
     },
     Finished {
         blocks_scanned: u64,
@@ -84,6 +91,12 @@ pub enum Action {
     Sync(SyncNote, Instant),
     Notice(String),
     Copied(bool),
+    /// The faucet answered: the zatoshis it sent, or why it did not.
+    FaucetDone(Result<u64, String>),
+    /// The wallet worked out a send: `(fee, total)` in zatoshis, or why it cannot.
+    SendProposed(Result<(u64, u64), String>),
+    /// The send was transmitted: its txids, or why it failed.
+    SendDone(Result<Vec<String>, String>),
     /// The backend finished shutting down.
     Shutdown,
 }
@@ -126,6 +139,20 @@ pub enum Command {
     ResumeSync,
     Rescan,
     Copy(String),
+    /// Ask the chain's faucet to pay this address.
+    Faucet {
+        address: String,
+    },
+    /// Work out a send and hold it for confirmation. `amount` is in zatoshis.
+    ProposeSend {
+        to: String,
+        amount: u64,
+        memo: Option<String>,
+    },
+    /// Build and transmit the held send.
+    ConfirmSend,
+    /// Drop the held send.
+    CancelSend,
     /// Persist the theme with this id as the user's preference.
     SaveTheme(&'static str),
     Quit,

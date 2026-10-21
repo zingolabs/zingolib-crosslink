@@ -2,8 +2,8 @@
 //!
 //! Laid out like zingolib-tui's wizard, a title row with the step count on the right, a rule
 //! under it, and the body two columns in, dressed like athanor's lockscreen: a sigil for the
-//! key, prompts that speak, double-framed input boxes, the birthday in big digits, the lake of
-//! the dither field where there is room, and the key legend on the last row with the chain and
+//! key, prompts that speak, double-framed input boxes, the birthday in big digits, the dither
+//! field in the tail under the content, and the key legend on the last row with the chain and
 //! the tip on its right.
 
 use ratatui::Frame;
@@ -12,27 +12,21 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 
-use super::{bignum, dither, edged, inset, separator, sigil};
+use super::{dither, edged, inset, separator, sigil};
 use crate::app::onboarding::{
     check_ufvk, fresh_birthday, height_for_date, parse_birthday, parse_date,
 };
 use crate::app::{
-    BirthdayMode, KeyMaterial, MenuItem, Network, Onboarding, State, Step, WalletKind,
+    BirthdayMode, KeyMaterial, MenuItem, Network, Onboarding, State, Step, WalletEntry, WalletKind,
 };
 use crate::format;
 use crate::theme::Theme;
-
-/// With this much room the lake takes the left of the screen and the content the right.
-const LAKE_MIN_WIDTH: u16 = 110;
-const LAKE_MIN_HEIGHT: u16 = 30;
 
 /// One thing in the body, drawn in order. Every `Line` is one row, so rows can be counted.
 enum Piece {
     Lines(Vec<Line<'static>>),
     /// A text field in a double frame, the cursor after the value.
     Field(String),
-    /// Big digits.
-    Number(String),
     /// The sigil for this material.
     Sigil(String),
 }
@@ -268,23 +262,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &State, t: &Theme, o: &Onboard
         height: area.height.saturating_sub(4),
         ..area
     };
-    let roomy = area.width >= LAKE_MIN_WIDTH && area.height >= LAKE_MIN_HEIGHT;
-    let (lake, body) = if roomy {
-        let lake_width = area.width * 2 / 5;
-        (
-            Some(Rect {
-                width: lake_width,
-                ..body_area
-            }),
-            inset(Rect {
-                x: body_area.x + lake_width,
-                width: body_area.width - lake_width,
-                ..body_area
-            }),
-        )
-    } else {
-        (None, inset(body_area))
-    };
+    let body = inset(body_area);
     let width = usize::from(body.width);
     let pieces = match o.step {
         Step::Wallets => wallets(o, t),
@@ -311,12 +289,9 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &State, t: &Theme, o: &Onboard
             }),
         );
     }
-    match lake {
-        // the lake fills its column, fading up from the legend
-        Some(lake) => dither::band(frame, lake, state, t),
-        // or the tail under the content, when at least a few rows are free
-        None if body.height.saturating_sub(used) >= 5 => dither::band(frame, body, state, t),
-        None => {}
+    // the dither field fills the tail under the content, fading up toward it
+    if body.height.saturating_sub(used) >= 5 {
+        dither::band(frame, body, state, t);
     }
 }
 
@@ -366,20 +341,6 @@ fn draw_pieces(frame: &mut Frame, area: Rect, t: &Theme, pieces: Vec<Piece>) -> 
                 frame.render_widget(Paragraph::new(lines), inner);
                 height
             }
-            Piece::Number(text) => match bignum::render(&text) {
-                Some(rows) if rows[0].chars().count() <= usize::from(area.width) => {
-                    let lines: Vec<Line<'static>> = rows
-                        .into_iter()
-                        .map(|r| Line::from(Span::styled(r, t.title)))
-                        .collect();
-                    frame.render_widget(Paragraph::new(lines), room);
-                    3
-                }
-                _ => {
-                    frame.render_widget(Paragraph::new(Line::styled(text, t.title)), room);
-                    1
-                }
-            },
             Piece::Sigil(material) => {
                 sigil::draw(frame, room, t, &material);
                 sigil::HEIGHT.min(room.height)
@@ -398,9 +359,35 @@ fn wallets(o: &Onboarding, t: &Theme) -> Vec<Piece> {
     }
     lines.push(prompt(t, "open a wallet, or make a new one:"));
     lines.push(blank());
+    // every column is as wide as its longest entry, plus a gap of four
+    const GAP: usize = 4;
+    let width_of = |header: &str, cells: &mut dyn Iterator<Item = usize>| {
+        cells
+            .chain(std::iter::once(header.chars().count()))
+            .max()
+            .unwrap_or(0)
+            + GAP
+    };
+    let name_w = width_of(
+        "name",
+        &mut o.wallets.iter().map(|w| w.name.chars().count()),
+    );
+    let chain_w = width_of(
+        "chain",
+        &mut o.wallets.iter().map(|w| w.network.name().len()),
+    );
+    let kind_w = width_of("kind", &mut o.wallets.iter().map(|w| w.kind.name().len()));
+    let birthday_of = |w: &WalletEntry| {
+        w.birthday
+            .map_or("—".to_string(), |b| format::group(u64::from(b)))
+    };
+    let birthday_w = width_of(
+        "birthday",
+        &mut o.wallets.iter().map(|w| birthday_of(w).chars().count()),
+    );
     lines.push(Line::styled(
         format!(
-            "  {:<18}{:<9}{:<7}{:<12}{}",
+            "  {:<name_w$}{:<chain_w$}{:<kind_w$}{:<birthday_w$}{}",
             "name", "chain", "kind", "birthday", "last written"
         ),
         t.muted,
@@ -414,11 +401,11 @@ fn wallets(o: &Onboarding, t: &Theme) -> Vec<Piece> {
                 Span::raw("  ")
             },
             Span::styled(
-                format!("{:<18}", w.name),
+                format!("{:<name_w$}", w.name),
                 if chosen { t.title } else { t.text },
             ),
             Span::styled(
-                format!("{:<9}", w.network.name()),
+                format!("{:<chain_w$}", w.network.name()),
                 if w.network == Network::Stable {
                     t.text
                 } else {
@@ -426,21 +413,14 @@ fn wallets(o: &Onboarding, t: &Theme) -> Vec<Piece> {
                 },
             ),
             Span::styled(
-                format!("{:<7}", w.kind.name()),
+                format!("{:<kind_w$}", w.kind.name()),
                 match w.kind {
                     WalletKind::Seed => t.accent,
                     WalletKind::Watch => t.info,
                     WalletKind::Unknown => t.muted,
                 },
             ),
-            Span::styled(
-                format!(
-                    "{:<12}",
-                    w.birthday
-                        .map_or("—".to_string(), |b| format::group(u64::from(b)))
-                ),
-                t.text,
-            ),
+            Span::styled(format!("{:<birthday_w$}", birthday_of(w)), t.text),
             Span::styled(age(w.age_secs), t.muted),
         ]));
     }
@@ -531,7 +511,7 @@ fn create(o: &Onboarding, t: &Theme, width: usize) -> Vec<Piece> {
     let mut pieces = Vec::new();
     let mut lines = vec![prompt(t, "your seed phrase. write it down.")];
     lines.extend(para(
-        "It is the only backup. Anyone holding it can spend. Keep the birthday with it.",
+        "The only backup. Anyone holding it can spend. Keep the birthday with it.",
         t.muted,
         width,
     ));
@@ -548,18 +528,12 @@ fn create(o: &Onboarding, t: &Theme, width: usize) -> Vec<Piece> {
     pieces.push(Piece::Lines(lines));
     match o.tip_for(o.network) {
         Some(tip) => {
-            let birthday = fresh_birthday(o.network, tip.height);
-            pieces.push(Piece::Lines(vec![Line::styled("Birthday", t.muted)]));
-            pieces.push(Piece::Number(format::group(u64::from(birthday))));
-            pieces.push(Piece::Lines(para(
-                &format!(
-                    "{} on {}. A restore with it starts here instead of scanning the whole chain.",
-                    format::group(u64::from(birthday)),
-                    o.network.label()
-                ),
-                t.muted,
-                width,
-            )));
+            let birthday = fresh_birthday(o.network, &tip);
+            pieces.push(Piece::Lines(vec![Line::from(vec![
+                Span::styled("birthday ", t.muted),
+                Span::styled(format::group(u64::from(birthday)), t.title),
+                Span::styled(format!("  on {}", o.network.label()), t.muted),
+            ])]));
         }
         None => pieces.push(Piece::Lines(match &o.tip_error {
             Some(e) => para(
@@ -801,6 +775,13 @@ fn name(o: &Onboarding, t: &Theme, width: usize) -> Vec<Piece> {
         t.muted,
         width,
     ));
+    if o.tip_for(network).is_some_and(|tip| !tip.ironwood_tree) {
+        intro.extend(para(
+            "This indexer keeps no Ironwood tree state, so the wallet scans from block 1.",
+            t.muted,
+            width,
+        ));
+    }
     intro.push(blank());
     let mut pieces = vec![Piece::Lines(intro), Piece::Field(o.name.clone())];
     let mut lines = Vec::new();

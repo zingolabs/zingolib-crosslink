@@ -28,8 +28,8 @@ mod chain_generics {
     use zingolib::testutils::chain_generics::fixtures;
 
     #[tokio::test]
-    async fn generate_a_range_of_value_transfers() {
-        fixtures::create_various_value_transfers::<LibtonodeEnvironment>().await;
+    async fn generate_a_range_of_wallet_events() {
+        fixtures::create_various_wallet_events::<LibtonodeEnvironment>().await;
     }
     #[tokio::test]
     async fn send_shield_cycle() {

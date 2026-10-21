@@ -76,7 +76,7 @@ its mempool (`GetMempoolTx` shows it). The wallet picked it up from the mempool 
 `transactions` showed the transaction with `value: 0` and no note list: the summaries, the
 transaction-kind classifier, `total_value_received`/`total_value_sent` and the output-query sums
 enumerated Sapling and Orchard only. Fixed in pepper-sync (`WalletTransaction` totals) and zingolib
-(`TransactionSummary` gains `ironwood_notes`/`outgoing_ironwood_notes`, value transfers report
+(`TransactionSummary` gains `ironwood_notes`/`outgoing_ironwood_notes`, wallet events report
 `pool_received: ironwood`, `transaction_kind` counts Ironwood spends and outgoing notes).
 
 Confirmation never came: no block since 2026-10-18 22:18 UTC on that node.

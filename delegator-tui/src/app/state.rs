@@ -59,14 +59,39 @@ impl Network {
 
     /// The first built-in indexer for the chain.
     pub fn default_server(self) -> String {
-        zingolib::config::IndexerList::builtin()
-            .first(&self.indexer_network())
-            .map(|i| i.uri.to_string().trim_end_matches('/').to_string())
+        self.servers()
+            .into_iter()
+            .next()
             .unwrap_or_else(|| "http://127.0.0.1:18234".to_string())
     }
 
-    /// The lowest birthday a wallet can have. Both crosslink chains are live from block 1.
+    /// This chain's indexers, in the order to try them. The stable chain's are the nodes
+    /// Shielded Labs hands out for it (October 2026); zingolib's first featurenet entry is an
+    /// older deployment that serves no Ironwood tree state and is left out. The nightly chain's
+    /// come from zingolib's built-in list.
+    pub fn servers(self) -> Vec<String> {
+        match self {
+            Network::Stable => ["45.63.75.9", "70.34.220.94", "64.177.44.176"]
+                .into_iter()
+                .map(|host| format!("http://{host}:18234"))
+                .collect(),
+            Network::Nightly => zingolib::config::IndexerList::builtin()
+                .iter()
+                .filter(|(network, _)| *network == self.indexer_network())
+                .map(|(_, i)| i.uri.to_string().trim_end_matches('/').to_string())
+                .collect(),
+        }
+    }
+
+    /// The lowest birthday a wallet can have. Both crosslink chains are live from block 1, and
+    /// every pool, Ironwood included, is active from there.
     pub fn sapling_activation(self) -> u32 {
+        1
+    }
+
+    /// The birthday a wallet needs on an indexer that keeps no Ironwood tree state: the
+    /// pool's activation height, so the wallet rebuilds the tree from scanned blocks.
+    pub fn ironwood_activation(self) -> u32 {
         1
     }
 
@@ -99,6 +124,8 @@ impl Network {
 pub enum Screen {
     Home,
     Transactions,
+    Bonds,
+    Finalizers,
     Receive,
     Addresses,
     Sync,
@@ -106,9 +133,11 @@ pub enum Screen {
 
 impl Screen {
     /// Tab order. Each screen's key is the first letter of its title.
-    pub const ALL: [Screen; 5] = [
+    pub const ALL: [Screen; 7] = [
         Screen::Home,
         Screen::Transactions,
+        Screen::Bonds,
+        Screen::Finalizers,
         Screen::Receive,
         Screen::Addresses,
         Screen::Sync,
@@ -118,6 +147,8 @@ impl Screen {
         match self {
             Screen::Home => "Home",
             Screen::Transactions => "Transactions",
+            Screen::Bonds => "Bonds",
+            Screen::Finalizers => "Finalizers",
             Screen::Receive => "Receive",
             Screen::Addresses => "Addresses",
             Screen::Sync => "Sync",
@@ -129,7 +160,7 @@ impl Screen {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DetailMode {
     InputsOutputs,
-    ValueTransfers,
+    WalletEvents,
 }
 
 /// A view layered over the current screen. Esc removes it.
@@ -150,6 +181,143 @@ pub enum Overlay {
     ThemePicker {
         original: usize,
     },
+    /// The send form, through proposal, confirmation and transmission.
+    Send(Box<SendForm>),
+    /// A request to the chain's faucet.
+    Faucet(FaucetStage),
+}
+
+/// Which field of the send form has the cursor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SendField {
+    To,
+    Amount,
+    Memo,
+}
+
+impl SendField {
+    pub fn next(self) -> Self {
+        match self {
+            SendField::To => SendField::Amount,
+            SendField::Amount => SendField::Memo,
+            SendField::Memo => SendField::To,
+        }
+    }
+
+    pub fn previous(self) -> Self {
+        match self {
+            SendField::To => SendField::Memo,
+            SendField::Amount => SendField::To,
+            SendField::Memo => SendField::Amount,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SendField::To => "to",
+            SendField::Amount => "amount",
+            SendField::Memo => "memo",
+        }
+    }
+}
+
+/// Where a send stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SendStage {
+    /// The fields are being filled in.
+    Edit,
+    /// The wallet is choosing notes and working out the fee.
+    Proposing,
+    /// The proposal is ready: `fee` on top of the amount, `total` leaving the wallet.
+    Confirm { fee: u64, total: u64 },
+    /// The transaction is being built and transmitted.
+    Sending,
+    /// Transmitted. One txid, or more when the wallet had to split the send.
+    Sent { txids: Vec<String> },
+}
+
+/// The send form.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SendForm {
+    pub to: String,
+    /// The amount as typed, in ZEC.
+    pub amount: String,
+    pub memo: String,
+    pub field: SendField,
+    pub stage: SendStage,
+    pub error: Option<String>,
+}
+
+impl Default for SendForm {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SendForm {
+    pub fn new() -> Self {
+        Self {
+            to: String::new(),
+            amount: String::new(),
+            memo: String::new(),
+            field: SendField::To,
+            stage: SendStage::Edit,
+            error: None,
+        }
+    }
+
+    pub fn value(&self, field: SendField) -> &str {
+        match field {
+            SendField::To => &self.to,
+            SendField::Amount => &self.amount,
+            SendField::Memo => &self.memo,
+        }
+    }
+
+    pub fn value_mut(&mut self) -> &mut String {
+        match self.field {
+            SendField::To => &mut self.to,
+            SendField::Amount => &mut self.amount,
+            SendField::Memo => &mut self.memo,
+        }
+    }
+
+    /// Whether `c` may go into the field that has the cursor: no spaces in an address, only
+    /// digits and one point in an amount, anything printable in a memo.
+    pub fn accepts(&self, c: char) -> bool {
+        match self.field {
+            SendField::To => !c.is_whitespace(),
+            SendField::Amount => c.is_ascii_digit() || (c == '.' && !self.amount.contains('.')),
+            SendField::Memo => !c.is_control(),
+        }
+    }
+
+    /// The amount in zatoshis, or what is wrong with it.
+    pub fn amount_zats(&self) -> Result<u64, String> {
+        crate::format::parse_zec(self.amount.trim())
+    }
+
+    pub fn memo(&self) -> Option<String> {
+        let memo = self.memo.trim();
+        (!memo.is_empty()).then(|| memo.to_string())
+    }
+}
+
+/// Where a faucet request stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FaucetStage {
+    /// Waiting for the user to confirm, with the address the funds would go to.
+    Ask {
+        address: String,
+    },
+    Requesting {
+        address: String,
+    },
+    /// The faucet sent this many zatoshis.
+    Done {
+        amount: u64,
+    },
+    Failed(String),
 }
 
 /// Which address the Receive screen shows.
@@ -302,6 +470,22 @@ pub struct Tip {
     pub at_unix: u64,
     /// Seconds per block, measured from the chain, or the network's guess.
     pub spacing_secs: u64,
+    /// Whether the indexer serves an Ironwood tree state at the tip. When it does not, a
+    /// wallet cannot start at a later height than the pool's activation: see
+    /// [`Tip::settle_birthday`].
+    pub ironwood_tree: bool,
+}
+
+impl Tip {
+    /// The birthday a wallet can use on this indexer: `wanted`, unless the indexer keeps no
+    /// Ironwood tree state, when it is the activation height.
+    pub fn settle_birthday(&self, wanted: u32) -> u32 {
+        if self.ironwood_tree {
+            wanted
+        } else {
+            wanted.min(self.network.ironwood_activation())
+        }
+    }
 }
 
 /// The first-run flow: list, menu, one branch, birthday, name.
@@ -410,6 +594,50 @@ pub struct WalletInfo {
     /// Whether the viewing key has an orchard component.
     pub has_orchard: bool,
     pub kind: WalletKind,
+    /// Seconds per block as measured from the chain when the wallet opened, or the network's
+    /// guess. Turns block counts into time.
+    pub spacing_secs: u64,
+}
+
+/// Where the chain stands on the staking calendar at one height. Staking actions other than
+/// retarget are valid only on a staking day: the first `day_window` blocks of every `period`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StakingDay {
+    pub height: u32,
+    /// Whether a staking day is open at `height`.
+    pub open: bool,
+    /// Blocks until the day closes when it is open, or until the next one opens when it is not.
+    pub blocks_left: u32,
+    /// The height at which that happens.
+    pub at: u32,
+}
+
+impl StakingDay {
+    /// Blocks between the start of one staking day and the next, on both crosslink chains.
+    pub const PERIOD: u32 = zcash_primitives::transaction::STAKING_PERIOD;
+    /// Blocks of each period during which staking actions are valid.
+    pub const DAY_WINDOW: u32 = zcash_primitives::transaction::STAKING_DAY_WINDOW;
+
+    pub fn at_height(height: u32) -> Self {
+        let into = height % Self::PERIOD;
+        let open = into < Self::DAY_WINDOW;
+        let blocks_left = if open {
+            Self::DAY_WINDOW - into
+        } else {
+            Self::PERIOD - into
+        };
+        Self {
+            height,
+            open,
+            blocks_left,
+            at: height + blocks_left,
+        }
+    }
+
+    /// Seconds until the change, at `spacing_secs` per block.
+    pub fn secs_left(&self, spacing_secs: u64) -> u64 {
+        u64::from(self.blocks_left) * spacing_secs
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -426,11 +654,15 @@ impl PoolBalance {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Balance {
+    pub ironwood: PoolBalance,
     pub orchard: PoolBalance,
     pub sapling: PoolBalance,
     pub transparent: PoolBalance,
     /// Value locked in delegation bonds. Not spendable, so it is not part of any pool.
     pub staked: u64,
+    /// Value in bonds that have begun unbonding and are not withdrawn yet. Not spendable
+    /// either: it comes back to the pools with a withdrawal.
+    pub unbonding: u64,
 }
 
 impl Balance {
@@ -444,13 +676,56 @@ impl Balance {
     }
 
     /// Every pool with its balance, in display order.
-    pub fn pools(&self) -> [(Pool, PoolBalance); 3] {
+    pub fn pools(&self) -> [(Pool, PoolBalance); 4] {
         [
+            (Pool::Ironwood, self.ironwood),
             (Pool::Orchard, self.orchard),
             (Pool::Sapling, self.sapling),
             (Pool::Transparent, self.transparent),
         ]
     }
+}
+
+/// One finalizer on the chain's roster, with the stake delegated to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RosterRow {
+    /// The finalizer's address, `zfinv1…`, or its bare key when the node has no address for it.
+    pub finalizer: String,
+    /// Zatoshis at stake with this finalizer, every delegator's together.
+    pub stake: u64,
+    /// Whether this wallet has a bond pointed at it.
+    pub ours: bool,
+}
+
+/// Where a delegation bond stands, as the server reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BondStatus {
+    /// Delegated to its finalizer and earning.
+    Bonded,
+    /// Unbonding has begun; the funds wait for a withdrawal.
+    Unbonding,
+}
+
+impl BondStatus {
+    pub fn name(self) -> &'static str {
+        match self {
+            BondStatus::Bonded => "bonded",
+            BondStatus::Unbonding => "unbonding",
+        }
+    }
+}
+
+/// One delegation bond the wallet created and has not withdrawn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BondRow {
+    /// The bond's unique key, hex.
+    pub key: String,
+    /// The finalizer the bond is delegated to, its public key in hex.
+    pub finalizer: String,
+    pub amount: u64,
+    pub status: BondStatus,
+    /// Height of the last staking action on the bond: its creation, retarget or unbonding.
+    pub since: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -508,6 +783,9 @@ impl TxKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Pool {
+    /// The crosslink pool: Orchard notes under the Orchard key and receiver, in a tree of
+    /// their own. The faucet and most payments on these chains land here.
+    Ironwood,
     Orchard,
     Sapling,
     Transparent,
@@ -516,6 +794,7 @@ pub enum Pool {
 impl Pool {
     pub fn name(self) -> &'static str {
         match self {
+            Pool::Ironwood => "ironwood",
             Pool::Orchard => "orchard",
             Pool::Sapling => "sapling",
             Pool::Transparent => "transparent",
@@ -596,7 +875,7 @@ pub struct InputRow {
 
 /// One wallet event associated with a transaction.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ValueTransferRow {
+pub struct WalletEventRow {
     pub kind: String,
     pub value: u64,
     pub recipient: Option<String>,
@@ -617,7 +896,7 @@ pub struct TxRow {
     /// Wallet outputs this transaction consumed.
     pub inputs: Vec<InputRow>,
     pub outputs: Vec<OutputRow>,
-    pub value_transfers: Vec<ValueTransferRow>,
+    pub wallet_events: Vec<WalletEventRow>,
 }
 
 impl TxRow {
@@ -683,6 +962,9 @@ pub struct AddressRow {
 pub struct WalletData {
     pub balance: Balance,
     pub txs: Vec<TxRow>,
+    pub bonds: Vec<BondRow>,
+    /// The chain's finalizers, largest stake first.
+    pub roster: Vec<RosterRow>,
     pub addresses: Vec<AddressRow>,
 }
 
@@ -742,9 +1024,11 @@ pub struct SyncView {
     pub birthday: Option<u32>,
     pub tip: Option<u32>,
     pub chain_ranges: Vec<ChainRange>,
+    /// Blocks from the birthday to the tip, the measure of progress; zero until known.
+    pub blocks_total: u64,
+    pub blocks_scanned: u64,
     pub outputs_total: u64,
     pub outputs_scanned: u64,
-    pub blocks_scanned: u64,
     pub txs_found: u64,
     pub sessions_done: u64,
     pub progress_log: VecDeque<(Instant, u64)>,
@@ -762,9 +1046,10 @@ impl SyncView {
             birthday: None,
             tip: None,
             chain_ranges: Vec::new(),
+            blocks_total: 0,
+            blocks_scanned: 0,
             outputs_total: 0,
             outputs_scanned: 0,
-            blocks_scanned: 0,
             txs_found: 0,
             sessions_done: 0,
             progress_log: VecDeque::with_capacity(PROGRESS_WINDOW + 1),
@@ -775,11 +1060,12 @@ impl SyncView {
         }
     }
 
+    /// How far the scan has got, in blocks.
     pub fn fraction(&self) -> f64 {
-        if self.outputs_total == 0 {
+        if self.blocks_total == 0 {
             if self.sessions_done > 0 { 1.0 } else { 0.0 }
         } else {
-            (self.outputs_scanned as f64 / self.outputs_total as f64).clamp(0.0, 1.0)
+            (self.blocks_scanned as f64 / self.blocks_total as f64).clamp(0.0, 1.0)
         }
     }
 
@@ -843,21 +1129,22 @@ impl SyncView {
 
     pub fn eta_secs(&self) -> Option<u64> {
         let rate = self.rate()?;
-        (rate > 1.0 && self.outputs_total > self.outputs_scanned)
-            .then(|| ((self.outputs_total - self.outputs_scanned) as f64 / rate) as u64)
+        (rate > 0.1 && self.blocks_total > self.blocks_scanned)
+            .then(|| ((self.blocks_total - self.blocks_scanned) as f64 / rate) as u64)
     }
 
     pub fn record_progress(&mut self, at: Instant) {
-        self.progress_log.push_back((at, self.outputs_scanned));
+        self.progress_log.push_back((at, self.blocks_scanned));
         if self.progress_log.len() > PROGRESS_WINDOW {
             self.progress_log.pop_front();
         }
     }
 
     pub fn reset_progress(&mut self) {
+        self.blocks_total = 0;
+        self.blocks_scanned = 0;
         self.outputs_total = 0;
         self.outputs_scanned = 0;
-        self.blocks_scanned = 0;
         self.birthday = None;
         self.tip = None;
         self.clear_scan_plan();
@@ -910,8 +1197,12 @@ pub struct State {
     pub wallet: Option<WalletInfo>,
     pub balance: Balance,
     pub txs: Vec<TxRow>,
+    pub bonds: Vec<BondRow>,
+    pub roster: Vec<RosterRow>,
     pub addresses: Vec<AddressRow>,
     pub tx_selected: usize,
+    pub bond_selected: usize,
+    pub finalizer_selected: usize,
     pub addr_selected: usize,
     pub receive_kind: ReceiveKind,
     pub detail_scroll: u16,
@@ -946,8 +1237,12 @@ impl State {
             wallet: None,
             balance: Balance::default(),
             txs: Vec::new(),
+            bonds: Vec::new(),
+            roster: Vec::new(),
             addresses: Vec::new(),
             tx_selected: 0,
+            bond_selected: 0,
+            finalizer_selected: 0,
             addr_selected: 0,
             receive_kind: ReceiveKind::Unified,
             detail_scroll: 0,
@@ -980,6 +1275,42 @@ impl State {
 
     pub fn selected_address(&self) -> Option<&AddressRow> {
         self.addresses.get(self.addr_selected)
+    }
+
+    pub fn selected_bond(&self) -> Option<&BondRow> {
+        self.bonds.get(self.bond_selected)
+    }
+
+    pub fn selected_finalizer(&self) -> Option<&RosterRow> {
+        self.roster.get(self.finalizer_selected)
+    }
+
+    /// Whether the open wallet can sign: it holds a seed, not just a viewing key.
+    pub fn can_spend(&self) -> bool {
+        self.wallet
+            .as_ref()
+            .is_some_and(|w| w.kind == WalletKind::Seed)
+    }
+
+    /// The staking calendar at the chain tip, once a tip is known.
+    pub fn staking_day(&self) -> Option<StakingDay> {
+        self.sync.tip.map(StakingDay::at_height)
+    }
+
+    /// Seconds per block for the open wallet's chain.
+    pub fn spacing_secs(&self) -> u64 {
+        self.wallet
+            .as_ref()
+            .map(|w| w.spacing_secs)
+            .unwrap_or_else(|| Network::Stable.block_spacing_secs())
+    }
+
+    /// The address the faucet pays to: the newest unified address with an Orchard receiver.
+    pub fn faucet_address(&self) -> Option<&AddressRow> {
+        self.addresses
+            .iter()
+            .filter(|a| matches!(a.kind, AddressKind::Unified { orchard: true, .. }))
+            .max_by_key(|a| a.index)
     }
 
     /// The address the Receive screen shows: the newest of the chosen kind.

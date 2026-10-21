@@ -30,6 +30,12 @@ pub fn zec_full(zats: u64) -> String {
     with_places(zats, 8)
 }
 
+/// Formats zatoshis as ZEC exactly, with only the decimal places the amount needs. For sums
+/// that leave the wallet, where rounding would misstate them.
+pub fn zec_exact(zats: u64) -> String {
+    trim(zec_full(zats))
+}
+
 fn with_places(units: u64, places: u32) -> String {
     let scale = 10u64.pow(places);
     format!(
@@ -46,6 +52,43 @@ fn trim(s: String) -> String {
     } else {
         s
     }
+}
+
+/// Reads an amount typed in ZEC, up to eight decimal places, into zatoshis.
+pub fn parse_zec(text: &str) -> Result<u64, String> {
+    if text.is_empty() {
+        return Err("type an amount".into());
+    }
+    let (whole, frac) = text.split_once('.').unwrap_or((text, ""));
+    if whole.is_empty() && frac.is_empty() {
+        return Err("type an amount".into());
+    }
+    if !whole.chars().all(|c| c.is_ascii_digit()) || !frac.chars().all(|c| c.is_ascii_digit()) {
+        return Err("the amount must be a number of ZEC".into());
+    }
+    if frac.len() > 8 {
+        return Err("ZEC has eight decimal places at most".into());
+    }
+    let whole: u64 = if whole.is_empty() {
+        0
+    } else {
+        whole
+            .parse()
+            .map_err(|_| "the amount is too large".to_string())?
+    };
+    let frac: u64 = if frac.is_empty() {
+        0
+    } else {
+        frac.parse::<u64>().expect("digits") * 10u64.pow(8 - frac.len() as u32)
+    };
+    let zats = whole
+        .checked_mul(ZATS_PER_ZEC)
+        .and_then(|w| w.checked_add(frac))
+        .ok_or_else(|| "the amount is too large".to_string())?;
+    if zats == 0 {
+        return Err("the amount must be more than zero".into());
+    }
+    Ok(zats)
 }
 
 /// Groups thousands with commas.
@@ -85,6 +128,7 @@ pub fn date(ts: u32) -> String {
 
 pub fn duration(seconds: u64) -> String {
     match seconds {
+        s if s >= 86_400 => format!("{}d{:02}h", s / 86_400, (s % 86_400) / 3600),
         s if s >= 3600 => format!("{}h{:02}m", s / 3600, (s % 3600) / 60),
         s if s >= 60 => format!("{}m{:02}s", s / 60, s % 60),
         s => format!("{s}s"),
@@ -147,6 +191,22 @@ pub fn wrap_chars(s: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn amounts_typed_in_zec_become_zatoshis() {
+        assert_eq!(parse_zec("1"), Ok(100_000_000));
+        assert_eq!(parse_zec("1.5"), Ok(150_000_000));
+        assert_eq!(parse_zec(".5"), Ok(50_000_000));
+        assert_eq!(parse_zec("0.00000001"), Ok(1));
+        assert_eq!(parse_zec("1234.56789"), Ok(123_456_789_000));
+        assert!(parse_zec("").is_err());
+        assert!(parse_zec(".").is_err());
+        assert!(parse_zec("0").is_err());
+        assert!(parse_zec("1.123456789").is_err());
+        assert!(parse_zec("1,5").is_err());
+        assert!(parse_zec("abc").is_err());
+        assert!(parse_zec("99999999999999999999").is_err());
+    }
 
     #[test]
     fn zec_precision_follows_magnitude() {

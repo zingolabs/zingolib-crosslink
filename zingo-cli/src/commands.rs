@@ -1932,26 +1932,26 @@ impl Command for RecoveryInfoCommand {
     }
 }
 
-struct ValueTransfersCommand {}
-impl Command for ValueTransfersCommand {
+struct WalletEventsCommand {}
+impl Command for WalletEventsCommand {
     fn help(&self) -> &'static str {
         indoc! {r"
-            List all value transfers for this wallet.
-            A value transfer is a group of all notes to a specific receiver in a transaction.
+            List all wallet events for this wallet.
+            A wallet event is a group of all notes to a specific receiver in a transaction.
 
             Usage:
-            value_transfers
+            wallet_events
         "}
     }
 
     fn short_help(&self) -> &'static str {
-        "List all value transfers for this wallet."
+        "List all wallet events for this wallet."
     }
 
     fn exec(&self, _args: &[&str], lightclient: &mut LightClient) -> String {
         RT.block_on(async move {
-            match lightclient.value_transfers(false).await {
-                Ok(value_transfers) => value_transfers.to_string(),
+            match lightclient.wallet_events(false).await {
+                Ok(wallet_events) => wallet_events.to_string(),
                 Err(e) => format!("Error: {e}"),
             }
         })
@@ -1962,11 +1962,11 @@ struct MessagesFilterCommand {}
 impl Command for MessagesFilterCommand {
     fn help(&self) -> &'static str {
         indoc! {r"
-            List memo-containing value transfers sent to/from wallet. If an address is provided,
+            List memo-containing wallet events sent to/from wallet. If an address is provided,
             only messages to/from that address will be provided. If a string is provided,
             messages containing that string are displayed. Otherwise, all memos are displayed.
             Currently, for received messages, this relies on the reply-to address contained in the memo.
-            A value transfer is a group of all notes to a specific receiver in a transaction.
+            A wallet event is a group of all notes to a specific receiver in a transaction.
 
             Usage:
             messages [address]/[string]
@@ -1985,7 +1985,7 @@ impl Command for MessagesFilterCommand {
 
         RT.block_on(async move {
             match lightclient.messages_containing(args.first().copied()).await {
-                Ok(value_transfers) => json::JsonValue::from(value_transfers).pretty(2),
+                Ok(wallet_events) => json::JsonValue::from(wallet_events).pretty(2),
                 Err(e) => format!("Error: {e}"),
             }
         })
@@ -2060,7 +2060,7 @@ impl Command for ValueToAddressCommand {
     }
 
     fn short_help(&self) -> &'static str {
-        "Show by address value transfers for this seed."
+        "Show by address wallet events for this seed."
     }
 
     fn exec(&self, args: &[&str], lightclient: &mut LightClient) -> String {
@@ -2479,7 +2479,7 @@ pub fn get_commands() -> HashMap<&'static str, Box<dyn Command>> {
         ("t_addresses", Box::new(TransparentAddressesCommand {})),
         ("check_address", Box::new(CheckAddressCommand {})),
         ("height", Box::new(HeightCommand {})),
-        ("value_transfers", Box::new(ValueTransfersCommand {})),
+        ("wallet_events", Box::new(WalletEventsCommand {})),
         ("transactions", Box::new(TransactionsCommand {})),
         ("value_to_address", Box::new(ValueToAddressCommand {})),
         ("sends_to_address", Box::new(SendsToAddressCommand {})),

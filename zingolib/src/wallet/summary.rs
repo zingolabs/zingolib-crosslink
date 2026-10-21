@@ -19,9 +19,9 @@ use data::finsight::{
 };
 use data::{
     BasicCoinSummary, BasicNoteSummary, CoinSummary, NoteSummaries, NoteSummary,
-    OutgoingCoinSummary, OutgoingNoteSummary, Scope, SelfSendValueTransfer, SendType,
-    SentValueTransfer, TransactionKind, TransactionSummaries, TransactionSummary, ValueTransfer,
-    ValueTransferKind, ValueTransfers,
+    OutgoingCoinSummary, OutgoingNoteSummary, Scope, SelfSendWalletEvent, SendType,
+    SentWalletEvent, TransactionKind, TransactionSummaries, TransactionSummary, WalletEvent,
+    WalletEventKind, WalletEvents,
 };
 
 pub mod data;
@@ -300,13 +300,13 @@ impl LightWallet {
         Ok(TransactionSummaries::new(transaction_summaries))
     }
 
-    /// Provides a list of value transfers related to this capability.
-    /// A value transfer is a group of all notes to a specific receiver in a transaction.
-    pub async fn value_transfers(
+    /// Provides a list of wallet events related to this capability.
+    /// A wallet event is a group of all notes to a specific receiver in a transaction.
+    pub async fn wallet_events(
         &self,
         sort_highest_to_lowest: bool,
-    ) -> Result<ValueTransfers, SummaryError> {
-        let mut value_transfers: Vec<ValueTransfer> = Vec::new();
+    ) -> Result<WalletEvents, SummaryError> {
+        let mut wallet_events: Vec<WalletEvent> = Vec::new();
         let transaction_summaries = self.transaction_summaries(sort_highest_to_lowest).await?.0;
 
         for transaction in transaction_summaries {
@@ -319,28 +319,28 @@ impl LightWallet {
                 ) => {
                     let (kind, value) = match transaction.kind {
                         TransactionKind::Sent(SendType::CreateBond) => {
-                            (SelfSendValueTransfer::Stake, transaction.value)
+                            (SelfSendWalletEvent::Stake, transaction.value)
                         }
                         TransactionKind::Sent(SendType::BeginUnbond) => {
-                            (SelfSendValueTransfer::BeginUnbond, 0)
+                            (SelfSendWalletEvent::BeginUnbond, 0)
                         }
                         TransactionKind::Sent(SendType::WithdrawBond) => {
-                            (SelfSendValueTransfer::WithdrawBond, transaction.value)
+                            (SelfSendWalletEvent::WithdrawBond, transaction.value)
                         }
                         TransactionKind::Sent(SendType::RetargetDelegationBond) => {
-                            (SelfSendValueTransfer::RetargetDelegationBond, 0)
+                            (SelfSendWalletEvent::RetargetDelegationBond, 0)
                         }
                         _ => unreachable!("guarded by outer match"),
                     };
 
-                    value_transfers.push(ValueTransfer {
+                    wallet_events.push(WalletEvent {
                         txid: transaction.txid,
                         datetime: transaction.datetime,
                         status: transaction.status,
                         blockheight: transaction.blockheight,
                         transaction_fee: transaction.fee,
                         zec_price: transaction.zec_price,
-                        kind: ValueTransferKind::Sent(SentValueTransfer::SendToSelf(kind)),
+                        kind: WalletEventKind::Sent(SentWalletEvent::SendToSelf(kind)),
                         value,
                         recipient_address: None,
                         pool_received: None,
@@ -349,9 +349,9 @@ impl LightWallet {
                     });
                 }
                 TransactionKind::Sent(SendType::Send) => {
-                    // create 1 sent value transfer for each non-self recipient address
+                    // create 1 sent wallet event for each non-self recipient address
                     // if recipient_ua is available it overrides recipient_address
-                    value_transfers.append(&mut self.create_send_value_transfers(&transaction)?);
+                    wallet_events.append(&mut self.create_send_wallet_events(&transaction)?);
 
                     // create 1 memo-to-self if any number of memos are received in the sending transaction
                     if transaction
@@ -368,15 +368,15 @@ impl LightWallet {
                             .chain(transaction.sapling_notes.iter())
                             .filter_map(|note| note.memo.clone())
                             .collect();
-                        value_transfers.push(ValueTransfer {
+                        wallet_events.push(WalletEvent {
                             txid: transaction.txid,
                             datetime: transaction.datetime,
                             status: transaction.status,
                             blockheight: transaction.blockheight,
                             transaction_fee: transaction.fee,
                             zec_price: transaction.zec_price,
-                            kind: ValueTransferKind::Sent(SentValueTransfer::SendToSelf(
-                                SelfSendValueTransfer::MemoToSelf,
+                            kind: WalletEventKind::Sent(SentWalletEvent::SendToSelf(
+                                SelfSendWalletEvent::MemoToSelf,
                             )),
                             value: 0,
                             recipient_address: None,
@@ -387,7 +387,7 @@ impl LightWallet {
                     }
                 }
                 TransactionKind::Sent(SendType::Shield) => {
-                    // create 1 shielding value transfer for each pool shielded to
+                    // create 1 shielding wallet event for each pool shielded to
                     if !transaction.ironwood_notes.is_empty() {
                         let value: u64 = transaction
                             .ironwood_notes
@@ -399,15 +399,15 @@ impl LightWallet {
                             .iter()
                             .filter_map(|note| note.memo.clone())
                             .collect();
-                        value_transfers.push(ValueTransfer {
+                        wallet_events.push(WalletEvent {
                             txid: transaction.txid,
                             datetime: transaction.datetime,
                             status: transaction.status,
                             blockheight: transaction.blockheight,
                             transaction_fee: transaction.fee,
                             zec_price: transaction.zec_price,
-                            kind: ValueTransferKind::Sent(SentValueTransfer::SendToSelf(
-                                SelfSendValueTransfer::Shield,
+                            kind: WalletEventKind::Sent(SentWalletEvent::SendToSelf(
+                                SelfSendWalletEvent::Shield,
                             )),
                             value,
                             recipient_address: None,
@@ -427,15 +427,15 @@ impl LightWallet {
                             .iter()
                             .filter_map(|note| note.memo.clone())
                             .collect();
-                        value_transfers.push(ValueTransfer {
+                        wallet_events.push(WalletEvent {
                             txid: transaction.txid,
                             datetime: transaction.datetime,
                             status: transaction.status,
                             blockheight: transaction.blockheight,
                             transaction_fee: transaction.fee,
                             zec_price: transaction.zec_price,
-                            kind: ValueTransferKind::Sent(SentValueTransfer::SendToSelf(
-                                SelfSendValueTransfer::Shield,
+                            kind: WalletEventKind::Sent(SentWalletEvent::SendToSelf(
+                                SelfSendWalletEvent::Shield,
                             )),
                             value,
                             recipient_address: None,
@@ -455,15 +455,15 @@ impl LightWallet {
                             .iter()
                             .filter_map(|note| note.memo.clone())
                             .collect();
-                        value_transfers.push(ValueTransfer {
+                        wallet_events.push(WalletEvent {
                             txid: transaction.txid,
                             datetime: transaction.datetime,
                             status: transaction.status,
                             blockheight: transaction.blockheight,
                             transaction_fee: transaction.fee,
                             zec_price: transaction.zec_price,
-                            kind: ValueTransferKind::Sent(SentValueTransfer::SendToSelf(
-                                SelfSendValueTransfer::Shield,
+                            kind: WalletEventKind::Sent(SentWalletEvent::SendToSelf(
+                                SelfSendWalletEvent::Shield,
                             )),
                             value,
                             recipient_address: None,
@@ -475,7 +475,7 @@ impl LightWallet {
                 }
                 TransactionKind::Sent(SendType::SendToSelf) => {
                     // create 1 memo-to-self if a sending transaction receives any number of memos
-                    // otherwise, create 1 send-to-self value transfer so every transaction creates at least 1 value transfer
+                    // otherwise, create 1 send-to-self wallet event so every transaction creates at least 1 wallet event
                     // eventually we may replace send-to-self with a range of kinds such as deshield and migrate etc.
                     if transaction
                         .ironwood_notes
@@ -491,15 +491,15 @@ impl LightWallet {
                             .chain(transaction.sapling_notes.iter())
                             .filter_map(|note| note.memo.clone())
                             .collect();
-                        value_transfers.push(ValueTransfer {
+                        wallet_events.push(WalletEvent {
                             txid: transaction.txid,
                             datetime: transaction.datetime,
                             status: transaction.status,
                             blockheight: transaction.blockheight,
                             transaction_fee: transaction.fee,
                             zec_price: transaction.zec_price,
-                            kind: ValueTransferKind::Sent(SentValueTransfer::SendToSelf(
-                                SelfSendValueTransfer::MemoToSelf,
+                            kind: WalletEventKind::Sent(SentWalletEvent::SendToSelf(
+                                SelfSendWalletEvent::MemoToSelf,
                             )),
                             value: 0,
                             recipient_address: None,
@@ -508,15 +508,15 @@ impl LightWallet {
                             staking_action: transaction.staking_action,
                         });
                     } else {
-                        value_transfers.push(ValueTransfer {
+                        wallet_events.push(WalletEvent {
                             txid: transaction.txid,
                             datetime: transaction.datetime,
                             status: transaction.status,
                             blockheight: transaction.blockheight,
                             transaction_fee: transaction.fee,
                             zec_price: transaction.zec_price,
-                            kind: ValueTransferKind::Sent(SentValueTransfer::SendToSelf(
-                                SelfSendValueTransfer::Basic,
+                            kind: WalletEventKind::Sent(SentWalletEvent::SendToSelf(
+                                SelfSendWalletEvent::Basic,
                             )),
                             value: 0,
                             recipient_address: None,
@@ -527,10 +527,10 @@ impl LightWallet {
                     }
 
                     // in the case Zennies For Zingo! is active
-                    value_transfers.append(&mut self.create_send_value_transfers(&transaction)?);
+                    wallet_events.append(&mut self.create_send_wallet_events(&transaction)?);
                 }
                 TransactionKind::Received => {
-                    // create 1 received value transfer for each pool received to
+                    // create 1 received wallet event for each pool received to
                     if !transaction.ironwood_notes.is_empty() {
                         let value: u64 = transaction
                             .ironwood_notes
@@ -542,14 +542,14 @@ impl LightWallet {
                             .iter()
                             .filter_map(|note| note.memo.clone())
                             .collect();
-                        value_transfers.push(ValueTransfer {
+                        wallet_events.push(WalletEvent {
                             txid: transaction.txid,
                             datetime: transaction.datetime,
                             status: transaction.status,
                             blockheight: transaction.blockheight,
                             transaction_fee: transaction.fee,
                             zec_price: transaction.zec_price,
-                            kind: ValueTransferKind::Received,
+                            kind: WalletEventKind::Received,
                             value,
                             recipient_address: None,
                             pool_received: Some(PoolType::IRONWOOD.to_string()),
@@ -568,14 +568,14 @@ impl LightWallet {
                             .iter()
                             .filter_map(|note| note.memo.clone())
                             .collect();
-                        value_transfers.push(ValueTransfer {
+                        wallet_events.push(WalletEvent {
                             txid: transaction.txid,
                             datetime: transaction.datetime,
                             status: transaction.status,
                             blockheight: transaction.blockheight,
                             transaction_fee: transaction.fee,
                             zec_price: transaction.zec_price,
-                            kind: ValueTransferKind::Received,
+                            kind: WalletEventKind::Received,
                             value,
                             recipient_address: None,
                             pool_received: Some(PoolType::ORCHARD.to_string()),
@@ -594,14 +594,14 @@ impl LightWallet {
                             .iter()
                             .filter_map(|note| note.memo.clone())
                             .collect();
-                        value_transfers.push(ValueTransfer {
+                        wallet_events.push(WalletEvent {
                             txid: transaction.txid,
                             datetime: transaction.datetime,
                             status: transaction.status,
                             blockheight: transaction.blockheight,
                             transaction_fee: transaction.fee,
                             zec_price: transaction.zec_price,
-                            kind: ValueTransferKind::Received,
+                            kind: WalletEventKind::Received,
                             value,
                             recipient_address: None,
                             pool_received: Some(PoolType::SAPLING.to_string()),
@@ -615,14 +615,14 @@ impl LightWallet {
                             .iter()
                             .map(|output| output.value)
                             .sum();
-                        value_transfers.push(ValueTransfer {
+                        wallet_events.push(WalletEvent {
                             txid: transaction.txid,
                             datetime: transaction.datetime,
                             status: transaction.status,
                             blockheight: transaction.blockheight,
                             transaction_fee: transaction.fee,
                             zec_price: transaction.zec_price,
-                            kind: ValueTransferKind::Received,
+                            kind: WalletEventKind::Received,
                             value,
                             recipient_address: None,
                             pool_received: Some(PoolType::TRANSPARENT.to_string()),
@@ -634,7 +634,7 @@ impl LightWallet {
             }
         }
 
-        Ok(ValueTransfers::new(value_transfers))
+        Ok(WalletEvents::new(wallet_events))
     }
 
     #[must_use]
@@ -708,20 +708,20 @@ impl LightWallet {
             .collect()
     }
 
-    /// Provides a list of `ValueTransfers` associated with the sender, or containing the string.
+    /// Provides a list of `WalletEvents` associated with the sender, or containing the string.
     pub async fn messages_containing(
         &self,
         filter: Option<&str>,
-    ) -> Result<ValueTransfers, SummaryError> {
-        let mut value_transfers = self.value_transfers(true).await?;
-        value_transfers.reverse();
+    ) -> Result<WalletEvents, SummaryError> {
+        let mut wallet_events = self.wallet_events(true).await?;
+        wallet_events.reverse();
 
         // Filter out VTs where all memos are empty.
-        value_transfers.retain(|vt| vt.memos.iter().any(|memo| !memo.is_empty()));
+        wallet_events.retain(|vt| vt.memos.iter().any(|memo| !memo.is_empty()));
 
         match filter {
             Some(s) => {
-                value_transfers.retain(|vt| {
+                wallet_events.retain(|vt| {
                     if vt.memos.is_empty() {
                         return false;
                     }
@@ -738,25 +738,25 @@ impl LightWallet {
                     }
                 });
             }
-            None => value_transfers.retain(|vt| !vt.memos.is_empty()),
+            None => wallet_events.retain(|vt| !vt.memos.is_empty()),
         }
 
-        Ok(value_transfers)
+        Ok(wallet_events)
     }
 
     /// TODO: Add Doc Comment Here!
     pub async fn do_total_memobytes_to_address(
         &self,
     ) -> Result<TotalMemoBytesToAddress, SummaryError> {
-        let value_transfers = self.value_transfers(true).await?;
+        let wallet_events = self.wallet_events(true).await?;
         let mut memobytes_by_address = HashMap::new();
-        for value_transfer in &value_transfers {
-            if let ValueTransferKind::Sent(SentValueTransfer::Send) = value_transfer.kind {
-                let address = value_transfer
+        for wallet_event in &wallet_events {
+            if let WalletEventKind::Sent(SentWalletEvent::Send) = wallet_event.kind {
+                let address = wallet_event
                     .recipient_address
                     .clone()
-                    .expect("sent value transfer should always have a recipient_address");
-                let bytes = value_transfer.memos.iter().fold(0, |sum, m| sum + m.len());
+                    .expect("sent wallet event should always have a recipient_address");
+                let bytes = wallet_event.memos.iter().fold(0, |sum, m| sum + m.len());
                 memobytes_by_address
                     .entry(address)
                     .and_modify(|e| *e += bytes)
@@ -768,7 +768,7 @@ impl LightWallet {
 
     /// TODO: Add Doc Comment Here!
     pub async fn do_total_spends_to_address(&self) -> Result<TotalSendsToAddress, SummaryError> {
-        let values_sent_to_addresses = self.value_transfer_by_to_address().await?;
+        let values_sent_to_addresses = self.wallet_event_by_to_address().await?;
         let mut by_address_number_sends = HashMap::new();
         for key in values_sent_to_addresses.0.keys() {
             let number_sends = values_sent_to_addresses.0[key].len() as u64;
@@ -780,7 +780,7 @@ impl LightWallet {
 
     /// TODO: Add Doc Comment Here!
     pub async fn do_total_value_to_address(&self) -> Result<TotalValueToAddress, SummaryError> {
-        let values_sent_to_addresses = self.value_transfer_by_to_address().await?;
+        let values_sent_to_addresses = self.wallet_event_by_to_address().await?;
         let mut by_address_total = HashMap::new();
         for key in values_sent_to_addresses.0.keys() {
             let sum = values_sent_to_addresses.0[key].iter().sum();
@@ -790,33 +790,33 @@ impl LightWallet {
         Ok(TotalValueToAddress(by_address_total))
     }
 
-    async fn value_transfer_by_to_address(&self) -> Result<ValuesSentToAddress, SummaryError> {
-        let value_transfers = self.value_transfers(false).await?;
+    async fn wallet_event_by_to_address(&self) -> Result<ValuesSentToAddress, SummaryError> {
+        let wallet_events = self.wallet_events(false).await?;
         let mut amount_by_address = HashMap::new();
-        for value_transfer in &value_transfers {
-            if let ValueTransferKind::Sent(SentValueTransfer::Send) = value_transfer.kind {
-                let address = value_transfer
+        for wallet_event in &wallet_events {
+            if let WalletEventKind::Sent(SentWalletEvent::Send) = wallet_event.kind {
+                let address = wallet_event
                     .recipient_address
                     .clone()
-                    .expect("sent value transfer should always have a recipient_address");
+                    .expect("sent wallet event should always have a recipient_address");
                 amount_by_address
                     .entry(address)
-                    .and_modify(|e: &mut Vec<u64>| e.push(value_transfer.value))
-                    .or_insert(vec![value_transfer.value]);
+                    .and_modify(|e: &mut Vec<u64>| e.push(wallet_event.value))
+                    .or_insert(vec![wallet_event.value]);
             }
         }
 
         Ok(ValuesSentToAddress(amount_by_address))
     }
 
-    /// Creates value transfers for all notes in a transaction that are sent to another
-    /// recipient.  A value transfer is a group of all notes to a specific receiver in a transaction.
-    /// The value transfer list is sorted by the output index of the notes.
-    fn create_send_value_transfers(
+    /// Creates wallet events for all notes in a transaction that are sent to another
+    /// recipient.  A wallet event is a group of all notes to a specific receiver in a transaction.
+    /// The wallet event list is sorted by the output index of the notes.
+    fn create_send_wallet_events(
         &self,
         transaction: &TransactionSummary,
-    ) -> Result<Vec<ValueTransfer>, KeyError> {
-        let mut value_transfers: Vec<ValueTransfer> = Vec::new();
+    ) -> Result<Vec<WalletEvent>, KeyError> {
+        let mut wallet_events: Vec<WalletEvent> = Vec::new();
         let outgoing_notes = transaction
             .outgoing_ironwood_notes
             .iter()
@@ -872,14 +872,14 @@ impl LightWallet {
                 .iter()
                 .filter_map(|&note| note.memo.clone())
                 .collect();
-            value_transfers.push(ValueTransfer {
+            wallet_events.push(WalletEvent {
                 txid: transaction.txid,
                 datetime: transaction.datetime,
                 status: transaction.status,
                 blockheight: transaction.blockheight,
                 transaction_fee: transaction.fee,
                 zec_price: transaction.zec_price,
-                kind: ValueTransferKind::Sent(SentValueTransfer::Send),
+                kind: WalletEventKind::Sent(SentWalletEvent::Send),
                 value,
                 recipient_address: Some(address),
                 pool_received: None,
@@ -888,6 +888,6 @@ impl LightWallet {
             });
         }
 
-        Ok(value_transfers)
+        Ok(wallet_events)
     }
 }

@@ -42,7 +42,7 @@ use crate::{
         error::{BalanceError, KeyError, SummaryError, WalletError},
         keys::unified::{ReceiverSelection, UnifiedAddressId},
         summary::data::{
-            TransactionSummaries, ValueTransfers,
+            TransactionSummaries, WalletEvents,
             finsight::{TotalMemoBytesToAddress, TotalSendsToAddress, TotalValueToAddress},
         },
     },
@@ -468,15 +468,15 @@ impl LightClient {
             .await
     }
 
-    /// Wrapper for [`crate::wallet::LightWallet::value_transfers`].
-    pub async fn value_transfers(
+    /// Wrapper for [`crate::wallet::LightWallet::wallet_events`].
+    pub async fn wallet_events(
         &self,
         sort_highest_to_lowest: bool,
-    ) -> Result<ValueTransfers, SummaryError> {
+    ) -> Result<WalletEvents, SummaryError> {
         self.wallet
             .read()
             .await
-            .value_transfers(sort_highest_to_lowest)
+            .wallet_events(sort_highest_to_lowest)
             .await
     }
 
@@ -484,7 +484,7 @@ impl LightClient {
     pub async fn messages_containing(
         &self,
         filter: Option<&str>,
-    ) -> Result<ValueTransfers, SummaryError> {
+    ) -> Result<WalletEvents, SummaryError> {
         self.wallet.read().await.messages_containing(filter).await
     }
 
