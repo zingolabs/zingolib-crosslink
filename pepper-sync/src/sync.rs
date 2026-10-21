@@ -25,7 +25,7 @@ use zip32::AccountId;
 
 use zingo_status::confirmation_status::ConfirmationStatus;
 
-use crate::client::{self, FetchRequest};
+use crate::client::{self, FetchRequest, IronwoodSizes};
 use crate::config::{PerformanceLevel, SyncConfig};
 use crate::error::{
     ContinuityError, MempoolError, ScanError, ServerError, SyncError, SyncModeError,
@@ -386,6 +386,11 @@ where
     let last_known_chain_height =
         checked_wallet_height(&mut *wallet_guard, chain_height, consensus_parameters)?;
 
+    // Ironwood tree sizes for servers that serve no Ironwood tree state, seeded from the wallet's stored blocks
+    // now that any re-org truncation has removed the blocks the chain no longer holds.
+    let ironwood_sizes = IronwoodSizes::new();
+    seed_ironwood_sizes(&mut *wallet_guard, &ironwood_sizes)?;
+
     let ufvks = wallet_guard
         .get_unified_full_viewing_keys()
         .map_err(SyncError::WalletError)?;
@@ -428,6 +433,7 @@ where
     state::set_initial_state(
         consensus_parameters,
         fetch_request_sender.clone(),
+        &ironwood_sizes,
         &mut *wallet_guard,
         chain_height,
     )
@@ -443,6 +449,7 @@ where
         consensus_parameters.clone(),
         scan_results_sender,
         fetch_request_sender.clone(),
+        ironwood_sizes.clone(),
         ufvks.clone(),
     );
     scanner.launch(config.performance_level);
@@ -460,6 +467,7 @@ where
                     consensus_parameters,
                     &mut *wallet_guard,
                     fetch_request_sender.clone(),
+                    &ironwood_sizes,
                     &ufvks,
                     scan_range,
                     scan_results,
@@ -1036,6 +1044,7 @@ async fn process_scan_results<P, W>(
     consensus_parameters: &P,
     wallet: &mut W,
     fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
+    ironwood_sizes: &IronwoodSizes,
     ufvks: &HashMap<AccountId, UnifiedFullViewingKey>,
     scan_range: ScanRange,
     scan_results: Result<ScanResults, ScanError>,
@@ -1105,6 +1114,7 @@ where
                                 WalletBlock::from_compact_block(
                                     consensus_parameters,
                                     fetch_request_sender.clone(),
+                                    ironwood_sizes,
                                     &client::get_compact_block(
                                         fetch_request_sender.clone(),
                                         block_bound,
@@ -1156,6 +1166,7 @@ where
                     consensus_parameters,
                     wallet,
                     fetch_request_sender.clone(),
+                    ironwood_sizes,
                     ufvks,
                     &scanned_blocks,
                     Some(&mut nullifiers),
@@ -1229,6 +1240,7 @@ where
                     fetch_request_sender.clone(),
                     ufvks,
                     &scan_range,
+                    &scanned_blocks,
                     if map_nullifiers {
                         Some(&mut nullifiers)
                     } else {
@@ -1258,6 +1270,7 @@ where
                     consensus_parameters,
                     wallet,
                     fetch_request_sender,
+                    ironwood_sizes,
                     ufvks,
                     &scanned_blocks,
                     if map_nullifiers {
@@ -1333,10 +1346,12 @@ where
                 }
 
                 truncate_wallet_data(wallet, current_reorg_detection_start_height - 1)?;
+                ironwood_sizes.truncate_above(current_reorg_detection_start_height - 1);
 
                 state::set_initial_state(
                     consensus_parameters,
                     fetch_request_sender.clone(),
+                    ironwood_sizes,
                     wallet,
                     last_known_chain_height,
                 )
@@ -1621,6 +1636,7 @@ async fn update_wallet_data<P, W>(
     fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
     ufvks: &HashMap<AccountId, UnifiedFullViewingKey>,
     scan_range: &ScanRange,
+    scanned_blocks: &BTreeMap<BlockHeight, WalletBlock>,
     nullifiers: Option<&mut NullifierMap>,
     outpoints: Option<&mut BTreeMap<OutputId, ScanTarget>>,
     mut transactions: HashMap<TxId, WalletTransaction>,
@@ -1714,6 +1730,7 @@ where
             fetch_request_sender,
             scan_range,
             highest_scanned_height,
+            scanned_blocks,
             sapling_located_trees,
             orchard_located_trees,
             ironwood_located_trees,
@@ -2013,7 +2030,22 @@ where
         == 1
     {
         let tree_state = client::get_tree_state(fetch_request_sender, birthday).await?;
-        if client::ironwood_tree_state_missing(consensus_parameters, &tree_state, birthday) {
+        for pool in [ShieldedPool::Sapling, ShieldedPool::Orchard] {
+            if client::tree_state_omitted(consensus_parameters, &tree_state, pool, birthday) {
+                return Err(SyncError::ServerError(ServerError::TreeStateNotServed {
+                    pool: zcash_protocol::PoolType::Shielded(pool),
+                    height: birthday,
+                }));
+            }
+        }
+        // the Ironwood frontier cannot be rebuilt from a count of actions, so a birthday above the pool's
+        // activation height needs the server to serve the pool.
+        if client::tree_state_omitted(
+            consensus_parameters,
+            &tree_state,
+            ShieldedPool::Ironwood,
+            birthday,
+        ) {
             return Err(SyncError::ServerError(
                 ServerError::IronwoodTreeStateUnavailable(birthday),
             ));
@@ -2080,10 +2112,19 @@ async fn mempool_monitor(
                         mempool_stream_message = mempool_stream.message() => {
                             match mempool_stream_message.unwrap_or(None) {
                                 Some(raw_transaction) => {
-                                     let _ignore_error = mempool_transaction_sender
-                                        .send(raw_transaction)
-                                        .await;
+                                    // counted before sending so the shutdown check never observes a zero count
+                                    // while a transaction is queued in the channel.
                                     unprocessed_transactions_count.fetch_add(1, atomic::Ordering::Release);
+                                    if mempool_transaction_sender
+                                        .send(raw_transaction)
+                                        .await
+                                        .is_err()
+                                    {
+                                        // the receiver is dropped once sync has ended, so nothing will process
+                                        // the transaction.
+                                        unprocessed_transactions_count.store(0, atomic::Ordering::Release);
+                                        break 'main;
+                                    }
                                 }
                                 None => {
                                     continue 'main;
@@ -2107,6 +2148,28 @@ async fn mempool_monitor(
             }
         }
     }
+
+    Ok(())
+}
+
+/// Records the Ironwood tree size at the end of every block the wallet stores in `ironwood_sizes`, so a server
+/// that serves no Ironwood tree state is only asked to count the Ironwood actions of blocks the wallet has not
+/// scanned (see [`IronwoodSizes`]).
+fn seed_ironwood_sizes<W>(
+    wallet: &mut W,
+    ironwood_sizes: &IronwoodSizes,
+) -> Result<(), SyncError<W::Error>>
+where
+    W: SyncBlocks,
+{
+    let wallet_blocks = wallet
+        .get_wallet_blocks_mut()
+        .map_err(SyncError::WalletError)?;
+    ironwood_sizes.extend(
+        wallet_blocks
+            .iter()
+            .map(|(height, block)| (*height, block.tree_bounds().ironwood_final_tree_size)),
+    );
 
     Ok(())
 }

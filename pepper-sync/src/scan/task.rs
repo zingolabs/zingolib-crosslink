@@ -21,18 +21,18 @@ use zcash_protocol::consensus::{self, BlockHeight};
 use zip32::AccountId;
 
 use crate::{
-    client::{self, FetchRequest},
+    client::{self, FetchRequest, IronwoodSizes},
     config::PerformanceLevel,
     error::{ScanError, ServerError, SyncError},
     keys::transparent::TransparentAddressId,
     sync::{self, ScanPriority, ScanRange},
     wallet::{
-        ScanTarget, WalletBlock,
+        ScanTarget, TreeBounds, WalletBlock,
         traits::{SyncBlocks, SyncNullifiers, SyncWallet},
     },
 };
 
-use super::{ScanResults, scan};
+use super::{ScanResults, compact_blocks, scan};
 
 const MAX_WORKER_POOLSIZE: usize = 2;
 const MAX_BATCH_NULLIFIERS: usize = 2usize.pow(14);
@@ -65,6 +65,7 @@ pub(crate) struct Scanner<P> {
     unique_id: usize,
     scan_results_sender: mpsc::UnboundedSender<(ScanRange, Result<ScanResults, ScanError>)>,
     fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
+    ironwood_sizes: IronwoodSizes,
     consensus_parameters: P,
     ufvks: HashMap<AccountId, UnifiedFullViewingKey>,
 }
@@ -77,6 +78,7 @@ where
         consensus_parameters: P,
         scan_results_sender: mpsc::UnboundedSender<(ScanRange, Result<ScanResults, ScanError>)>,
         fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
+        ironwood_sizes: IronwoodSizes,
         ufvks: HashMap<AccountId, UnifiedFullViewingKey>,
     ) -> Self {
         let workers: Vec<ScanWorker<P>> = Vec::with_capacity(MAX_WORKER_POOLSIZE);
@@ -88,6 +90,7 @@ where
             unique_id: 0,
             scan_results_sender,
             fetch_request_sender,
+            ironwood_sizes,
             consensus_parameters,
             ufvks,
         }
@@ -117,6 +120,7 @@ where
         let mut batcher = Batcher::new(
             self.consensus_parameters.clone(),
             self.fetch_request_sender.clone(),
+            self.ironwood_sizes.clone(),
         );
         batcher.run(max_batch_outputs);
         self.batcher = Some(batcher);
@@ -151,6 +155,7 @@ where
             self.consensus_parameters.clone(),
             self.scan_results_sender.clone(),
             self.fetch_request_sender.clone(),
+            self.ironwood_sizes.clone(),
             self.ufvks.clone(),
         );
         worker.run(max_batch_outputs);
@@ -310,6 +315,7 @@ struct Batcher<P> {
     scan_task_sender: Option<mpsc::Sender<ScanTask>>,
     batch_receiver: Option<mpsc::Receiver<ScanTask>>,
     fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
+    ironwood_sizes: IronwoodSizes,
 }
 
 impl<P> Batcher<P>
@@ -319,6 +325,7 @@ where
     fn new(
         consensus_parameters: P,
         fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
+        ironwood_sizes: IronwoodSizes,
     ) -> Self {
         Self {
             handle: None,
@@ -328,6 +335,7 @@ where
             scan_task_sender: None,
             batch_receiver: None,
             fetch_request_sender,
+            ironwood_sizes,
         }
     }
 
@@ -341,6 +349,7 @@ where
 
         let is_batching = self.is_batching.clone();
         let fetch_request_sender = self.fetch_request_sender.clone();
+        let ironwood_sizes = self.ironwood_sizes.clone();
         let consensus_parameters = self.consensus_parameters.clone();
 
         let handle: JoinHandle<Result<(), ServerError>> = tokio::spawn(async move {
@@ -361,6 +370,8 @@ where
                 let mut orchard_nullifier_count = 0;
                 let mut ironwood_nullifier_count = 0;
                 let mut first_batch = true;
+                // final tree sizes of the block before the one being batched, once known
+                let mut previous_block_final_tree_sizes: Option<(u32, u32, u32)> = None;
 
                 let mut block_stream = {
                     let range = scan_task.scan_range.block_range().clone();
@@ -480,26 +491,41 @@ where
                         {
                             scan_task.end_seam_block = previous_task_first_block.clone();
                         }
-                        if first_batch {
-                            previous_task_first_block = Some(
-                                WalletBlock::from_compact_block(
+                        // the tree bounds of each block follow from the block before it, so the server is only
+                        // asked for the first block of a range without a start seam block. every block's Ironwood
+                        // size is remembered for servers that serve no Ironwood tree state.
+                        let tree_bounds = match previous_block_final_tree_sizes.or_else(|| {
+                            scan_task
+                                .start_seam_block
+                                .as_ref()
+                                .map(|block| block.tree_bounds().final_tree_sizes())
+                        }) {
+                            Some(initial_tree_sizes) => TreeBounds::from_initial_tree_sizes(
+                                &compact_block,
+                                initial_tree_sizes,
+                            ),
+                            None => {
+                                compact_blocks::calculate_block_tree_bounds(
                                     &consensus_parameters,
                                     fetch_request_sender.clone(),
+                                    &ironwood_sizes,
                                     &compact_block,
                                 )
-                                .await?,
-                            );
+                                .await?
+                            }
+                        };
+                        ironwood_sizes
+                            .record(compact_block.height(), tree_bounds.ironwood_final_tree_size);
+                        previous_block_final_tree_sizes = Some(tree_bounds.final_tree_sizes());
+
+                        if first_batch {
+                            previous_task_first_block =
+                                Some(WalletBlock::with_tree_bounds(&compact_block, tree_bounds));
                             first_batch = false;
                         }
                         if compact_block.height() == scan_task.scan_range.block_range().end - 1 {
-                            previous_task_last_block = Some(
-                                WalletBlock::from_compact_block(
-                                    &consensus_parameters,
-                                    fetch_request_sender.clone(),
-                                    &compact_block,
-                                )
-                                .await?,
-                            );
+                            previous_task_last_block =
+                                Some(WalletBlock::with_tree_bounds(&compact_block, tree_bounds));
                         }
 
                         sapling_output_count += compact_block
@@ -528,6 +554,7 @@ where
                             .split(
                                 &consensus_parameters,
                                 fetch_request_sender.clone(),
+                                &ironwood_sizes,
                                 compact_block.height(),
                             )
                             .await?;
@@ -637,6 +664,7 @@ pub(crate) struct ScanWorker<P> {
     scan_task_sender: Option<mpsc::Sender<ScanTask>>,
     scan_results_sender: mpsc::UnboundedSender<(ScanRange, Result<ScanResults, ScanError>)>,
     fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
+    ironwood_sizes: IronwoodSizes,
     ufvks: HashMap<AccountId, UnifiedFullViewingKey>,
 }
 
@@ -649,6 +677,7 @@ where
         consensus_parameters: P,
         scan_results_sender: mpsc::UnboundedSender<(ScanRange, Result<ScanResults, ScanError>)>,
         fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
+        ironwood_sizes: IronwoodSizes,
         ufvks: HashMap<AccountId, UnifiedFullViewingKey>,
     ) -> Self {
         Self {
@@ -659,6 +688,7 @@ where
             scan_task_sender: None,
             scan_results_sender,
             fetch_request_sender,
+            ironwood_sizes,
             ufvks,
         }
     }
@@ -672,6 +702,7 @@ where
         let is_scanning = self.is_scanning.clone();
         let scan_results_sender = self.scan_results_sender.clone();
         let fetch_request_sender = self.fetch_request_sender.clone();
+        let ironwood_sizes = self.ironwood_sizes.clone();
         let consensus_parameters = self.consensus_parameters.clone();
         let ufvks = self.ufvks.clone();
 
@@ -682,6 +713,7 @@ where
                 let scan_fut = scan(
                     fetch_request_sender.clone(),
                     &consensus_parameters,
+                    &ironwood_sizes,
                     &ufvks,
                     scan_task,
                     max_batch_outputs,
@@ -782,6 +814,7 @@ impl ScanTask {
         self,
         consensus_parameters: &impl consensus::Parameters,
         fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
+        ironwood_sizes: &IronwoodSizes,
         block_height: BlockHeight,
     ) -> Result<(Self, Self), ServerError> {
         if block_height < self.scan_range.block_range().start
@@ -807,30 +840,38 @@ impl ScanTask {
             narrow_scan_area: false,
         });
 
-        let lower_task_last_block = if let Some(block) = lower_compact_blocks.last() {
-            Some(
-                WalletBlock::from_compact_block(
-                    consensus_parameters,
-                    fetch_request_sender.clone(),
-                    block,
-                )
-                .await?,
+        // the seam blocks follow from the blocks at hand, so the server is only asked where the lower task has no
+        // start seam block.
+        let lower_task_last_block = tree_bounds_at_ends(
+            consensus_parameters,
+            fetch_request_sender.clone(),
+            ironwood_sizes,
+            self.start_seam_block.as_ref(),
+            &lower_compact_blocks,
+        )
+        .await?
+        .map(|(_, last_tree_bounds)| {
+            WalletBlock::with_tree_bounds(
+                lower_compact_blocks.last().expect("bounds imply a block"),
+                last_tree_bounds,
             )
-        } else {
-            None
-        };
-        let upper_task_first_block = if let Some(block) = upper_compact_blocks.first() {
-            Some(
-                WalletBlock::from_compact_block(
-                    consensus_parameters,
-                    fetch_request_sender.clone(),
-                    block,
-                )
-                .await?,
+        });
+        let upper_task_first_block = tree_bounds_at_ends(
+            consensus_parameters,
+            fetch_request_sender,
+            ironwood_sizes,
+            lower_task_last_block
+                .as_ref()
+                .or(self.start_seam_block.as_ref()),
+            &upper_compact_blocks,
+        )
+        .await?
+        .map(|(first_tree_bounds, _)| {
+            WalletBlock::with_tree_bounds(
+                upper_compact_blocks.first().expect("bounds imply a block"),
+                first_tree_bounds,
             )
-        } else {
-            None
-        };
+        });
 
         Ok((
             ScanTask {
@@ -857,4 +898,40 @@ impl ScanTask {
             },
         ))
     }
+}
+
+/// The tree bounds of the first and last blocks of `blocks`, each block's bounds following from the block before
+/// it: from `preceding` (the block before `blocks[0]`) when known, and from the server for the first block
+/// otherwise. `None` if `blocks` is empty.
+async fn tree_bounds_at_ends(
+    consensus_parameters: &impl consensus::Parameters,
+    fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
+    ironwood_sizes: &IronwoodSizes,
+    preceding: Option<&WalletBlock>,
+    blocks: &[CompactBlock],
+) -> Result<Option<(TreeBounds, TreeBounds)>, ServerError> {
+    let Some(first) = blocks.first() else {
+        return Ok(None);
+    };
+    let first_tree_bounds = match preceding {
+        Some(block) => {
+            TreeBounds::from_initial_tree_sizes(first, block.tree_bounds().final_tree_sizes())
+        }
+        None => {
+            compact_blocks::calculate_block_tree_bounds(
+                consensus_parameters,
+                fetch_request_sender,
+                ironwood_sizes,
+                first,
+            )
+            .await?
+        }
+    };
+    let last_tree_bounds = blocks[1..]
+        .iter()
+        .fold(first_tree_bounds, |previous, block| {
+            TreeBounds::from_initial_tree_sizes(block, previous.final_tree_sizes())
+        });
+
+    Ok(Some((first_tree_bounds, last_tree_bounds)))
 }

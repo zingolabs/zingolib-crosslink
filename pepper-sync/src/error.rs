@@ -127,6 +127,18 @@ pub enum ScanError {
         /// Calculated size
         calculated_size: u32,
     },
+    /// Block metadata reports a tree size of zero where the wallet has calculated a non-zero tree size.
+    #[error(
+        "tree size not reported. at height {height}, {shielded_protocol} tree size recorded in block metadata is zero where the calculated size is {calculated_size}. connect to a server that serves {shielded_protocol}."
+    )]
+    TreeSizeNotReported {
+        /// Shielded protocol
+        shielded_protocol: PoolType,
+        /// The block height whose sizes disagreed.
+        height: BlockHeight,
+        /// Calculated size
+        calculated_size: u32,
+    },
     /// Txid of transaction returned by the server does not match requested txid.
     #[error(
         "txid of transaction returned by the server does not match requested txid.\ntxid requested: {txid_requested}\ntxid returned: {txid_returned}"
@@ -204,6 +216,20 @@ pub enum ServerError {
     /// Server reports only the genesis block exists.
     #[error("server reports only the genesis block exists.")]
     GenesisBlockOnly,
+    /// Server did not return a shielded pool's note commitment tree state for a height at or above the pool's
+    /// activation height.
+    ///
+    /// For Ironwood this is only returned where the wallet cannot fall back to building the tree from scanned
+    /// blocks (see [`crate::client::IronwoodSizes`]).
+    #[error(
+        "server does not serve the {pool} note commitment tree state at height {height}. connect to a server that serves {pool}."
+    )]
+    TreeStateNotServed {
+        /// The pool whose tree state was omitted.
+        pool: PoolType,
+        /// The requested block height.
+        height: BlockHeight,
+    },
     /// Server serves no Ironwood tree state at a height where the pool is active, so the wallet
     /// cannot recover the Ironwood frontier at its birthday.
     #[error(

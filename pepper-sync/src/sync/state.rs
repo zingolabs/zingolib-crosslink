@@ -15,7 +15,7 @@ use zcash_protocol::{
 };
 
 use crate::{
-    client::{self, FetchRequest},
+    client::{self, FetchRequest, IronwoodSizes},
     error::{ServerError, SyncError},
     keys::transparent::TransparentAddressId,
     scan::task::ScanTask,
@@ -828,6 +828,7 @@ where
 pub(super) async fn set_initial_state<W>(
     consensus_parameters: &impl consensus::Parameters,
     fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
+    ironwood_sizes: &IronwoodSizes,
     wallet: &mut W,
     chain_height: BlockHeight,
 ) -> Result<(), SyncError<W::Error>>
@@ -861,6 +862,7 @@ where
         final_tree_sizes(
             consensus_parameters,
             fetch_request_sender.clone(),
+            ironwood_sizes,
             wallet,
             birthday - 1,
         )
@@ -873,6 +875,7 @@ where
     ) = final_tree_sizes(
         consensus_parameters,
         fetch_request_sender.clone(),
+        ironwood_sizes,
         wallet,
         chain_height,
     )
@@ -948,10 +951,12 @@ where
         }))
 }
 
-/// Gets `block_height` final tree sizes from wallet block if it exists, otherwise from frontiers fetched from server.
+/// Gets `block_height` final tree sizes from wallet block if it exists, otherwise from the tree state fetched from
+/// the server, with the Ironwood size resolved through `ironwood_sizes` where the server serves none.
 async fn final_tree_sizes<W>(
     consensus_parameters: &impl consensus::Parameters,
     fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
+    ironwood_sizes: &IronwoodSizes,
     wallet: &mut W,
     block_height: BlockHeight,
 ) -> Result<(u32, u32, u32), ServerError>
@@ -959,26 +964,21 @@ where
     W: SyncBlocks,
 {
     if let Ok(block) = wallet.get_wallet_block(block_height) {
-        Ok((
-            block.tree_bounds().sapling_final_tree_size,
-            block.tree_bounds().orchard_final_tree_size,
-            block.tree_bounds().ironwood_final_tree_size,
-        ))
+        Ok(block.tree_bounds().final_tree_sizes())
     } else {
-        // TODO: move this whole block into `client::get_frontiers`
         let sapling_activation_height = consensus_parameters
             .activation_height(NetworkUpgrade::Sapling)
             .expect("should have some sapling activation height");
 
         match block_height.cmp(&(sapling_activation_height - 1)) {
             cmp::Ordering::Greater => {
-                let tree_sizes = client::get_tree_sizes(
-                    fetch_request_sender.clone(),
+                client::get_final_tree_sizes(
+                    fetch_request_sender,
                     consensus_parameters,
+                    ironwood_sizes,
                     block_height,
                 )
-                .await?;
-                Ok((tree_sizes.sapling, tree_sizes.orchard, tree_sizes.ironwood))
+                .await
             }
             cmp::Ordering::Equal => Ok((0, 0, 0)),
             cmp::Ordering::Less => panic!("pre-sapling not supported!"),
@@ -1114,8 +1114,10 @@ pub(super) fn update_found_note_shard_priority(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(feature = "darkside_test"))]
     use zcash_protocol::local_consensus::LocalNetwork;
 
+    #[cfg(not(feature = "darkside_test"))]
     const BASE_NETWORK: LocalNetwork = LocalNetwork {
         overwinter: Some(BlockHeight::from_u32(1)),
         sapling: Some(BlockHeight::from_u32(1)),
@@ -1133,6 +1135,7 @@ mod tests {
     /// `crate::sync::update_subtree_roots`) rebuilds its shard range via
     /// pop-then-readd: idempotent when the completing height is
     /// unchanged, corrected when a reorg moved it — never duplicated.
+    #[cfg(not(feature = "darkside_test"))]
     #[test]
     fn refetched_newest_root_rebuilds_its_shard_range() {
         fn root(completing_block_height: u64) -> SubtreeRoot {

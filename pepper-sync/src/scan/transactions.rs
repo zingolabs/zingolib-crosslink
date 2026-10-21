@@ -29,7 +29,7 @@ use zip32::AccountId;
 
 use crate::{
     Ironwood, Orchard, Sapling,
-    client::{self, FetchRequest},
+    client::{self, FetchRequest, IronwoodSizes},
     error::ScanError,
     keys::{self, KeyId, transparent::TransparentAddressId},
     wallet::{
@@ -81,6 +81,7 @@ impl<Proof> ShieldedOutputExt<SaplingDomain> for OutputDescription<Proof> {
 pub(crate) async fn scan_transactions(
     fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
     consensus_parameters: &impl consensus::Parameters,
+    ironwood_sizes: &IronwoodSizes,
     ufvks: &HashMap<AccountId, UnifiedFullViewingKey>,
     scan_targets: BTreeSet<ScanTarget>,
     decrypted_note_data: DecryptedNoteData,
@@ -123,6 +124,7 @@ pub(crate) async fn scan_transactions(
             WalletBlock::from_compact_block(
                 consensus_parameters,
                 fetch_request_sender.clone(),
+                ironwood_sizes,
                 &client::get_compact_block(fetch_request_sender.clone(), block_height).await?,
             )
             .await?

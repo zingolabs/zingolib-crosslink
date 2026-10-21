@@ -15,7 +15,7 @@ use zcash_protocol::consensus::{self, BlockHeight};
 use zip32::AccountId;
 
 use crate::{
-    client::FetchRequest,
+    client::{FetchRequest, IronwoodSizes},
     error::{ScanError, ServerError},
     sync::ScanPriority,
     wallet::{NullifierMap, OutputId, ScanTarget, WalletBlock, WalletTransaction},
@@ -40,6 +40,7 @@ impl InitialScanData {
     async fn new<P>(
         fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
         consensus_parameters: &P,
+        ironwood_sizes: &IronwoodSizes,
         first_block: &CompactBlock,
         start_seam_block: Option<WalletBlock>,
         end_seam_block: Option<WalletBlock>,
@@ -58,6 +59,7 @@ impl InitialScanData {
                 let tree_bounds = compact_blocks::calculate_block_tree_bounds(
                     consensus_parameters,
                     fetch_request_sender,
+                    ironwood_sizes,
                     first_block,
                 )
                 .await?;
@@ -122,6 +124,7 @@ impl DecryptedNoteData {
 pub(crate) async fn scan<P>(
     fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
     consensus_parameters: &P,
+    ironwood_sizes: &IronwoodSizes,
     ufvks: &HashMap<AccountId, UnifiedFullViewingKey>,
     scan_task: ScanTask,
     max_batch_outputs: usize,
@@ -174,6 +177,7 @@ where
     let initial_scan_data = InitialScanData::new(
         fetch_request_sender.clone(),
         consensus_parameters,
+        ironwood_sizes,
         compact_blocks
             .first()
             .expect("compacts blocks should not be empty"),
@@ -210,6 +214,7 @@ where
     let wallet_transactions = scan_transactions(
         fetch_request_sender,
         consensus_parameters,
+        ironwood_sizes,
         ufvks,
         scan_targets,
         decrypted_note_data,

@@ -38,7 +38,7 @@ use zingo_status::confirmation_status::ConfirmationStatus;
 
 use crate::{
     Ironwood, Orchard, Sapling,
-    client::FetchRequest,
+    client::{FetchRequest, IronwoodSizes},
     error::{ServerError, SyncModeError},
     keys::{self, KeyId, transparent::TransparentAddressId},
     scan::compact_blocks::calculate_block_tree_bounds,
@@ -305,6 +305,72 @@ pub struct TreeBounds {
     pub ironwood_final_tree_size: u32,
 }
 
+impl TreeBounds {
+    /// Bounds of `block` given the `(sapling, orchard, ironwood)` tree sizes at the end of the block.
+    pub(crate) fn from_final_tree_sizes(
+        block: &CompactBlock,
+        final_tree_sizes: (u32, u32, u32),
+    ) -> Self {
+        let (sapling_final_tree_size, orchard_final_tree_size, ironwood_final_tree_size) =
+            final_tree_sizes;
+        let (sapling_output_count, orchard_output_count, ironwood_output_count) =
+            output_counts(block);
+
+        TreeBounds {
+            sapling_initial_tree_size: sapling_final_tree_size.saturating_sub(sapling_output_count),
+            sapling_final_tree_size,
+            orchard_initial_tree_size: orchard_final_tree_size.saturating_sub(orchard_output_count),
+            orchard_final_tree_size,
+            ironwood_initial_tree_size: ironwood_final_tree_size
+                .saturating_sub(ironwood_output_count),
+            ironwood_final_tree_size,
+        }
+    }
+
+    /// Bounds of `block` given the `(sapling, orchard, ironwood)` tree sizes at the end of the block before it.
+    pub(crate) fn from_initial_tree_sizes(
+        block: &CompactBlock,
+        initial_tree_sizes: (u32, u32, u32),
+    ) -> Self {
+        let (sapling_initial_tree_size, orchard_initial_tree_size, ironwood_initial_tree_size) =
+            initial_tree_sizes;
+        let (sapling_output_count, orchard_output_count, ironwood_output_count) =
+            output_counts(block);
+
+        TreeBounds {
+            sapling_initial_tree_size,
+            sapling_final_tree_size: sapling_initial_tree_size + sapling_output_count,
+            orchard_initial_tree_size,
+            orchard_final_tree_size: orchard_initial_tree_size + orchard_output_count,
+            ironwood_initial_tree_size,
+            ironwood_final_tree_size: ironwood_initial_tree_size + ironwood_output_count,
+        }
+    }
+
+    /// The `(sapling, orchard, ironwood)` tree sizes at the end of the block.
+    pub(crate) fn final_tree_sizes(&self) -> (u32, u32, u32) {
+        (
+            self.sapling_final_tree_size,
+            self.orchard_final_tree_size,
+            self.ironwood_final_tree_size,
+        )
+    }
+}
+
+/// The number of `(sapling, orchard, ironwood)` outputs in `block`.
+fn output_counts(block: &CompactBlock) -> (u32, u32, u32) {
+    let count = |outputs: usize| -> u32 {
+        outputs
+            .try_into()
+            .expect("output count of a block cannot exceed a u32")
+    };
+    (
+        count(block.vtx.iter().map(|tx| tx.outputs.len()).sum()),
+        count(block.vtx.iter().map(|tx| tx.actions.len()).sum()),
+        count(block.vtx.iter().map(|tx| tx.ironwood_actions.len()).sum()),
+    )
+}
+
 /// Output ID for a given pool type.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub struct OutputId {
@@ -407,15 +473,29 @@ pub struct WalletBlock {
 }
 
 impl WalletBlock {
+    /// Builds the wallet block of `block`, taking its tree bounds from the block's chain metadata or, where the
+    /// server sends none, from the server's tree state (see
+    /// [`crate::scan::compact_blocks::calculate_block_tree_bounds`]).
     pub(crate) async fn from_compact_block(
         consensus_parameters: &impl consensus::Parameters,
         fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
+        ironwood_sizes: &IronwoodSizes,
         block: &CompactBlock,
     ) -> Result<Self, ServerError> {
-        let tree_bounds =
-            calculate_block_tree_bounds(consensus_parameters, fetch_request_sender, block).await?;
+        let tree_bounds = calculate_block_tree_bounds(
+            consensus_parameters,
+            fetch_request_sender,
+            ironwood_sizes,
+            block,
+        )
+        .await?;
 
-        Ok(Self {
+        Ok(Self::with_tree_bounds(block, tree_bounds))
+    }
+
+    /// Builds the wallet block of `block` with tree bounds already known.
+    pub(crate) fn with_tree_bounds(block: &CompactBlock, tree_bounds: TreeBounds) -> Self {
+        Self {
             block_height: block.height(),
             block_hash: block.hash(),
             prev_hash: block.prev_hash(),
@@ -426,7 +506,7 @@ impl WalletBlock {
                 .map(zcash_client_backend::proto::compact_formats::CompactTx::txid)
                 .collect(),
             tree_bounds,
-        })
+        }
     }
 
     /// Block height.
