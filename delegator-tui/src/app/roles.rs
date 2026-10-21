@@ -6,7 +6,7 @@
 //! so every output appears once.
 //!
 //! The rules for what was sent on purpose and what is change mirror the ones zingolib uses to
-//! build value transfers, so the two views agree.
+//! build wallet events, so the two views agree.
 
 use super::state::{OutputRole, OutputRow, TxKind};
 

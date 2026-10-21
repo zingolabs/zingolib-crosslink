@@ -10,11 +10,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::mpsc;
 
+use crate::app::RosterRow;
 use crate::app::{
-    Action, AddressKind, AddressRow, Balance, ChainRange, Command, Evidence, InputRow, KeyMaterial,
-    Network, OpenSpec, OutputRole, OutputRow, Pool, PoolBalance, RangePriority, SpendState,
-    SyncMode, SyncNote, Tip, TxKind, TxRow, TxStatus, ValueTransferRow, WalletData, WalletEntry,
-    WalletInfo, WalletKind,
+    Action, AddressKind, AddressRow, Balance, BondRow, BondStatus, ChainRange, Command, Evidence,
+    InputRow, KeyMaterial, Network, OpenSpec, OutputRole, OutputRow, Pool, PoolBalance,
+    RangePriority, SpendState, SyncMode, SyncNote, Tip, TxKind, TxRow, TxStatus, WalletData,
+    WalletEntry, WalletEventRow, WalletInfo, WalletKind,
 };
 
 const TICK: Duration = Duration::from_millis(500);
@@ -62,6 +63,15 @@ impl Rng {
         s
     }
 
+    /// A finalizer address of the right shape: `zfinv1` and 128 base64url characters.
+    fn finalizer(&mut self) -> String {
+        const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let body: String = (0..128)
+            .map(|_| CHARS[self.below(64) as usize] as char)
+            .collect();
+        format!("zfinv1{body}")
+    }
+
     /// Bech32-looking text for addresses.
     fn bech(&mut self, len: usize) -> String {
         const CHARS: &[u8] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
@@ -81,6 +91,8 @@ struct Fake {
     kind: WalletKind,
     data: WalletData,
     opened: bool,
+    /// A send waiting for confirmation: to, amount, memo, fee.
+    proposal: Option<(String, u64, Option<String>, u64)>,
     mode: SyncMode,
     auto: bool,
     scanned: u64,
@@ -102,6 +114,7 @@ impl Fake {
             kind: WalletKind::Seed,
             data: WalletData::default(),
             opened: false,
+            proposal: None,
             mode: SyncMode::NotRunning,
             auto: true,
             scanned: 0,
@@ -178,6 +191,7 @@ impl Fake {
                     height: self.tip,
                     at_unix: Self::now_unix(),
                     spacing_secs: 15,
+                    ironwood_tree: true,
                 })));
             }
             Command::GenerateSeed => self.send(Action::SeedGenerated(SEED_PHRASE.into())),
@@ -222,6 +236,7 @@ impl Fake {
                     birthday,
                     server: network.default_server(),
                     has_orchard: true,
+                    spacing_secs: 15,
                     kind,
                 }));
                 self.send(Action::DataLoaded(self.data.clone()));
@@ -310,9 +325,300 @@ impl Fake {
                 self.send(Action::Shutdown);
                 return true;
             }
+            Command::Faucet { address } => {
+                tokio::time::sleep(Duration::from_millis(700)).await;
+                const DROP: u64 = 1_000_000_000;
+                let height = self.tip + 1;
+                let tx = self.payment(
+                    TxKind::Received,
+                    DROP,
+                    None,
+                    Some("from the faucet"),
+                    Some(address),
+                    height,
+                );
+                self.data.txs.insert(0, tx);
+                self.data.balance.ironwood.pending += DROP;
+                self.send(Action::FaucetDone(Ok(DROP)));
+                self.send(Action::DataLoaded(self.data.clone()));
+            }
+            Command::ProposeSend { to, amount, memo } => {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                const FEE: u64 = 15_000;
+                let spendable = self.data.balance.total() - self.data.balance.pending();
+                let result = if !(to.starts_with("u") || to.starts_with("t") || to.starts_with("z"))
+                    || to.len() < 20
+                {
+                    Err("that is not a zcash address".to_string())
+                } else if amount + FEE > spendable {
+                    Err(format!(
+                        "not enough spendable funds: {} ZEC after the fee",
+                        crate::format::zec(spendable.saturating_sub(FEE))
+                    ))
+                } else {
+                    self.proposal = Some((to, amount, memo, FEE));
+                    Ok((FEE, amount + FEE))
+                };
+                self.send(Action::SendProposed(result));
+            }
+            Command::ConfirmSend => {
+                tokio::time::sleep(Duration::from_millis(900)).await;
+                let result = match self.proposal.take() {
+                    Some((to, amount, memo, fee)) => {
+                        let height = self.tip + 1;
+                        let tx = self.payment(
+                            TxKind::Sent,
+                            amount,
+                            Some(fee),
+                            memo.as_deref(),
+                            Some(to),
+                            height,
+                        );
+                        let txid = tx.txid.clone();
+                        self.data.txs.insert(0, tx);
+                        self.data.balance.orchard.confirmed -= amount + fee;
+                        Ok(vec![txid])
+                    }
+                    None => Err("nothing is proposed".to_string()),
+                };
+                self.send(Action::SendDone(result));
+                self.send(Action::DataLoaded(self.data.clone()));
+            }
+            Command::CancelSend => self.proposal = None,
+            Command::Faucet { address } => {
+                tokio::time::sleep(Duration::from_millis(700)).await;
+                const DROP: u64 = 1_000_000_000;
+                let height = self.tip + 1;
+                let tx = self.payment(
+                    TxKind::Received,
+                    DROP,
+                    None,
+                    Some("from the faucet"),
+                    Some(address),
+                    height,
+                );
+                self.data.txs.insert(0, tx);
+                self.data.balance.ironwood.pending += DROP;
+                self.send(Action::FaucetDone(Ok(DROP)));
+                self.send(Action::DataLoaded(self.data.clone()));
+            }
+            Command::ProposeSend { to, amount, memo } => {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                const FEE: u64 = 15_000;
+                let spendable = self.data.balance.total() - self.data.balance.pending();
+                let result = if !(to.starts_with("u") || to.starts_with("t") || to.starts_with("z"))
+                    || to.len() < 20
+                {
+                    Err("that is not a zcash address".to_string())
+                } else if amount + FEE > spendable {
+                    Err(format!(
+                        "not enough spendable funds: {} ZEC after the fee",
+                        crate::format::zec(spendable.saturating_sub(FEE))
+                    ))
+                } else {
+                    self.proposal = Some((to, amount, memo, FEE));
+                    Ok((FEE, amount + FEE))
+                };
+                self.send(Action::SendProposed(result));
+            }
+            Command::ConfirmSend => {
+                tokio::time::sleep(Duration::from_millis(900)).await;
+                let result = match self.proposal.take() {
+                    Some((to, amount, memo, fee)) => {
+                        let height = self.tip + 1;
+                        let tx = self.payment(
+                            TxKind::Sent,
+                            amount,
+                            Some(fee),
+                            memo.as_deref(),
+                            Some(to),
+                            height,
+                        );
+                        let txid = tx.txid.clone();
+                        self.data.txs.insert(0, tx);
+                        self.data.balance.orchard.confirmed -= amount + fee;
+                        Ok(vec![txid])
+                    }
+                    None => Err("nothing is proposed".to_string()),
+                };
+                self.send(Action::SendDone(result));
+                self.send(Action::DataLoaded(self.data.clone()));
+            }
+            Command::CancelSend => self.proposal = None,
+            Command::Faucet { address } => {
+                tokio::time::sleep(Duration::from_millis(700)).await;
+                const DROP: u64 = 1_000_000_000;
+                let height = self.tip + 1;
+                let tx = self.payment(
+                    TxKind::Received,
+                    DROP,
+                    None,
+                    Some("from the faucet"),
+                    Some(address),
+                    height,
+                );
+                self.data.txs.insert(0, tx);
+                self.data.balance.ironwood.pending += DROP;
+                self.send(Action::FaucetDone(Ok(DROP)));
+                self.send(Action::DataLoaded(self.data.clone()));
+            }
+            Command::ProposeSend { to, amount, memo } => {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                const FEE: u64 = 15_000;
+                let spendable = self.data.balance.total() - self.data.balance.pending();
+                let result = if !(to.starts_with("u") || to.starts_with("t") || to.starts_with("z"))
+                    || to.len() < 20
+                {
+                    Err("that is not a zcash address".to_string())
+                } else if amount + FEE > spendable {
+                    Err(format!(
+                        "not enough spendable funds: {} ZEC after the fee",
+                        crate::format::zec(spendable.saturating_sub(FEE))
+                    ))
+                } else {
+                    self.proposal = Some((to, amount, memo, FEE));
+                    Ok((FEE, amount + FEE))
+                };
+                self.send(Action::SendProposed(result));
+            }
+            Command::ConfirmSend => {
+                tokio::time::sleep(Duration::from_millis(900)).await;
+                let result = match self.proposal.take() {
+                    Some((to, amount, memo, fee)) => {
+                        let height = self.tip + 1;
+                        let tx = self.payment(
+                            TxKind::Sent,
+                            amount,
+                            Some(fee),
+                            memo.as_deref(),
+                            Some(to),
+                            height,
+                        );
+                        let txid = tx.txid.clone();
+                        self.data.txs.insert(0, tx);
+                        self.data.balance.orchard.confirmed -= amount + fee;
+                        Ok(vec![txid])
+                    }
+                    None => Err("nothing is proposed".to_string()),
+                };
+                self.send(Action::SendDone(result));
+                self.send(Action::DataLoaded(self.data.clone()));
+            }
+            Command::CancelSend => self.proposal = None,
+            Command::Faucet { address } => {
+                tokio::time::sleep(Duration::from_millis(700)).await;
+                const DROP: u64 = 1_000_000_000;
+                let height = self.tip + 1;
+                let tx = self.payment(
+                    TxKind::Received,
+                    DROP,
+                    None,
+                    Some("from the faucet"),
+                    Some(address),
+                    height,
+                );
+                self.data.txs.insert(0, tx);
+                self.data.balance.orchard.pending += DROP;
+                self.send(Action::FaucetDone(Ok(DROP)));
+                self.send(Action::DataLoaded(self.data.clone()));
+            }
+            Command::ProposeSend { to, amount, memo } => {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                const FEE: u64 = 15_000;
+                let spendable = self.data.balance.total() - self.data.balance.pending();
+                let result = if !(to.starts_with("u") || to.starts_with("t") || to.starts_with("z"))
+                    || to.len() < 20
+                {
+                    Err("that is not a zcash address".to_string())
+                } else if amount + FEE > spendable {
+                    Err(format!(
+                        "not enough spendable funds: {} ZEC after the fee",
+                        crate::format::zec(spendable.saturating_sub(FEE))
+                    ))
+                } else {
+                    self.proposal = Some((to, amount, memo, FEE));
+                    Ok((FEE, amount + FEE))
+                };
+                self.send(Action::SendProposed(result));
+            }
+            Command::ConfirmSend => {
+                tokio::time::sleep(Duration::from_millis(900)).await;
+                let result = match self.proposal.take() {
+                    Some((to, amount, memo, fee)) => {
+                        let height = self.tip + 1;
+                        let tx = self.payment(
+                            TxKind::Sent,
+                            amount,
+                            Some(fee),
+                            memo.as_deref(),
+                            Some(to),
+                            height,
+                        );
+                        let txid = tx.txid.clone();
+                        self.data.txs.insert(0, tx);
+                        self.data.balance.orchard.confirmed -= amount + fee;
+                        Ok(vec![txid])
+                    }
+                    None => Err("nothing is proposed".to_string()),
+                };
+                self.send(Action::SendDone(result));
+                self.send(Action::DataLoaded(self.data.clone()));
+            }
+            Command::CancelSend => self.proposal = None,
             Command::Copy(_) | Command::SaveTheme(_) | Command::ForceQuit => {}
         }
         false
+    }
+
+    /// A payment just made or just received, still in the mempool.
+    /// A payment just made or just received, still in the mempool.
+    /// A payment just made or just received, still in the mempool.
+    /// A payment just made or just received, still in the mempool.
+    fn payment(
+        &mut self,
+        kind: TxKind,
+        value: u64,
+        fee: Option<u64>,
+        memo: Option<&str>,
+        address: Option<String>,
+        height: u32,
+    ) -> TxRow {
+        let role = if kind == TxKind::Received {
+            OutputRole::Received
+        } else {
+            OutputRole::Sent
+        };
+        TxRow {
+            txid: self.rng.hex(64),
+            datetime: Self::now_unix() as u32,
+            height,
+            status: TxStatus::Pending,
+            kind,
+            value,
+            fee,
+            inputs: Vec::new(),
+            outputs: vec![OutputRow {
+                pool: Pool::Orchard,
+                role,
+                value,
+                index: 0,
+                address,
+                memo: memo.map(str::to_string),
+                spend: SpendState::Unspent,
+                scope: Some("External".into()),
+            }],
+            wallet_events: vec![WalletEventRow {
+                kind: if kind == TxKind::Received {
+                    "received".into()
+                } else {
+                    "sent".into()
+                },
+                value,
+                recipient: None,
+                pool_received: Some("orchard".into()),
+                memos: memo.map(str::to_string).into_iter().collect(),
+            }],
+        }
     }
 
     /// Starts a session: the plan, then progress on every tick.
@@ -325,9 +631,10 @@ impl Fake {
         self.note(SyncNote::SessionStarted {
             tip: self.tip,
             birthday: self.birthday,
+            total_blocks: u64::from(self.tip - self.birthday),
+            scanned_blocks: 0,
             total_outputs: OUTPUTS,
             scanned_outputs: 0,
-            scanned_blocks: 0,
         });
         self.note(SyncNote::ScanPlanUpdated {
             ranges: self.plan(0.0),
@@ -379,9 +686,10 @@ impl Fake {
                 let fraction = self.scanned as f64 / OUTPUTS as f64;
                 let blocks = (u64::from(self.tip - self.birthday) as f64 * fraction) as u64;
                 self.note(SyncNote::Progress {
+                    total_blocks: u64::from(self.tip - self.birthday),
+                    scanned_blocks: blocks,
                     total_outputs: OUTPUTS,
                     scanned_outputs: self.scanned,
-                    scanned_blocks: blocks,
                 });
                 if self.ticks.is_multiple_of(4) {
                     self.note(SyncNote::ScanPlanUpdated {
@@ -457,7 +765,7 @@ impl Fake {
                 spend: SpendState::Unspent,
                 scope: Some("External".into()),
             }],
-            value_transfers: vec![ValueTransferRow {
+            wallet_events: vec![WalletEventRow {
                 kind: "received".into(),
                 value,
                 recipient: None,
@@ -587,7 +895,7 @@ impl Fake {
                 TxStatus::Confirmed(height)
             };
             let pool = match i % 3 {
-                0 => Pool::Orchard,
+                0 => Pool::Ironwood,
                 1 => Pool::Sapling,
                 _ => Pool::Orchard,
             };
@@ -609,7 +917,7 @@ impl Fake {
                         },
                         scope: Some("External".into()),
                     }],
-                    vec![ValueTransferRow {
+                    vec![WalletEventRow {
                         kind: "received".into(),
                         value,
                         recipient: None,
@@ -648,7 +956,7 @@ impl Fake {
                             scope: Some("Internal".into()),
                         },
                     ],
-                    vec![ValueTransferRow {
+                    vec![WalletEventRow {
                         kind: "sent".into(),
                         value,
                         recipient: Some(format!("utest1{}", self.rng.bech(140))),
@@ -679,7 +987,7 @@ impl Fake {
                         spend: SpendState::Unspent,
                         scope: Some("Internal".into()),
                     }],
-                    vec![ValueTransferRow {
+                    vec![WalletEventRow {
                         kind: kind.long().into(),
                         value,
                         recipient: None,
@@ -698,10 +1006,14 @@ impl Fake {
                 fee,
                 inputs,
                 outputs,
-                value_transfers: transfers,
+                wallet_events: transfers,
             });
         }
         let balance = Balance {
+            ironwood: PoolBalance {
+                confirmed: 3_000_000_000,
+                pending: 0,
+            },
             orchard: PoolBalance {
                 confirmed: 1_250_000_000,
                 pending: 42_000_000,
@@ -715,10 +1027,51 @@ impl Fake {
                 pending: 0,
             },
             staked: 25_000_000_000,
+            unbonding: 2_500_000_000,
         };
+        // three finalizers: two bonds earning, one on its way out
+        let bonds: Vec<BondRow> = [
+            (15_000_000_000, BondStatus::Bonded, 23u64),
+            (10_000_000_000, BondStatus::Bonded, 0),
+            (2_500_000_000, BondStatus::Unbonding, 9),
+        ]
+        .into_iter()
+        .map(|(amount, status, days_ago)| BondRow {
+            key: self.rng.hex(64),
+            finalizer: self.rng.finalizer(),
+            amount,
+            status,
+            since: at(days_ago, 0).1,
+        })
+        .collect();
+        // the chain's roster: ours among seven, with everyone's stake
+        let mut roster: Vec<RosterRow> = bonds
+            .iter()
+            .zip([180_000_000_000u64, 95_000_000_000, 41_000_000_000])
+            .map(|(bond, stake)| RosterRow {
+                finalizer: bond.finalizer.clone(),
+                stake,
+                ours: true,
+            })
+            .collect();
+        for stake in [
+            260_000_000_000u64,
+            120_000_000_000,
+            64_000_000_000,
+            8_000_000_000,
+        ] {
+            roster.push(RosterRow {
+                finalizer: self.rng.finalizer(),
+                stake,
+                ours: false,
+            });
+        }
+        roster.sort_by(|a, b| b.stake.cmp(&a.stake));
         WalletData {
             balance,
             txs,
+            bonds,
+            roster,
             addresses,
         }
     }
@@ -802,17 +1155,131 @@ mod tests {
         assert_eq!(info.wallet_name, "main");
         assert_eq!(info.kind, WalletKind::Seed);
         assert!(s.balance.staked > 0, "bonded funds show");
+        assert!(s.balance.unbonding > 0, "unbonding funds show");
+        assert_eq!(s.bonds.len(), 3, "the bonds are listed");
+        assert_eq!(s.roster.len(), 7, "the roster is listed");
+        assert_eq!(s.roster.iter().filter(|r| r.ours).count(), 3);
         assert!(s.txs.iter().any(|t| t.kind == TxKind::CreateBond));
         assert!(s.txs.iter().any(|t| t.first_memo().is_some()));
         assert!(s.addresses.iter().any(|a| a.kind.is_unified()));
         assert!(s.addresses.iter().any(|a| !a.kind.is_unified()));
         // progress moves, and a new address arrives on request
-        let before = s.sync.outputs_scanned;
+        let before = s.sync.blocks_scanned;
         drive(&mut s, &mut act_rx, &cmd_tx, |s| {
-            s.sync.outputs_scanned > before
+            s.sync.blocks_scanned > before
         })
         .await;
         let addresses = s.addresses.len();
+        // the faucet pays, and a send goes through the proposal
+        cmd_tx
+            .send(Command::Faucet {
+                address: "u1faucet".into(),
+            })
+            .unwrap();
+        drive(&mut s, &mut act_rx, &cmd_tx, |s| {
+            s.txs[0].first_memo() == Some("from the faucet")
+        })
+        .await;
+        cmd_tx
+            .send(Command::ProposeSend {
+                to: "u1".to_string() + &"x".repeat(40),
+                amount: 100_000_000,
+                memo: Some("rent".into()),
+            })
+            .unwrap();
+        cmd_tx.send(Command::ConfirmSend).unwrap();
+        drive(&mut s, &mut act_rx, &cmd_tx, |s| {
+            s.txs[0].kind == TxKind::Sent && s.txs[0].first_memo() == Some("rent")
+        })
+        .await;
+        // the faucet pays, and a send goes through the proposal
+        cmd_tx
+            .send(Command::Faucet {
+                address: "u1faucet".into(),
+            })
+            .unwrap();
+        drive(&mut s, &mut act_rx, &cmd_tx, |s| {
+            s.txs[0].first_memo() == Some("from the faucet")
+        })
+        .await;
+        cmd_tx
+            .send(Command::ProposeSend {
+                to: "u1".to_string() + &"x".repeat(40),
+                amount: 100_000_000,
+                memo: Some("rent".into()),
+            })
+            .unwrap();
+        cmd_tx.send(Command::ConfirmSend).unwrap();
+        drive(&mut s, &mut act_rx, &cmd_tx, |s| {
+            s.txs[0].kind == TxKind::Sent && s.txs[0].first_memo() == Some("rent")
+        })
+        .await;
+        // the faucet pays, and a send goes through the proposal
+        cmd_tx
+            .send(Command::Faucet {
+                address: "u1faucet".into(),
+            })
+            .unwrap();
+        drive(&mut s, &mut act_rx, &cmd_tx, |s| {
+            s.txs[0].first_memo() == Some("from the faucet")
+        })
+        .await;
+        cmd_tx
+            .send(Command::ProposeSend {
+                to: "u1".to_string() + &"x".repeat(40),
+                amount: 100_000_000,
+                memo: Some("rent".into()),
+            })
+            .unwrap();
+        cmd_tx.send(Command::ConfirmSend).unwrap();
+        drive(&mut s, &mut act_rx, &cmd_tx, |s| {
+            s.txs[0].kind == TxKind::Sent && s.txs[0].first_memo() == Some("rent")
+        })
+        .await;
+        // the faucet pays, and a send goes through the proposal
+        cmd_tx
+            .send(Command::Faucet {
+                address: "u1faucet".into(),
+            })
+            .unwrap();
+        drive(&mut s, &mut act_rx, &cmd_tx, |s| {
+            s.txs[0].first_memo() == Some("from the faucet")
+        })
+        .await;
+        cmd_tx
+            .send(Command::ProposeSend {
+                to: "u1".to_string() + &"x".repeat(40),
+                amount: 100_000_000,
+                memo: Some("rent".into()),
+            })
+            .unwrap();
+        cmd_tx.send(Command::ConfirmSend).unwrap();
+        drive(&mut s, &mut act_rx, &cmd_tx, |s| {
+            s.txs[0].kind == TxKind::Sent && s.txs[0].first_memo() == Some("rent")
+        })
+        .await;
+        // the faucet pays, and a send goes through the proposal
+        cmd_tx
+            .send(Command::Faucet {
+                address: "u1faucet".into(),
+            })
+            .unwrap();
+        drive(&mut s, &mut act_rx, &cmd_tx, |s| {
+            s.txs[0].first_memo() == Some("from the faucet")
+        })
+        .await;
+        cmd_tx
+            .send(Command::ProposeSend {
+                to: "u1".to_string() + &"x".repeat(40),
+                amount: 100_000_000,
+                memo: Some("rent".into()),
+            })
+            .unwrap();
+        cmd_tx.send(Command::ConfirmSend).unwrap();
+        drive(&mut s, &mut act_rx, &cmd_tx, |s| {
+            s.txs[0].kind == TxKind::Sent && s.txs[0].first_memo() == Some("rent")
+        })
+        .await;
         cmd_tx.send(Command::NewTransparentAddress).unwrap();
         drive(&mut s, &mut act_rx, &cmd_tx, |s| {
             s.addresses.len() > addresses

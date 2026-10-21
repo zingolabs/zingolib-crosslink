@@ -10,11 +10,13 @@ use ratatui::style::Color;
 
 use super::view;
 use crate::app::{
-    AddressKind, AddressRow, ChainRange, DetailMode, InputRow, Network, OutputRole, OutputRow,
-    Overlay, Phase, Pool, RangePriority, Screen, SpendState, State, SyncMode, TxKind, TxRow,
-    TxStatus, ValueTransferRow, WalletEntry, WalletInfo, WalletKind,
+    AddressKind, AddressRow, BondRow, BondStatus, ChainRange, DetailMode, FaucetStage, InputRow,
+    Network, OutputRole, OutputRow, Overlay, Phase, Pool, RangePriority, RosterRow, Screen,
+    SendField, SendForm, SendStage, SpendState, State, SyncMode, TxKind, TxRow, TxStatus,
+    WalletEntry, WalletEventRow, WalletInfo, WalletKind,
 };
 use crate::app::{BirthdayMode, Evidence, KeyMaterial, Onboarding, Step, Tip};
+use crate::format;
 use crate::theme::{ColorDepth, THEMES, index_of};
 
 fn draw(state: &State, width: u16, height: u16) -> Buffer {
@@ -45,16 +47,47 @@ fn populated() -> State {
         birthday: 2_500_000,
         server: "https://zec.rocks:443".into(),
         has_orchard: true,
+        spacing_secs: 15,
         kind: WalletKind::Watch,
     });
-    s.balance.orchard.confirmed = 150_000_000;
+    s.balance.ironwood.confirmed = 100_000_000;
+    s.balance.orchard.confirmed = 50_000_000;
     s.balance.transparent.confirmed = 30_000;
     s.balance.staked = 500_000_000;
+    s.balance.unbonding = 120_000_000;
+    s.bonds = vec![
+        BondRow {
+            key: "ab".repeat(32),
+            finalizer: format!("zfinv1{}", "cd".repeat(64)),
+            amount: 500_000_000,
+            status: BondStatus::Bonded,
+            since: 2_590_000,
+        },
+        BondRow {
+            key: "ef".repeat(32),
+            finalizer: format!("zfinv1{}", "01".repeat(64)),
+            amount: 120_000_000,
+            status: BondStatus::Unbonding,
+            since: 2_595_000,
+        },
+    ];
+    s.roster = vec![
+        RosterRow {
+            finalizer: format!("zfinv1{}", "cd".repeat(64)),
+            stake: 7_500_000_000,
+            ours: true,
+        },
+        RosterRow {
+            finalizer: format!("zfinv1{}", "77".repeat(64)),
+            stake: 2_500_000_000,
+            ours: false,
+        },
+    ];
     s.balance.sapling.pending = 25_000;
     s.sync.tip = Some(2_600_000);
     s.sync.mode = SyncMode::Running;
-    s.sync.outputs_total = 1000;
-    s.sync.outputs_scanned = 250;
+    s.sync.blocks_total = 100_000;
+    s.sync.blocks_scanned = 25_000;
     s.sync.log("session started".into());
     s.txs = vec![
         TxRow {
@@ -76,7 +109,7 @@ fn populated() -> State {
                 spend: SpendState::Unspent,
                 scope: Some("External".into()),
             }],
-            value_transfers: vec![ValueTransferRow {
+            wallet_events: vec![WalletEventRow {
                 kind: "received".into(),
                 value: 150_000_000,
                 recipient: None,
@@ -110,7 +143,7 @@ fn populated() -> State {
                 spend: SpendState::Unspent,
                 scope: Some("External".into()),
             }],
-            value_transfers: Vec::new(),
+            wallet_events: Vec::new(),
         },
     ];
     s.addresses = vec![
@@ -148,6 +181,7 @@ fn every_main_screen_renders() {
     for screen in [
         Screen::Home,
         Screen::Transactions,
+        Screen::Bonds,
         Screen::Receive,
         Screen::Addresses,
         Screen::Sync,
@@ -164,17 +198,17 @@ fn every_main_screen_renders() {
         assert!(header.contains("syncing 25%"), "{screen:?} sync state");
         assert!(
             header.contains("main"),
-            "{screen:?} header names the wallet"
+            "{screen:?} header names the wallet: [{header}]"
         );
         let narrow = render(&s, 80, 24);
         let narrow_header = narrow.lines().next().unwrap();
         assert!(
-            narrow_header.contains("sync "),
-            "{screen:?}: every tab fits at 80 columns: {narrow_header}"
+            narrow_header.contains(&screen.title().to_lowercase()),
+            "{screen:?}: the active tab keeps its name at 80 columns: {narrow_header}"
         );
         assert!(
-            !narrow_header.contains("main"),
-            "{screen:?}: the name gives way at 80 columns"
+            narrow_header.contains("main"),
+            "{screen:?}: the letters leave room for the name at 80 columns: {narrow_header}"
         );
         for noise in ["height", ".dat", "mainnet"] {
             assert!(!header.contains(noise), "{screen:?} header shows {noise}");
@@ -183,24 +217,69 @@ fn every_main_screen_renders() {
 
     s.screen = Screen::Home;
     let out = render(&s, 100, 40);
+    for row in super::jacquard::render("1.5006").unwrap() {
+        assert!(
+            out.contains(row.trim_end()),
+            "the balance is drawn in Jacquard 24 on a tall terminal: {row}"
+        );
+    }
+    let out = render(&s, 80, 24);
     for row in super::bignum::render("1.5006").unwrap() {
-        assert!(out.contains(&row), "the balance is drawn in large digits");
+        assert!(out.contains(&row), "the small digits on a short terminal");
     }
     assert!(out.contains("ZEC"));
     assert!(out.contains("0.00025 ZEC pending"));
     for pool in ["orchard 1.5", "sapling 0.00025", "transparent 0.0003"] {
-        assert!(
-            out.contains(pool),
-            "{pool} missing from where the money sits"
-        );
+        assert!(!out.contains(pool), "the pool split is gone: {pool}");
     }
     assert!(out.contains("5 ZEC staked"), "bonded funds are shown apart");
-    s.balance.transparent.confirmed = 0;
     assert!(
-        !render(&s, 100, 40).contains("transparent"),
-        "empty pools are left out"
+        out.contains("with one finalizer"),
+        "the bonded line counts finalizers"
     );
-    s.balance.transparent.confirmed = 30_000;
+    assert!(
+        out.contains("1.2 ZEC unbonding"),
+        "unbonding funds are shown apart"
+    );
+    let tall = render(&s, 100, 40);
+    assert!(
+        tall.contains("5 ZEC staked"),
+        "the staked amount stays in normal text on a tall terminal"
+    );
+    assert!(tall.contains("· 5 ZEC staked") || tall.contains("✶ 5 ZEC staked"));
+    s.balance.staked = 0;
+    s.bonds.clear();
+    let idle = render(&s, 100, 40);
+    assert!(
+        idle.contains("  0 ZEC staked"),
+        "nothing at stake: no star, the line goes quiet"
+    );
+    let staked_line = idle
+        .lines()
+        .find(|l| l.contains("0 ZEC staked"))
+        .expect("the staking line stays");
+    for star in ['·', '✢', '✳', '✶', '✻', '✽'] {
+        assert!(
+            !staked_line.contains(star),
+            "{star} shown with nothing staked"
+        );
+    }
+    s.balance.staked = 500_000_000;
+    s.balance.staked = 0;
+    s.bonds.clear();
+    let idle = render(&s, 100, 40);
+    assert!(
+        idle.contains("  0 ZEC staked"),
+        "nothing at stake: no star, the line goes quiet"
+    );
+    let line = idle.lines().find(|l| l.contains("ZEC staked")).unwrap();
+    for star in ['·', '✢', '✳', '✶', '✻', '✽'] {
+        assert!(
+            !line.contains(star),
+            "{star} shown with nothing staked: {line}"
+        );
+    }
+    s.balance.staked = 500_000_000;
     assert!(out.contains("Recent transactions"));
     assert!(
         out.contains("thanks for the coffee"),
@@ -494,6 +573,7 @@ fn no_screen_shows_a_confirmation_count() {
     for screen in [
         Screen::Home,
         Screen::Transactions,
+        Screen::Bonds,
         Screen::Receive,
         Screen::Addresses,
         Screen::Sync,
@@ -525,16 +605,20 @@ fn overlays_render() {
             mode: DetailMode::InputsOutputs,
         },
         Overlay::TxDetail {
-            mode: DetailMode::ValueTransfers,
+            mode: DetailMode::WalletEvents,
         },
         Overlay::RescanConfirm,
         Overlay::NewUnifiedAddress { orchard_only: true },
         Overlay::AddressQr,
         Overlay::ThemePicker { original: 0 },
+        Overlay::Send(Box::default()),
+        Overlay::Faucet(FaucetStage::Failed("dry".into())),
     ] {
         s.overlay = overlay.clone();
         let out = render(&s, 100, 40);
         match overlay {
+            Overlay::Send(_) => assert!(out.contains("spendable")),
+            Overlay::Faucet(_) => assert!(out.contains("the faucet did not pay")),
             Overlay::Help => assert!(out.contains("delegator-tui — keys")),
             Overlay::TxDetail {
                 mode: DetailMode::InputsOutputs,
@@ -548,7 +632,7 @@ fn overlays_render() {
                 assert!(out.contains("external"), "output scope");
                 assert!(out.contains("unspent"), "spend state");
             }
-            Overlay::TxDetail { .. } => assert!(out.contains("Value transfers")),
+            Overlay::TxDetail { .. } => assert!(out.contains("Wallet events")),
             Overlay::RescanConfirm => assert!(out.contains("block 2,500,000")),
             Overlay::NewUnifiedAddress { .. } => assert!(out.contains("> orchard only")),
             Overlay::AddressQr => assert!(out.contains("Unified address")),
@@ -624,6 +708,7 @@ fn onboarding_states() -> Vec<(Step, State)> {
             height: 3_000_000,
             at_unix: 1_800_000_000,
             spacing_secs: 75,
+            ironwood_tree: true,
         });
         o.error = Some("something to show".into());
         o
@@ -680,7 +765,7 @@ fn startup_phases_render() {
             Step::Create => {
                 assert!(out.contains(" 1 abandon"), "{out}");
                 assert!(out.contains("24 art"), "{out}");
-                assert!(out.contains("2,999,900 on crosslink"), "{out}");
+                assert!(out.contains("birthday 2,999,900  on crosslink"), "{out}");
             }
             Step::Restore => {
                 assert!(out.contains("12 of 24 words"), "{out}");
@@ -763,6 +848,127 @@ fn empty_wallet_has_friendly_messages() {
     assert!(render(&s, 80, 24).contains("Press n to make one"));
     s.screen = Screen::Addresses;
     assert!(render(&s, 80, 24).contains("No addresses yet."));
+    s.bonds.clear();
+    s.screen = Screen::Bonds;
+    let out = render(&s, 80, 24);
+    assert!(out.contains("No bonds yet."));
+    assert!(
+        out.contains("Finalizers"),
+        "the roster still shows with no bonds"
+    );
+    s.roster.clear();
+    assert!(render(&s, 80, 24).contains("No bonds yet."));
+}
+
+#[test]
+fn unbonding_funds_are_shown_in_the_danger_colour() {
+    let mut s = populated();
+    s.theme = index_of("srcery").unwrap();
+    let red = Color::Rgb(0xf7, 0x53, 0x41);
+    for screen in [Screen::Home, Screen::Bonds] {
+        s.screen = screen;
+        let buffer = draw(&s, 100, 40);
+        let text = render(&s, 100, 40);
+        let (row, line) = text
+            .lines()
+            .enumerate()
+            .find(|(_, l)| l.contains("ZEC unbonding"))
+            .unwrap();
+        let col = line.find("1.2").unwrap();
+        assert_eq!(buffer[(col as u16, row as u16)].fg, red, "{screen:?}");
+    }
+}
+
+#[test]
+fn every_screen_shows_the_staking_calendar() {
+    use crate::app::StakingDay;
+    let mut s = populated();
+    // 2,600,000 on the calendar: inside the window, or not
+    let day = StakingDay::at_height(2_600_000);
+    let expect = if day.open {
+        "● staking day"
+    } else {
+        "○ no staking day"
+    };
+    for screen in Screen::ALL {
+        s.screen = screen;
+        let out = render(&s, 100, 40);
+        let row = out.lines().nth(1).unwrap();
+        assert!(row.contains(expect), "{screen:?}: {row}");
+        assert!(
+            row.contains(&format!(
+                "{} blocks",
+                format::group(u64::from(day.blocks_left))
+            )),
+            "{screen:?}: {row}"
+        );
+        assert!(row.contains('≈'), "{screen:?}: a time estimate: {row}");
+    }
+    s.sync.tip = Some(StakingDay::PERIOD * 5);
+    let out = render(&s, 80, 24);
+    assert!(
+        out.lines()
+            .nth(1)
+            .unwrap()
+            .contains("● staking day  closes in 3,456 blocks ≈ 14h24m")
+    );
+    s.sync.tip = Some(StakingDay::PERIOD * 5 + StakingDay::DAY_WINDOW);
+    let out = render(&s, 80, 24);
+    assert!(
+        out.lines()
+            .nth(1)
+            .unwrap()
+            .contains("○ no staking day  opens in 6,912 blocks ≈ 1d04h")
+    );
+    s.sync.tip = None;
+    assert!(
+        !render(&s, 80, 24).contains("staking day"),
+        "no tip, nothing to say"
+    );
+}
+
+#[test]
+fn bonds_lists_every_finalizer_with_its_standing() {
+    let mut s = populated();
+    s.screen = Screen::Bonds;
+    let out = render(&s, 100, 40);
+    assert!(out.contains("finalizer"), "a header names the columns");
+    assert!(
+        out.contains("zfinv1cdcdcdcd…cdcdcdcd"),
+        "the finalizer is its prefix, then the ends of its body"
+    );
+    assert!(
+        !out.contains("cdcdcdcdcdcdcdcdcdcd"),
+        "the middle of the address is left out"
+    );
+    assert!(out.contains("bonded"));
+    assert!(out.contains("unbonding"));
+    // the roster: everyone's stake, its share, ours marked
+    assert!(
+        out.contains("100 ZEC at stake across 2 finalizers"),
+        "{out}"
+    );
+    let ours = out.lines().find(|l| l.contains("● zfinv1cdcd")).unwrap();
+    assert!(ours.contains("75"), "{ours}");
+    assert!(ours.contains("75.0%"), "{ours}");
+    let theirs = out.lines().find(|l| l.contains("zfinv17777")).unwrap();
+    assert!(theirs.contains("25.0%"), "{theirs}");
+    assert!(!theirs.contains('●'));
+    assert!(out.contains("2,590,000"), "the height of the last action");
+    assert!(out.contains("5 ZEC staked"));
+    assert!(out.contains("1.2 ZEC unbonding"));
+}
+
+#[test]
+fn the_event_kind_leads_each_transaction_row() {
+    let mut s = populated();
+    s.screen = Screen::Transactions;
+    let out = render(&s, 100, 40);
+    let row = out.lines().find(|l| l.contains("received")).unwrap();
+    assert!(
+        row.find("received").unwrap() < row.find("0.0").unwrap_or(usize::MAX),
+        "the kind comes before the amount: {row}"
+    );
 }
 
 #[test]
@@ -796,14 +1002,14 @@ fn both_detail_views_draw_a_flow_diagram() {
         output(Pool::Sapling, OutputRole::Sent, 10_000, 0, "External"),
         output(Pool::Orchard, OutputRole::Change, 150_000, 1, "Internal"),
     ];
-    let event = |kind: &str, value| ValueTransferRow {
+    let event = |kind: &str, value| WalletEventRow {
         kind: kind.to_string(),
         value,
         recipient: None,
         pool_received: None,
         memos: Vec::new(),
     };
-    tx.value_transfers = vec![
+    tx.wallet_events = vec![
         event("received", 150_000),
         event("sent", 10_000),
         event("shield", 100_000),
@@ -825,7 +1031,7 @@ fn both_detail_views_draw_a_flow_diagram() {
     );
 
     s.overlay = Overlay::TxDetail {
-        mode: DetailMode::ValueTransfers,
+        mode: DetailMode::WalletEvents,
     };
     let out = render(&s, 100, 30);
     assert!(out.contains("────┤"), "a lone received event needs no bus");
@@ -852,6 +1058,7 @@ fn every_view(s: &mut State) -> Vec<String> {
     for screen in [
         Screen::Home,
         Screen::Transactions,
+        Screen::Bonds,
         Screen::Receive,
         Screen::Addresses,
         Screen::Sync,
@@ -864,7 +1071,7 @@ fn every_view(s: &mut State) -> Vec<String> {
                 mode: DetailMode::InputsOutputs,
             },
             Overlay::TxDetail {
-                mode: DetailMode::ValueTransfers,
+                mode: DetailMode::WalletEvents,
             },
             Overlay::RescanConfirm,
             Overlay::NewUnifiedAddress {
@@ -872,6 +1079,31 @@ fn every_view(s: &mut State) -> Vec<String> {
             },
             Overlay::AddressQr,
             Overlay::ThemePicker { original: 0 },
+            Overlay::Send(Box::default()),
+            Overlay::Send(Box::new(SendForm {
+                to: "u1".to_string() + &"q".repeat(100),
+                amount: "1.5".into(),
+                memo: "rent".into(),
+                field: SendField::Amount,
+                stage: SendStage::Confirm {
+                    fee: 15_000,
+                    total: 150_015_000,
+                },
+                error: None,
+            })),
+            Overlay::Send(Box::new(SendForm {
+                stage: SendStage::Sent {
+                    txids: vec!["ab".repeat(32)],
+                },
+                ..SendForm::new()
+            })),
+            Overlay::Faucet(FaucetStage::Ask {
+                address: "u1".to_string() + &"q".repeat(100),
+            }),
+            Overlay::Faucet(FaucetStage::Done {
+                amount: 1_000_000_000,
+            }),
+            Overlay::Faucet(FaucetStage::Failed("the faucet is dry".into())),
         ] {
             s.overlay = overlay;
             seen.push(render(s, 80, 24));
@@ -991,21 +1223,44 @@ fn qr_codes_are_drawn_in_the_themes_high_contrast_tones() {
 fn pools_are_told_apart_by_colour() {
     let mut s = populated();
     s.theme = index_of("nord").unwrap();
-    s.balance.transparent.confirmed = 70_000;
+    s.screen = Screen::Addresses;
+    // no row highlighted, so the words keep their own colours
+    s.addr_selected = s.addresses.len();
     let buffer = draw(&s, 100, 40);
+    // the receivers of the unified address and the type of the transparent one
     let fg_of = |word: &str| {
         let text = render(&s, 100, 40);
-        let row = text
+        let (row, line) = text
             .lines()
-            .position(|l| l.contains("orchard") && l.contains("transparent"))
+            .enumerate()
+            .find(|(_, l)| l.contains(word))
             .unwrap();
-        let col = text.lines().nth(row).unwrap().find(word).unwrap();
+        let col = line.find(word).unwrap();
         buffer[(col as u16, row as u16)].fg
     };
     let pools = ["orchard", "sapling", "transparent"].map(fg_of);
     for (i, a) in pools.iter().enumerate() {
         for b in &pools[i + 1..] {
-            assert_ne!(a, b, "two pools share a colour");
+            assert_ne!(a, b, "two pools share a colour: {pools:?}");
+        }
+    }
+    // every palette tells all four pools apart, Ironwood included
+    for (i, def) in THEMES.iter().enumerate() {
+        let t = crate::theme::Theme::new(i, ColorDepth::TrueColor);
+        if t.rgb.is_none() {
+            continue;
+        }
+        let colours = [
+            Pool::Ironwood,
+            Pool::Orchard,
+            Pool::Sapling,
+            Pool::Transparent,
+        ]
+        .map(|pool| t.pool(pool).fg);
+        for (a, x) in colours.iter().enumerate() {
+            for y in &colours[a + 1..] {
+                assert_ne!(x, y, "{}: two pools share a colour: {colours:?}", def.name);
+            }
         }
     }
 }
@@ -1135,7 +1390,7 @@ fn the_transaction_diagram_starts_at_the_content_edge() {
     s.screen = Screen::Transactions;
     s.tx_selected = 1;
     for width in [80, 120, 200] {
-        for mode in [DetailMode::InputsOutputs, DetailMode::ValueTransfers] {
+        for mode in [DetailMode::InputsOutputs, DetailMode::WalletEvents] {
             s.overlay = Overlay::TxDetail { mode };
             let out = render(&s, width, 40);
             let diagram = out
@@ -1190,7 +1445,7 @@ fn the_chrome_sits_on_the_left_edge_and_content_two_columns_in() {
 }
 
 /// A delegation bond: 0.0102 ZEC of Orchard locked into a bond, with a zero-value Orchard
-/// padding output. zingolib reports it as a bond creation worth 0.01, with one value transfer
+/// padding output. zingolib reports it as a bond creation worth 0.01, with one wallet event
 /// carrying that amount.
 fn bond() -> State {
     let mut s = populated();
@@ -1216,7 +1471,7 @@ fn bond() -> State {
         spend: SpendState::Unspent,
         scope: Some("Internal".into()),
     }];
-    tx.value_transfers = vec![ValueTransferRow {
+    tx.wallet_events = vec![WalletEventRow {
         kind: "bond created".into(),
         value: 1_000_000,
         recipient: None,
@@ -1263,10 +1518,10 @@ fn a_bond_names_itself_and_never_says_sent() {
 }
 
 #[test]
-fn value_transfers_show_their_amounts() {
+fn wallet_events_show_their_amounts() {
     let mut s = bond();
     s.overlay = Overlay::TxDetail {
-        mode: DetailMode::ValueTransfers,
+        mode: DetailMode::WalletEvents,
     };
     let out = render(&s, 100, 40);
     assert!(out.contains("bond created"));

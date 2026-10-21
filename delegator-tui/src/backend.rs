@@ -10,11 +10,17 @@ use std::collections::HashSet;
 use std::io::Read as _;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
+use std::str::FromStr as _;
+use std::str::FromStr as _;
+use std::str::FromStr as _;
+use std::str::FromStr as _;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use pepper_sync::keys::transparent::TransparentScope;
 use pepper_sync::sync::{ScanPriority, ScanRange};
-use pepper_sync::wallet::{OrchardNote, OutputInterface, SaplingNote, TransparentCoin};
+use pepper_sync::wallet::{
+    IronwoodNote, OrchardNote, OutputInterface, SaplingNote, TransparentCoin,
+};
 use tokio::sync::mpsc;
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::value::Zatoshis;
@@ -25,16 +31,17 @@ use zingolib::wallet::error::BalanceError;
 use zingolib::wallet::keys::unified::ReceiverSelection;
 use zingolib::wallet::output::SpendStatus;
 use zingolib::wallet::summary::data::{
-    SelfSendValueTransfer, SendType, SentValueTransfer, TransactionKind, TransactionSummary,
-    ValueTransfer, ValueTransferKind,
+    SelfSendWalletEvent, SendType, SentWalletEvent, TransactionKind, TransactionSummary,
+    WalletEvent, WalletEventKind,
 };
 use zingolib::wallet::{LightWallet, SeedDerivation, WalletBase, WalletSettings};
 
+use crate::app::RosterRow;
 use crate::app::{
-    Action, AddressKind, AddressRow, Balance, ChainRange, Command, Evidence, InputRow, KeyMaterial,
-    Network, OpenSpec, OutputRole, OutputRow, Pool, PoolBalance, RangePriority, SpendState,
-    SyncMode, SyncNote, Tip, TxKind, TxRow, TxStatus, ValueTransferRow, WalletData, WalletEntry,
-    WalletInfo, WalletKind,
+    Action, AddressKind, AddressRow, Balance, BondRow, BondStatus, ChainRange, Command, Evidence,
+    InputRow, KeyMaterial, Network, OpenSpec, OutputRole, OutputRow, Pool, PoolBalance,
+    RangePriority, SpendState, SyncMode, SyncNote, Tip, TxKind, TxRow, TxStatus, WalletData,
+    WalletEntry, WalletEventRow, WalletInfo, WalletKind,
 };
 
 /// Pause between the end of one sync session and the start of the next.
@@ -276,6 +283,14 @@ pub fn classify(
 /// network, `None` for an indexer the library does not list.
 fn network_of_indexer(uri: &http::Uri) -> Option<Result<Network, ()>> {
     let same = |a: &http::Uri| a.host() == uri.host() && a.port_u16() == uri.port_u16();
+    if let Some(network) = Network::ALL.into_iter().find(|network| {
+        network
+            .servers()
+            .iter()
+            .any(|s| parse_server(s).is_ok_and(|a| same(&a)))
+    }) {
+        return Some(Ok(network));
+    }
     IndexerList::builtin()
         .iter()
         .find(|(_, indexer)| same(&indexer.uri))
@@ -352,11 +367,22 @@ async fn fetch_tip(network: Network, server: http::Uri) -> Result<Tip, String> {
             }
         }
     }
+    // a node that serves no Ironwood tree state at the tip forces the birthday down to the
+    // activation height; a node that cannot be asked is treated the same, the safe side
+    let ironwood_tree =
+        match zingolib::grpc_connector::get_trees(server.clone(), u64::from(height)).await {
+            Ok(trees) => !trees.ironwood_tree.is_empty(),
+            Err(e) => {
+                tracing::warn!("cannot read the tree state at {height} from {server}: {e}");
+                false
+            }
+        };
     Ok(Tip {
         network,
         height,
         at_unix,
         spacing_secs,
+        ironwood_tree,
     })
 }
 
@@ -458,10 +484,13 @@ struct SyncSnapshot {
     birthday: Option<u32>,
     tip: Option<u32>,
     ranges: Vec<ChainRange>,
-    /// The engine's count of outputs from the birthday to the tip; zero until it has one.
+    /// Blocks from the birthday to the tip; from the engine's percentage when it has one,
+    /// else from the heights themselves. Zero until either is known.
+    total_blocks: u64,
+    scanned_blocks: u64,
+    /// Estimated from the percentage the engine reports; zero until it reports one.
     total_outputs: u64,
     scanned_outputs: u64,
-    scanned_blocks: u64,
     /// Every transaction the wallet knows, with whether it is confirmed.
     txs: Vec<(String, bool)>,
 }
@@ -481,8 +510,10 @@ struct Backend {
     session_pending: bool,
     known_txids: HashSet<String>,
     last: SyncSnapshot,
-    /// The bonded total from the last time the server answered.
-    last_staked: u64,
+    /// The bonds from the last time the server answered, shown again while it is silent.
+    last_bonds: Vec<BondRow>,
+    /// The roster from the last time the server answered.
+    last_roster: Vec<RosterRow>,
 }
 
 impl Backend {
@@ -500,7 +531,8 @@ impl Backend {
             session_pending: false,
             known_txids: HashSet::new(),
             last: SyncSnapshot::default(),
-            last_staked: 0,
+            last_bonds: Vec::new(),
+            last_roster: Vec::new(),
         }
     }
 
@@ -676,6 +708,146 @@ impl Backend {
                 self.send(Action::Shutdown);
                 return true;
             }
+            Command::Faucet { address } => {
+                let Some(lc) = self.lc.as_ref() else {
+                    return false;
+                };
+                let uri = lc.indexer_uri();
+                let actions = self.actions.clone();
+                tokio::spawn(async move {
+                    let _ = actions.send(Action::FaucetDone(request_faucet(uri, address).await));
+                });
+            }
+            Command::ProposeSend { to, amount, memo } => {
+                let result = match self.lc.as_mut() {
+                    Some(lc) => propose_send(lc, &to, amount, memo.as_deref()).await,
+                    None => Err("no wallet is open".into()),
+                };
+                self.send(Action::SendProposed(result));
+            }
+            Command::ConfirmSend => {
+                let result = match self.lc.as_mut() {
+                    Some(lc) => lc
+                        .send_stored_proposal(true)
+                        .await
+                        .map(|txids| txids.iter().map(|id| id.to_string()).collect())
+                        .map_err(|e| e.to_string()),
+                    None => Err("no wallet is open".into()),
+                };
+                self.send(Action::SendDone(result));
+                self.refresh().await;
+            }
+            Command::CancelSend => {
+                if let Some(lc) = self.lc.as_mut() {
+                    lc.wallet.write().await.clear_proposal();
+                    let _ignore = lc.resume_sync();
+                }
+            }
+            Command::Faucet { address } => {
+                let Some(lc) = self.lc.as_ref() else {
+                    return false;
+                };
+                let uri = lc.indexer_uri();
+                let actions = self.actions.clone();
+                tokio::spawn(async move {
+                    let _ = actions.send(Action::FaucetDone(request_faucet(uri, address).await));
+                });
+            }
+            Command::ProposeSend { to, amount, memo } => {
+                let result = match self.lc.as_mut() {
+                    Some(lc) => propose_send(lc, &to, amount, memo.as_deref()).await,
+                    None => Err("no wallet is open".into()),
+                };
+                self.send(Action::SendProposed(result));
+            }
+            Command::ConfirmSend => {
+                let result = match self.lc.as_mut() {
+                    Some(lc) => lc
+                        .send_stored_proposal(true)
+                        .await
+                        .map(|txids| txids.iter().map(|id| id.to_string()).collect())
+                        .map_err(|e| e.to_string()),
+                    None => Err("no wallet is open".into()),
+                };
+                self.send(Action::SendDone(result));
+                self.refresh().await;
+            }
+            Command::CancelSend => {
+                if let Some(lc) = self.lc.as_mut() {
+                    lc.wallet.write().await.clear_proposal();
+                    let _ignore = lc.resume_sync();
+                }
+            }
+            Command::Faucet { address } => {
+                let Some(lc) = self.lc.as_ref() else {
+                    return false;
+                };
+                let uri = lc.indexer_uri();
+                let actions = self.actions.clone();
+                tokio::spawn(async move {
+                    let _ = actions.send(Action::FaucetDone(request_faucet(uri, address).await));
+                });
+            }
+            Command::ProposeSend { to, amount, memo } => {
+                let result = match self.lc.as_mut() {
+                    Some(lc) => propose_send(lc, &to, amount, memo.as_deref()).await,
+                    None => Err("no wallet is open".into()),
+                };
+                self.send(Action::SendProposed(result));
+            }
+            Command::ConfirmSend => {
+                let result = match self.lc.as_mut() {
+                    Some(lc) => lc
+                        .send_stored_proposal(true)
+                        .await
+                        .map(|txids| txids.iter().map(|id| id.to_string()).collect())
+                        .map_err(|e| e.to_string()),
+                    None => Err("no wallet is open".into()),
+                };
+                self.send(Action::SendDone(result));
+                self.refresh().await;
+            }
+            Command::CancelSend => {
+                if let Some(lc) = self.lc.as_mut() {
+                    lc.wallet.write().await.clear_proposal();
+                    let _ignore = lc.resume_sync();
+                }
+            }
+            Command::Faucet { address } => {
+                let Some(lc) = self.lc.as_ref() else {
+                    return false;
+                };
+                let uri = lc.indexer_uri();
+                let actions = self.actions.clone();
+                tokio::spawn(async move {
+                    let _ = actions.send(Action::FaucetDone(request_faucet(uri, address).await));
+                });
+            }
+            Command::ProposeSend { to, amount, memo } => {
+                let result = match self.lc.as_mut() {
+                    Some(lc) => propose_send(lc, &to, amount, memo.as_deref()).await,
+                    None => Err("no wallet is open".into()),
+                };
+                self.send(Action::SendProposed(result));
+            }
+            Command::ConfirmSend => {
+                let result = match self.lc.as_mut() {
+                    Some(lc) => lc
+                        .send_stored_proposal(true)
+                        .await
+                        .map(|txids| txids.iter().map(|id| id.to_string()).collect())
+                        .map_err(|e| e.to_string()),
+                    None => Err("no wallet is open".into()),
+                };
+                self.send(Action::SendDone(result));
+                self.refresh().await;
+            }
+            Command::CancelSend => {
+                if let Some(lc) = self.lc.as_mut() {
+                    lc.wallet.write().await.clear_proposal();
+                    let _ignore = lc.resume_sync();
+                }
+            }
             Command::Copy(_) | Command::SaveTheme(_) | Command::ForceQuit => {}
         }
         false
@@ -714,6 +886,20 @@ impl Backend {
                     ));
                 }
                 let server_uri = self.config.server_uri(network, &name, server.as_deref())?;
+                // the same rule the create screen applies, for the command line's sake
+                let birthday = match fetch_tip(network, server_uri.clone()).await {
+                    Ok(tip) => {
+                        let settled = tip.settle_birthday(birthday);
+                        if settled != birthday {
+                            self.send(Action::Notice(format!(
+                                "{} keeps no Ironwood tree state · the wallet scans from block {settled}",
+                                server_uri
+                            )));
+                        }
+                        settled
+                    }
+                    Err(e) => return Err(e),
+                };
                 let config = self.config.client_config(network, &name, server_uri);
                 if let Some(server) = &server
                     && let Err(e) = self.config.save_server(network, &name, server)
@@ -766,6 +952,11 @@ impl Backend {
         self.wallet_name = name.clone();
         self.known_txids = known;
         self.last = SyncSnapshot::default();
+        // the block spacing, for turning the calendar's block counts into time
+        let spacing_secs = match fetch_tip(network, lc.indexer_uri()).await {
+            Ok(tip) => tip.spacing_secs,
+            Err(_) => network.block_spacing_secs(),
+        };
         let info = WalletInfo {
             network,
             wallet_name: name,
@@ -774,6 +965,7 @@ impl Backend {
             server: lc.indexer_uri().to_string(),
             has_orchard,
             kind,
+            spacing_secs,
         };
         if let Err(e) = self.config.save_meta(&info) {
             tracing::warn!("cannot write the wallet's meta file: {e}");
@@ -897,9 +1089,10 @@ impl Backend {
             self.sync_note(SyncNote::SessionStarted {
                 tip: now.tip.unwrap_or(0),
                 birthday: now.birthday.unwrap_or(0),
+                total_blocks: now.total_blocks,
+                scanned_blocks: now.scanned_blocks,
                 total_outputs: now.total_outputs,
                 scanned_outputs: now.scanned_outputs,
-                scanned_blocks: now.scanned_blocks,
             });
             // the session start cleared the plan; report it again below
             self.last.ranges.clear();
@@ -916,12 +1109,20 @@ impl Backend {
             self.dirty = true;
             self.sync_note(SyncNote::TipMoved { to });
         }
-        let progress = |s: &SyncSnapshot| (s.total_outputs, s.scanned_outputs, s.scanned_blocks);
+        let progress = |s: &SyncSnapshot| {
+            (
+                s.total_blocks,
+                s.scanned_blocks,
+                s.total_outputs,
+                s.scanned_outputs,
+            )
+        };
         if now.started && progress(&now) != progress(&self.last) {
             self.sync_note(SyncNote::Progress {
+                total_blocks: now.total_blocks,
+                scanned_blocks: now.scanned_blocks,
                 total_outputs: now.total_outputs,
                 scanned_outputs: now.scanned_outputs,
-                scanned_blocks: now.scanned_blocks,
             });
         }
         for (txid, confirmed) in &now.txs {
@@ -938,9 +1139,10 @@ impl Backend {
 
     async fn refresh(&mut self) {
         let Some(lc) = self.lc.as_ref() else { return };
-        match load(lc, self.last_staked).await {
+        match load(lc, &self.last_bonds, &self.last_roster).await {
             Ok(data) => {
-                self.last_staked = data.balance.staked;
+                self.last_bonds = data.bonds.clone();
+                self.last_roster = data.roster.clone();
                 self.send(Action::DataLoaded(data));
             }
             Err(e) => self.send(Action::Notice(format!("cannot read wallet: {e}"))),
@@ -982,12 +1184,22 @@ async fn snapshot(lc: &LightClient) -> SyncSnapshot {
         ..SyncSnapshot::default()
     };
     if let Some(status) = status {
-        let scanned = status.total_outputs_scanned;
+        let scanned_outputs = u64::from(status.total_sapling_outputs_scanned)
+            + u64::from(status.total_orchard_outputs_scanned)
+            + u64::from(status.total_ironwood_outputs_scanned);
+        let scanned_blocks = u64::from(status.total_blocks_scanned);
+        // the span from the birthday to the tip is the measure of progress; the engine
+        // reports no percentage here, so the heights themselves are the total
+        let total_blocks = match (birthday, tip) {
+            (Some(b), Some(t)) if t >= b => u64::from(t - b) + 1,
+            _ => 0,
+        };
         out.started = u32::from(status.sync_start_height) != 0;
         out.ranges = status.scan_ranges.iter().map(chain_range).collect();
-        out.total_outputs = status.total_outputs.max(scanned);
-        out.scanned_outputs = scanned;
-        out.scanned_blocks = u64::from(status.total_blocks_scanned);
+        out.total_blocks = total_blocks.max(scanned_blocks);
+        out.scanned_blocks = scanned_blocks;
+        out.total_outputs = 0;
+        out.scanned_outputs = scanned_outputs;
     }
     out
 }
@@ -1028,83 +1240,243 @@ fn pool_balance<Op: OutputInterface>(
     }
 }
 
-/// Value locked in the wallet's delegation bonds: the server's view of every bond the wallet
-/// created and has not withdrawn. The wallet lock is released before the server is asked, and
-/// `last` stands in when it cannot be reached.
-async fn staked(lc: &LightClient, last: u64) -> u64 {
-    use zcash_client_backend::proto::service::BondInfoRequest;
-    use zcash_primitives::transaction::StakingActionKind;
+/// Asks the faucet to pay `address`. The answer is what it sent, in zatoshis.
+async fn request_faucet(uri: http::Uri, address: String) -> Result<u64, String> {
+    use zcash_client_backend::proto::service::FaucetRequest;
 
-    let bonds: Vec<([u8; 32], u64)> = {
-        let wallet = lc.wallet.read().await;
-        let actions: Vec<_> = wallet
-            .wallet_transactions
-            .values()
-            .filter_map(|tx| tx.staking_data())
-            .collect();
-        let withdrawn: HashSet<[u8; 32]> = actions
-            .iter()
-            .filter(|a| a.kind() == StakingActionKind::WithdrawDelegationBond)
-            .map(|a| a.bond_key())
-            .collect();
-        // `bond_terms` is `Some` only for the kinds that mint a bond.
-        actions
-            .iter()
-            .filter(|a| !withdrawn.contains(&a.bond_key()))
-            .filter_map(|a| {
-                a.bond_terms()
-                    .map(|(_, amount_zats, _)| (a.bond_key(), amount_zats))
-            })
-            .collect()
-    };
-    if bonds.is_empty() {
-        return 0;
-    }
-    let mut client = match zingo_netutils::get_client(lc.indexer_uri()).await {
-        Ok(client) => client,
-        Err(e) => {
-            tracing::warn!("cannot ask the server about bonds: {e:?}");
-            return last;
-        }
-    };
-    let mut total = 0u64;
-    for (key, created_with) in bonds {
-        match client
-            .get_bond_info(BondInfoRequest {
-                bond_key: key.to_vec(),
-            })
-            .await
-        {
-            // 2 means withdrawn on chain, whatever the wallet has seen so far
-            Ok(info) => {
-                let info = info.into_inner();
-                if info.status != 2 {
-                    total = total.saturating_add(info.amount);
-                }
-            }
-            Err(e) => {
-                tracing::warn!("cannot read a bond, using its creation amount: {e}");
-                total = total.saturating_add(created_with);
-            }
-        }
-    }
-    total
+    let mut client = zingo_netutils::get_client(uri)
+        .await
+        .map_err(|e| format!("cannot reach the server: {e:?}"))?;
+    let answer = client
+        .request_faucet_donation(FaucetRequest { address })
+        .await
+        .map_err(|e| e.message().to_string())?;
+    Ok(answer.into_inner().amount)
 }
 
-/// Reads everything the screens show. `last_staked` is shown again if the server is silent.
-async fn load(lc: &LightClient, last_staked: u64) -> Result<WalletData, String> {
+/// Works out a send of `amount` zatoshis to `to` and stores it in the wallet for
+/// [`LightClient::send_stored_proposal`]. Sync pauses while a proposal is held. The answer is
+/// the fee and the total that leaves the wallet.
+async fn propose_send(
+    lc: &mut LightClient,
+    to: &str,
+    amount: u64,
+    memo: Option<&str>,
+) -> Result<(u64, u64), String> {
+    use zcash_protocol::memo::Memo;
+    use zingolib::data::receivers::{Receiver, transaction_request_from_receivers};
+    use zingolib::utils::conversion::address_from_str;
+
+    let recipient_address =
+        address_from_str(to).map_err(|_| "that is not a zcash address".to_string())?;
+    let amount_zats = Zatoshis::from_u64(amount).map_err(|_| "the amount is out of range")?;
+    let memo = match memo {
+        Some(text) => Some(
+            Memo::from_str(text)
+                .map_err(|e| format!("the memo cannot be used: {e}"))?
+                .encode(),
+        ),
+        None => None,
+    };
+    let request = transaction_request_from_receivers(vec![Receiver {
+        recipient_address,
+        amount: amount_zats,
+        memo,
+    }])
+    .map_err(|e| e.to_string())?;
+    let proposal = lc
+        .propose_send(request, zip32::AccountId::ZERO)
+        .await
+        .map_err(|e| e.to_string())?;
+    let fee: u64 = proposal
+        .steps()
+        .iter()
+        .map(|step| u64::from(step.balance().fee_required()))
+        .sum();
+    Ok((fee, amount.saturating_add(fee)))
+}
+
+/// The wallet's delegation bonds: every bond it created and has not withdrawn, with the
+/// server's word on where each stands. The wallet lock is released before the server is
+/// asked. When the server cannot be reached a bond keeps what `last` said about it, or its
+/// creation terms if it is new.
+async fn bonds(lc: &LightClient, last: &[BondRow]) -> (Vec<BondRow>, HashSet<[u8; 32]>) {
+    use zcash_client_backend::proto::service::BondInfoRequest;
+    use zcash_primitives::bft::PubKeyID;
+    use zcash_primitives::transaction::{StakingAction, StakingActionKind};
+
+    let hex = |bytes: [u8; 32]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    // the finalizer as its address, `zfinv1…`; a reward conversion carries the bare key only
+    let finalizer_of = |action: &StakingAction| {
+        action
+            .target_finalizer_address()
+            .map(|address| address.encode())
+            .unwrap_or_else(|| PubKeyID(action.target_finalizer_pk()).to_string())
+    };
+    /// A bond the wallet minted and has not withdrawn: its key, its finalizer as shown, the
+    /// finalizer's public key, the amount it was created with, the height of its last action.
+    type Known = ([u8; 32], String, [u8; 32], u64, u32);
+    // in creation order
+    let known: Vec<Known> = {
+        let wallet = lc.wallet.read().await;
+        let mut actions: Vec<_> = wallet
+            .wallet_transactions
+            .values()
+            .filter_map(|tx| {
+                tx.staking_data()
+                    .map(|action| (u32::from(tx.status().get_height()), action))
+            })
+            .collect();
+        actions.sort_by_key(|(height, _)| *height);
+        let withdrawn: HashSet<[u8; 32]> = actions
+            .iter()
+            .filter(|(_, a)| a.kind() == StakingActionKind::WithdrawDelegationBond)
+            .map(|(_, a)| a.bond_key())
+            .collect();
+        let mut known: Vec<Known> = Vec::new();
+        for (height, action) in &actions {
+            let key = action.bond_key();
+            if withdrawn.contains(&key) {
+                continue;
+            }
+            // `bond_terms` is `Some` only for the kinds that mint a bond
+            if let Some((_, amount, _)) = action.bond_terms() {
+                known.push((
+                    key,
+                    finalizer_of(action),
+                    action.target_finalizer_pk(),
+                    amount,
+                    *height,
+                ));
+            } else if let Some(bond) = known.iter_mut().find(|(k, ..)| *k == key) {
+                if action.kind() == StakingActionKind::RetargetDelegationBond {
+                    bond.1 = finalizer_of(action);
+                    bond.2 = action.target_finalizer_pk();
+                }
+                bond.4 = *height;
+            }
+        }
+        known
+    };
+    if known.is_empty() {
+        return (Vec::new(), HashSet::new());
+    }
+    let mut client = match zingo_netutils::get_client(lc.indexer_uri()).await {
+        Ok(client) => Some(client),
+        Err(e) => {
+            tracing::warn!("cannot ask the server about bonds: {e:?}");
+            None
+        }
+    };
+    let mut rows = Vec::new();
+    let mut finalizers = HashSet::new();
+    for (key, finalizer, finalizer_key, created_with, height) in known {
+        let key_hex = hex(key);
+        let remembered = last.iter().find(|b| b.key == key_hex);
+        let info = match client.as_mut() {
+            Some(client) => client
+                .get_bond_info(BondInfoRequest {
+                    bond_key: key.to_vec(),
+                })
+                .await
+                .map(|info| info.into_inner())
+                .map_err(|e| tracing::warn!("cannot read a bond: {e}"))
+                .ok(),
+            None => None,
+        };
+        let row = match info {
+            // 2 means withdrawn on chain, whatever the wallet has seen so far
+            Some(info) if info.status == 2 => continue,
+            Some(info) => BondRow {
+                key: key_hex,
+                finalizer: finalizer.clone(),
+                amount: info.amount,
+                status: if info.status == 1 {
+                    BondStatus::Unbonding
+                } else {
+                    BondStatus::Bonded
+                },
+                since: info.last_action_height.max(height),
+            },
+            None => match remembered {
+                Some(bond) => bond.clone(),
+                None => BondRow {
+                    key: key_hex,
+                    finalizer: finalizer.clone(),
+                    amount: created_with,
+                    status: BondStatus::Bonded,
+                    since: height,
+                },
+            },
+        };
+        finalizers.insert(finalizer_key);
+        rows.push(row);
+    }
+    (rows, finalizers)
+}
+
+/// The chain's finalizer roster as the node reports it, largest stake first, each marked when
+/// one of this wallet's bonds points at it. `last` stands in when the node is silent.
+async fn roster(lc: &LightClient, ours: &HashSet<[u8; 32]>, last: &[RosterRow]) -> Vec<RosterRow> {
+    use zcash_primitives::bft::PubKeyID;
+
+    let members = match lc.get_roster_info().await {
+        Ok(roster) => roster.members,
+        Err(e) => {
+            tracing::warn!("cannot read the roster: {e}");
+            return last.to_vec();
+        }
+    };
+    let mut rows: Vec<RosterRow> = members
+        .into_iter()
+        .map(|m| RosterRow {
+            finalizer: m
+                .finalizer_address
+                .map(|a| a.encode())
+                .unwrap_or_else(|| PubKeyID(m.pub_key).to_string()),
+            stake: m.voting_power,
+            ours: ours.contains(&m.pub_key),
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        b.stake
+            .cmp(&a.stake)
+            .then_with(|| a.finalizer.cmp(&b.finalizer))
+    });
+    rows
+}
+
+/// Reads everything the screens show. `last_bonds` and `last_roster` stand in if the server is
+/// silent.
+async fn load(
+    lc: &LightClient,
+    last_bonds: &[BondRow],
+    last_roster: &[RosterRow],
+) -> Result<WalletData, String> {
     let account = zip32::AccountId::ZERO;
     let balance = {
         let wallet = lc.wallet.read().await;
         Balance {
+            ironwood: pool_balance::<IronwoodNote>(&wallet, account),
             orchard: pool_balance::<OrchardNote>(&wallet, account),
             sapling: pool_balance::<SaplingNote>(&wallet, account),
             transparent: pool_balance::<TransparentCoin>(&wallet, account),
             staked: 0,
+            unbonding: 0,
         }
     };
+    let (bonds, ours) = bonds(lc, last_bonds).await;
+    let roster = roster(lc, &ours, last_roster).await;
+    let sum = |status: BondStatus| -> u64 {
+        bonds
+            .iter()
+            .filter(|b| b.status == status)
+            .map(|b| b.amount)
+            .fold(0, u64::saturating_add)
+    };
     let balance = Balance {
-        staked: staked(lc, last_staked).await,
+        staked: sum(BondStatus::Bonded),
+        unbonding: sum(BondStatus::Unbonding),
         ..balance
     };
 
@@ -1112,14 +1484,14 @@ async fn load(lc: &LightClient, last_staked: u64) -> Result<WalletData, String> 
         .transaction_summaries(false)
         .await
         .map_err(|e| e.to_string())?;
-    let transfers = lc.value_transfers(false).await.map_err(|e| e.to_string())?;
-    let mut by_txid: std::collections::HashMap<String, Vec<ValueTransferRow>> =
+    let transfers = lc.wallet_events(false).await.map_err(|e| e.to_string())?;
+    let mut by_txid: std::collections::HashMap<String, Vec<WalletEventRow>> =
         std::collections::HashMap::new();
     for transfer in transfers.iter() {
         by_txid
             .entry(transfer.txid.to_string())
             .or_default()
-            .push(value_transfer_row(transfer));
+            .push(wallet_event_row(transfer));
     }
     let mut index = output_index(lc).await;
     let mut txs: Vec<TxRow> = summaries
@@ -1169,6 +1541,8 @@ async fn load(lc: &LightClient, last_staked: u64) -> Result<WalletData, String> 
     Ok(WalletData {
         balance,
         txs,
+        bonds,
+        roster,
         addresses,
     })
 }
@@ -1185,12 +1559,13 @@ struct OutputIndex {
 
 /// Walks every wallet output once, in every pool, to build [`OutputIndex`].
 async fn output_index(lc: &LightClient) -> OutputIndex {
-    use pepper_sync::wallet::{OrchardNote, SaplingNote};
+    use pepper_sync::wallet::{IronwoodNote, OrchardNote, SaplingNote};
 
     let wallet = lc.wallet.read().await;
     let mut index = OutputIndex::default();
 
     let pools = [
+        (Pool::Ironwood, wallet.note_summaries::<IronwoodNote>(true)),
         (Pool::Orchard, wallet.note_summaries::<OrchardNote>(true)),
         (Pool::Sapling, wallet.note_summaries::<SaplingNote>(true)),
     ];
@@ -1269,7 +1644,7 @@ fn tx_kind(kind: TransactionKind) -> TxKind {
 
 fn tx_row(
     s: &TransactionSummary,
-    transfers: &mut std::collections::HashMap<String, Vec<ValueTransferRow>>,
+    transfers: &mut std::collections::HashMap<String, Vec<WalletEventRow>>,
     index: &mut OutputIndex,
 ) -> TxRow {
     let txid = s.txid.to_string();
@@ -1290,6 +1665,7 @@ fn tx_row(
     };
     let mut received = Vec::new();
     let notes = [
+        (Pool::Ironwood, &s.ironwood_notes),
         (Pool::Orchard, &s.orchard_notes),
         (Pool::Sapling, &s.sapling_notes),
     ];
@@ -1322,6 +1698,7 @@ fn tx_row(
 
     let mut outgoing = Vec::new();
     let notes = [
+        (Pool::Ironwood, &s.outgoing_ironwood_notes),
         (Pool::Orchard, &s.outgoing_orchard_notes),
         (Pool::Sapling, &s.outgoing_sapling_notes),
     ];
@@ -1365,7 +1742,7 @@ fn tx_row(
     let outputs = crate::app::roles::assign_roles(kind, received, outgoing);
 
     TxRow {
-        value_transfers: transfers.remove(&txid).unwrap_or_default(),
+        wallet_events: transfers.remove(&txid).unwrap_or_default(),
         txid,
         datetime: s.datetime,
         height: u32::from(s.blockheight),
@@ -1378,22 +1755,22 @@ fn tx_row(
     }
 }
 
-fn value_transfer_row(transfer: &ValueTransfer) -> ValueTransferRow {
+fn wallet_event_row(transfer: &WalletEvent) -> WalletEventRow {
     let kind = match transfer.kind {
-        ValueTransferKind::Received => "received",
-        ValueTransferKind::Sent(SentValueTransfer::Send) => "sent",
-        ValueTransferKind::Sent(SentValueTransfer::SendToSelf(to_self)) => match to_self {
-            SelfSendValueTransfer::Basic => "sent to self",
-            SelfSendValueTransfer::Shield => "shield",
-            SelfSendValueTransfer::MemoToSelf => "memo to self",
-            SelfSendValueTransfer::Refund => "refund",
-            SelfSendValueTransfer::Stake => "bond created",
-            SelfSendValueTransfer::BeginUnbond => "unbond begun",
-            SelfSendValueTransfer::WithdrawBond => "bond withdrawn",
-            SelfSendValueTransfer::RetargetDelegationBond => "bond retargeted",
+        WalletEventKind::Received => "received",
+        WalletEventKind::Sent(SentWalletEvent::Send) => "sent",
+        WalletEventKind::Sent(SentWalletEvent::SendToSelf(to_self)) => match to_self {
+            SelfSendWalletEvent::Basic => "sent to self",
+            SelfSendWalletEvent::Shield => "shield",
+            SelfSendWalletEvent::MemoToSelf => "memo to self",
+            SelfSendWalletEvent::Refund => "refund",
+            SelfSendWalletEvent::Stake => "bond created",
+            SelfSendWalletEvent::BeginUnbond => "unbond begun",
+            SelfSendWalletEvent::WithdrawBond => "bond withdrawn",
+            SelfSendWalletEvent::RetargetDelegationBond => "bond retargeted",
         },
     };
-    ValueTransferRow {
+    WalletEventRow {
         kind: kind.to_string(),
         value: transfer.value,
         recipient: transfer.recipient_address.clone(),
@@ -1502,6 +1879,323 @@ mod tests {
             Ok(Err(e)) => eprintln!("SYNC ERR: {e}\nDEBUG: {e:?}"),
             Err(_) => eprintln!("SYNC STILL RUNNING after 120s"),
         }
+    }
+
+    /// Opens a copy of the wallet named by `DELEGATOR_PROBE_WALLET` against the stable node,
+    /// prints what it holds, asks the faucet to pay its address when `DELEGATOR_PROBE_FAUCET`
+    /// is set, and watches the mempool and the tip for a minute. Network, ignored.
+    #[tokio::test]
+    #[ignore = "needs the network and a wallet file"]
+    async fn probe_faucet() {
+        use zcash_client_backend::proto::service::{
+            BlockId, ChainSpec, Empty, GetMempoolTxRequest,
+        };
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let source = std::env::var("DELEGATOR_PROBE_WALLET").expect("DELEGATOR_PROBE_WALLET");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::copy(&source, dir.path().join("probe.dat")).unwrap();
+        let config = BackendConfig {
+            data_dir: Some(dir.path().to_path_buf()),
+            server: std::env::var("DELEGATOR_PROBE_SERVER").ok(),
+            seed_derivation: SeedDerivation::Zip32Standard,
+        };
+        let uri = config.server_uri(Network::Stable, "probe", None).unwrap();
+        eprintln!("server {uri}");
+        let mut client = zingo_netutils::get_client(uri.clone())
+            .await
+            .expect("connect");
+        let info = client.get_lightd_info(Empty {}).await.unwrap().into_inner();
+        eprintln!(
+            "node: chain {} height {} consensus {} version {}",
+            info.chain_name, info.block_height, info.consensus_branch_id, info.version
+        );
+        // the mempool as the node streams it: how many transactions, and what each carries
+        async fn mempool(uri: http::Uri) -> usize {
+            let Ok(mut client) = zingo_netutils::get_client(uri).await else {
+                eprintln!("  mempool: cannot connect");
+                return 0;
+            };
+            let mut n = 0usize;
+            match client
+                .get_mempool_tx(GetMempoolTxRequest {
+                    exclude_txid_suffixes: Vec::new(),
+                    pool_types: Vec::new(),
+                })
+                .await
+            {
+                Ok(stream) => {
+                    let mut stream = stream.into_inner();
+                    loop {
+                        match stream.message().await {
+                            Ok(Some(tx)) => {
+                                n += 1;
+                                eprintln!(
+                                    "  mempool tx {} actions {} ironwood {}",
+                                    hex_of(&tx.txid),
+                                    tx.actions.len(),
+                                    tx.ironwood_actions.len()
+                                );
+                            }
+                            Ok(None) => break,
+                            Err(e) => {
+                                eprintln!("  mempool stream error: {e}");
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(e) => eprintln!("  mempool request failed: {e}"),
+            }
+            n
+        }
+        eprintln!("mempool: {} transactions", mempool(uri.clone()).await);
+        let tip = client
+            .get_block(BlockId {
+                height: info.block_height,
+                hash: Vec::new(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        eprintln!(
+            "tip block {} time {} ({} s ago), {} txs",
+            tip.height,
+            tip.time,
+            now.saturating_sub(u64::from(tip.time)),
+            tip.vtx.len()
+        );
+        for host in Network::Stable.servers() {
+            let Ok(other) = parse_server(&host) else {
+                continue;
+            };
+            match zingo_netutils::get_client(other).await {
+                Ok(mut c) => match c.get_lightd_info(Empty {}).await {
+                    Ok(i) => eprintln!("{host}: height {}", i.into_inner().block_height),
+                    Err(e) => eprintln!("{host}: {}", e.message()),
+                },
+                Err(e) => eprintln!("{host}: cannot connect: {e:?}"),
+            }
+        }
+        let tip = client
+            .get_block(BlockId {
+                height: info.block_height,
+                hash: Vec::new(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        eprintln!(
+            "tip block {} time {} ({} s ago), {} txs",
+            tip.height,
+            tip.time,
+            now.saturating_sub(u64::from(tip.time)),
+            tip.vtx.len()
+        );
+        for host in Network::Stable.servers() {
+            let Ok(other) = parse_server(&host) else {
+                continue;
+            };
+            match zingo_netutils::get_client(other).await {
+                Ok(mut c) => match c.get_lightd_info(Empty {}).await {
+                    Ok(i) => eprintln!("{host}: height {}", i.into_inner().block_height),
+                    Err(e) => eprintln!("{host}: {}", e.message()),
+                },
+                Err(e) => eprintln!("{host}: cannot connect: {e:?}"),
+            }
+        }
+
+        let zc = config.client_config(Network::Stable, "probe", uri.clone());
+        let mut lc = LightClient::create_from_wallet_path(zc).unwrap();
+        let (address, synced) = {
+            let wallet = lc.wallet.read().await;
+            eprintln!("wallet birthday {}", wallet.birthday);
+            eprintln!(
+                "synced to {:?}, tip known {:?}",
+                wallet.sync_state.wallet_birthday(),
+                wallet.sync_state.last_known_chain_height()
+            );
+            let mut address = None;
+            for (id, ua) in wallet.unified_addresses() {
+                let enc = ua.encode(&wallet.network);
+                eprintln!(
+                    "address #{} orchard={} sapling={} transparent={} {}",
+                    id.address_index,
+                    ua.has_orchard(),
+                    ua.has_sapling(),
+                    ua.has_transparent(),
+                    enc
+                );
+                if ua.has_orchard() {
+                    address = Some(enc);
+                }
+            }
+            eprintln!("transactions known: {}", wallet.wallet_transactions.len());
+            (address, wallet.wallet_blocks.len())
+        };
+        eprintln!("wallet blocks held: {synced}");
+        let data = load(&lc, &[], &[]).await.unwrap();
+        eprintln!(
+            "balance: ironwood {} orchard {} sapling {} transparent {} (pending {})",
+            data.balance.ironwood.total(),
+            data.balance.orchard.total(),
+            data.balance.sapling.total(),
+            data.balance.transparent.total(),
+            data.balance.pending()
+        );
+        for tx in &data.txs {
+            eprintln!(
+                "  tx {} {:?} {} {:?}",
+                tx.txid, tx.kind, tx.value, tx.status
+            );
+        }
+
+        if std::env::var("DELEGATOR_PROBE_FAUCET").is_ok() {
+            let address = address.expect("an orchard address");
+            eprintln!("asking the faucet for {address}");
+            match request_faucet(uri.clone(), address).await {
+                Ok(amount) => eprintln!("faucet answered: {amount} zats"),
+                Err(e) => eprintln!("faucet error: {e}"),
+            }
+            let start = client
+                .get_latest_block(ChainSpec {})
+                .await
+                .unwrap()
+                .into_inner()
+                .height;
+            for i in 0..12 {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let tip = client
+                    .get_latest_block(ChainSpec {})
+                    .await
+                    .unwrap()
+                    .into_inner()
+                    .height;
+                eprintln!("t+{}s tip {tip}", (i + 1) * 5);
+                let n = mempool(uri.clone()).await;
+                eprintln!("  mempool: {n}");
+                for h in (start + 1)..=tip {
+                    if let Ok(block) = client
+                        .get_block(BlockId {
+                            height: h,
+                            hash: Vec::new(),
+                        })
+                        .await
+                    {
+                        let block = block.into_inner();
+                        eprintln!(
+                            "  block {h}: {} txs, ironwood actions {}",
+                            block.vtx.len(),
+                            block
+                                .vtx
+                                .iter()
+                                .map(|t| t.ironwood_actions.len())
+                                .sum::<usize>()
+                        );
+                    }
+                }
+            }
+            match tokio::time::timeout(Duration::from_secs(90), lc.sync_and_await()).await {
+                Ok(Ok(r)) => eprintln!("SYNC OK: {r:?}"),
+                Ok(Err(e)) => eprintln!("SYNC ERR: {e}"),
+                Err(_) => eprintln!("SYNC STILL RUNNING"),
+            }
+            let data = load(&lc, &[], &[]).await.unwrap();
+            eprintln!(
+                "after: ironwood {} orchard {} pending {} txs {}",
+                data.balance.ironwood.total(),
+                data.balance.orchard.total(),
+                data.balance.pending(),
+                data.txs.len()
+            );
+        }
+    }
+
+    /// Asks every known crosslink node for its tip and how old that block is. Network, ignored.
+    #[tokio::test]
+    #[ignore = "needs the network"]
+    async fn probe_every_node() {
+        use zcash_client_backend::proto::service::{BlockId, Empty};
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut hosts: Vec<(String, String)> = Vec::new();
+        for network in Network::ALL {
+            for host in network.servers() {
+                hosts.push((network.name().to_string(), host));
+            }
+        }
+        for (network, indexer) in IndexerList::builtin().iter() {
+            let uri = indexer.uri.to_string().trim_end_matches('/').to_string();
+            if !hosts.iter().any(|(_, h)| *h == uri) {
+                hosts.push((format!("builtin {network}"), uri));
+            }
+        }
+        for (label, host) in hosts {
+            let Ok(uri) = parse_server(&host) else {
+                continue;
+            };
+            let mut client =
+                match tokio::time::timeout(Duration::from_secs(8), zingo_netutils::get_client(uri))
+                    .await
+                {
+                    Ok(Ok(c)) => c,
+                    Ok(Err(e)) => {
+                        eprintln!("{label:<22} {host:<34} cannot connect: {e:?}");
+                        continue;
+                    }
+                    Err(_) => {
+                        eprintln!("{label:<22} {host:<34} connect timed out");
+                        continue;
+                    }
+                };
+            let info = match tokio::time::timeout(
+                Duration::from_secs(8),
+                client.get_lightd_info(Empty {}),
+            )
+            .await
+            {
+                Ok(Ok(i)) => i.into_inner(),
+                Ok(Err(e)) => {
+                    eprintln!("{label:<22} {host:<34} info failed: {}", e.message());
+                    continue;
+                }
+                Err(_) => {
+                    eprintln!("{label:<22} {host:<34} info timed out");
+                    continue;
+                }
+            };
+            let age = match client
+                .get_block(BlockId {
+                    height: info.block_height,
+                    hash: Vec::new(),
+                })
+                .await
+            {
+                Ok(b) => format!(
+                    "{} s ago",
+                    now.saturating_sub(u64::from(b.into_inner().time))
+                ),
+                Err(e) => format!("block failed: {}", e.message()),
+            };
+            eprintln!(
+                "{label:<22} {host:<34} chain {:<8} height {:<8} tip {age}  branch {}",
+                info.chain_name, info.block_height, info.consensus_branch_id
+            );
+        }
+    }
+
+    fn hex_of(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     #[test]
@@ -1640,6 +2334,7 @@ mod tests {
                 birthday: 2_604_500,
                 server: String::new(),
                 has_orchard: true,
+                spacing_secs: 15,
                 kind: WalletKind::Watch,
             })
             .unwrap();

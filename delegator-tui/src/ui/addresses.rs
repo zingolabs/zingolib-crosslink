@@ -62,6 +62,7 @@ fn receivers(a: &AddressRow, t: &Theme) -> Line<'static> {
         // the type column already says transparent; there is nothing more to say
         return Line::default();
     };
+    // an address has no Ironwood receiver of its own: the Orchard one takes Ironwood notes too
     let pools = [
         (orchard, Pool::Orchard),
         (sapling, Pool::Sapling),

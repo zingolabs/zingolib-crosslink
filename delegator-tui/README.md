@@ -12,7 +12,10 @@ cargo run --release -p delegator-tui
 
 It knows two chains, the crosslink featurenet (`stable`, the live chain) and the crosslink
 `nightly`, and nothing else: wallet files for mainnet, the public Zcash testnet, or regtest are
-never listed. `--network` picks the chain for new wallets and their indexers; `--fake` runs on
+never listed. `--network` picks the chain for new wallets and their indexers: the stable
+chain's are the three nodes Shielded Labs hands out for it, `45.63.75.9`, `70.34.220.94` and
+`64.177.44.176` on port 18234, the nightly chain's come from zingolib's built-in list, and
+`--server` overrides either. `--fake` runs on
 a made-up wallet with no network at all, to look at every screen.
 
 ## The first screen
@@ -23,7 +26,11 @@ one. `n`, or the last row, starts the setup menu: create a new wallet, restore f
 phrase, or watch with a viewing key. A seed phrase or a viewing key pasted on the list or the
 menu goes straight to the matching branch. With no wallets yet the menu comes first.
 
-- **Create** shows the 24 words, the birthday in big digits, and the seed's sigil. `Enter`
+- **Create** shows the 24 words, the birthday, and the seed's sigil. The birthday is a hundred
+  blocks under the tip, unless the indexer serves no Ironwood tree state there: then it is the
+  pool's activation height, block 1, so the wallet can rebuild the tree from scanned blocks.
+  The same rule settles a birthday typed on restore or watch, and one given on the command
+  line. `Enter`
   writes the wallet; there is no check that the words were written down. `r` shows the words
   on one line, `y` copies the birthday (never the words).
 - **Restore** takes the words typed or pasted; a number after them is read as the birthday,
@@ -64,14 +71,14 @@ colour theme, `?` opens the key list, and `q` quits after saving.
 Home shows the spendable balance across the Orchard, Sapling, and transparent pools, and the
 amount locked in delegation bonds beneath it. Bond transactions appear in the list as
 `bond created`, `unbond begun`, `bond withdrawn`, and `bond retargeted`. A transaction's detail
-view switches between its inputs and outputs and its value transfers with `v`.
+view switches between its inputs and outputs and its wallet events with `v`.
 
 ## Look
 
 The first-run screens are laid out like zingolib-tui's wizard, a title row with the step
 count on the right, a rule under it, the body two columns in, and dressed after athanor's
 lockscreen: prompts that speak (`@ paste the viewing key:`), input boxes in a double gold
-frame, the birthday in big digits, a sigil for each key (an 8×8 glyph from a hash of it,
+frame, a sigil for each key (an 8×8 glyph from a hash of it,
 mirrored so it reads as a figure), and a roguelike status line. With 110 columns and 30 rows
 or more, lwtui's dither field fills the left of the screen like a lake; on smaller terminals it
 runs in the free rows under the content. `--dither braille` draws it in dots, `--dither off`
@@ -81,6 +88,13 @@ with the shimmering title, a status mark and the screen names; a pane with a rul
 dim key hints on the last line; the field in the free part of the home screen.
 
 The default theme is [srcery](https://srcery.sh/).
+
+The big digits of the balance on a tall home screen are
+[Jacquard 24](https://fonts.google.com/specimen/Jacquard+24), the pixel blackletter by the
+Soft Type Project, rasterised at its native size into half-block cells: eight rows tall, with
+its old-style figures hanging below and rising above the line. The face is under the SIL Open
+Font License 1.1; the bitmaps in `ui/jacquard.rs` derive from it. On terminals under thirty
+rows the balance keeps the small three-row glyphs.
 
 ## Faker mode
 

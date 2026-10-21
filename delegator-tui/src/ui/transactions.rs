@@ -23,9 +23,10 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
     draw_list(frame, inset(area), state, t, true);
 }
 
-/// The transaction list shared by Home and Transactions: when, how much, what kind of
-/// transaction it was, its memo, and a flag only if it is not settled. The kind and the memo
-/// have a column each, so one never stands in for the other. `with_time` adds the time of day.
+/// The transaction list shared by Home and Transactions: when, what kind of event it was,
+/// how much, its memo, and a flag only if it is not settled. The kind comes first and in bold,
+/// in its colour: it is what the row is about. The kind and the memo have a column each, so
+/// one never stands in for the other. `with_time` adds the time of day.
 pub fn draw_list(frame: &mut Frame, area: Rect, state: &State, t: &Theme, with_time: bool) {
     let kind_width = state
         .txs
@@ -43,13 +44,14 @@ pub fn draw_list(frame: &mut Frame, area: Rect, state: &State, t: &Theme, with_t
         } else {
             format::date(tx.datetime)
         };
+        let style = kind_style(tx.kind, t);
         Row::new(vec![
             Cell::from(Span::styled(when, t.muted)),
-            Cell::from(
-                Line::from(Span::styled(amount(tx), kind_style(tx.kind, t)))
-                    .alignment(Alignment::Right),
-            ),
-            Cell::from(Span::styled(tx.kind.long(), t.muted)),
+            Cell::from(Span::styled(
+                tx.kind.long(),
+                style.add_modifier(Modifier::BOLD),
+            )),
+            Cell::from(Line::from(Span::styled(amount(tx), style)).alignment(Alignment::Right)),
             Cell::from(Span::styled(memo, t.text.add_modifier(Modifier::ITALIC))),
             Cell::from(
                 Line::from(Span::styled(flag(tx), status_style(tx.status, t)))
@@ -61,8 +63,8 @@ pub fn draw_list(frame: &mut Frame, area: Rect, state: &State, t: &Theme, with_t
         rows,
         [
             Constraint::Length(if with_time { 16 } else { 10 }),
-            Constraint::Length(14),
             Constraint::Length(kind_width),
+            Constraint::Length(14),
             Constraint::Fill(1),
             Constraint::Length(7),
         ],
@@ -156,10 +158,10 @@ pub fn draw_detail(frame: &mut Frame, area: Rect, state: &State, t: &Theme, mode
     lines.push(kv_styled(t, "txid", tx.txid.clone(), t.info));
     lines.push(Line::from(""));
     lines.push(tabs(
-        &["Inputs and outputs", "Value transfers"],
+        &["Inputs and outputs", "Wallet events"],
         match mode {
             DetailMode::InputsOutputs => 0,
-            DetailMode::ValueTransfers => 1,
+            DetailMode::WalletEvents => 1,
         },
         t,
         false,
@@ -279,13 +281,13 @@ pub fn draw_detail(frame: &mut Frame, area: Rect, state: &State, t: &Theme, mode
                 }
             }
         }
-        DetailMode::ValueTransfers => {
-            lines.extend(value_transfer_flow(tx, width, t));
+        DetailMode::WalletEvents => {
+            lines.extend(wallet_event_flow(tx, width, t));
             lines.push(Line::from(""));
-            if tx.value_transfers.is_empty() {
-                lines.push(Line::styled("no value transfers", t.muted));
+            if tx.wallet_events.is_empty() {
+                lines.push(Line::styled("no wallet events", t.muted));
             }
-            for event in &tx.value_transfers {
+            for event in &tx.wallet_events {
                 let mut spans = vec![
                     Span::raw("  "),
                     Span::styled(format!("{:<14}", event.kind), event_style(&event.kind, t)),
@@ -443,9 +445,9 @@ fn inputs_outputs_flow(tx: &TxRow, width: usize, t: &Theme) -> Vec<Line<'static>
 }
 
 /// Value coming in on the left, value going out on the right.
-fn value_transfer_flow(tx: &TxRow, width: usize, t: &Theme) -> Vec<Line<'static>> {
+fn wallet_event_flow(tx: &TxRow, width: usize, t: &Theme) -> Vec<Line<'static>> {
     let (incoming, outgoing): (Vec<_>, Vec<_>) = tx
-        .value_transfers
+        .wallet_events
         .iter()
         .partition(|event| event.kind.eq_ignore_ascii_case("received"));
     let kind_w = widest(incoming.iter().map(|event| event.kind.clone()));

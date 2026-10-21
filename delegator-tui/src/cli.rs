@@ -75,6 +75,6 @@ pub struct Cli {
     /// The drifting dither field in the empty part of the screen: blocks (shade characters),
     /// braille (finer dots, where the terminal font has them), or off. Needs 24-bit colour and
     /// a palette theme; a flat screen otherwise.
-    #[arg(long, default_value = "blocks", value_parser = ["blocks", "braille", "off"])]
+    #[arg(long, default_value = "braille", value_parser = ["blocks", "braille", "off"])]
     pub dither: String,
 }
