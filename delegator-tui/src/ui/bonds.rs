@@ -1,4 +1,5 @@
-//! Bonds: every finalizer the wallet has funds at stake with.
+//! Bonds and finalizers: the bonds screen lists the wallet's own delegations; the
+//! finalizers screen lists every finalizer on the chain, largest stake first.
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -6,35 +7,24 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState};
 
-use super::{home, inset, note};
+use super::{home, inset};
 use crate::app::{BondStatus, State};
 use crate::format;
 use crate::theme::Theme;
 
+/// The Bonds screen: what this wallet has at stake, and each of its bonds.
 pub fn draw(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
-    if state.bonds.is_empty() && state.roster.is_empty() {
-        note(
-            frame,
-            area,
-            "No bonds yet. Funds staked with a finalizer appear here, with the chain's finalizers.",
-            t,
-        );
-        return;
-    }
     let area = inset(area);
     let top = home::stake_lines(state, t);
-    // the wallet's bonds take the rows they need; the roster has the rest
     let bonds_rows = if state.bonds.is_empty() {
         1
     } else {
         state.bonds.len() as u16 + 1
     };
-    let [top_area, _, bonds_area, _, roster_title, roster_area] = Layout::vertical([
+    let [top_area, _, bonds_area, rest] = Layout::vertical([
         Constraint::Length(top.len() as u16),
         Constraint::Length(1),
         Constraint::Length(bonds_rows),
-        Constraint::Length(1),
-        Constraint::Length(1),
         Constraint::Fill(1),
     ])
     .areas(area);
@@ -51,7 +41,43 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
     } else {
         bonds_table(frame, bonds_area, state, t);
     }
-    roster(frame, roster_title, roster_area, state, t);
+    // the wallet's stake on this chain, wherever it is delegated: the chain's own
+    // finalizer list has its screen under `f`
+    if !state.roster.is_empty() {
+        let total: u64 = state
+            .roster
+            .iter()
+            .map(|r| r.stake)
+            .fold(0, u64::saturating_add);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("the chain ", t.muted),
+                Span::styled(format!("{} ZEC", format::zec(total)), t.text),
+                Span::styled(
+                    format!(
+                        " at stake across {}",
+                        match state.roster.len() {
+                            1 => "one finalizer".to_string(),
+                            n => format!("{n} finalizers"),
+                        }
+                    ),
+                    t.muted,
+                ),
+                Span::styled("  ·  press f for the list", t.muted),
+            ])),
+            rest,
+        );
+    }
+}
+
+/// The Finalizers screen: every finalizer on the chain, largest stake first, with the stake
+/// delegated to each and its share of the whole. A mark leads the ones this wallet has a bond
+/// with.
+pub fn draw_finalizers(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
+    let area = inset(area);
+    let [heading_area, roster_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+    roster(frame, heading_area, roster_area, state, t);
 }
 
 /// The wallet's bonds: finalizer, amount, standing, height of the last action.
@@ -92,13 +118,13 @@ fn bonds_table(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
 
 /// Every finalizer on the chain, largest stake first: its address, the stake with it, and that
 /// stake's share of the whole. A mark leads the ones this wallet has a bond with.
-fn roster(frame: &mut Frame, title: Rect, area: Rect, state: &State, t: &Theme) {
+fn roster(frame: &mut Frame, heading_area: Rect, area: Rect, state: &State, t: &Theme) {
     let total: u64 = state
         .roster
         .iter()
         .map(|r| r.stake)
         .fold(0, u64::saturating_add);
-    let heading = if state.roster.is_empty() {
+    let heading_line = if state.roster.is_empty() {
         Line::styled("Finalizers  the node has not answered yet", t.muted)
     } else {
         Line::from(vec![
@@ -116,7 +142,7 @@ fn roster(frame: &mut Frame, title: Rect, area: Rect, state: &State, t: &Theme) 
             ),
         ])
     };
-    frame.render_widget(Paragraph::new(heading), title);
+    frame.render_widget(Paragraph::new(heading_line), heading_area);
     if state.roster.is_empty() {
         return;
     }

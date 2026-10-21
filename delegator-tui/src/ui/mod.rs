@@ -265,7 +265,7 @@ fn draw_main(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
             Screen::Home => home::draw(frame, body, state, t),
             Screen::Transactions => transactions::draw(frame, body, state, t),
             Screen::Bonds => bonds::draw(frame, body, state, t),
-            Screen::Finalizers => bonds::draw(frame, body, state, t),
+            Screen::Finalizers => bonds::draw_finalizers(frame, body, state, t),
             Screen::Receive => receive::draw(frame, body, state, t),
             Screen::Addresses => addresses::draw(frame, body, state, t),
             Screen::Sync => sync::draw(frame, body, state, t),

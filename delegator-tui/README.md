@@ -64,9 +64,10 @@ blocks yet keep the chain chosen on the menu.
 
 ## Screens and keys
 
-Home, Transactions, Receive, Addresses, and Sync. Each opens with the first letter of its name,
-from anywhere: `h` `t` `r` `a` `s`. `j` `k` move, `Enter` opens, `Esc` goes back, `c` picks a
-colour theme, `?` opens the key list, and `q` quits after saving.
+Home, Transactions, Bonds, Finalizers, Receive, Addresses, and Sync. Each opens with the first
+letter of its name, from anywhere: `h` `t` `b` `f` `r` `a` `s`. `j` `k` move, `Enter` opens,
+`Esc` goes back, `c` picks a colour theme, `?` opens the key list, and `q` quits after saving.
+Capital `F` asks the chain's faucet for test funds; lowercase `f` is the finalizers list.
 
 Home shows the spendable balance across the Orchard, Sapling, and transparent pools, and the
 amount locked in delegation bonds beneath it. Bond transactions appear in the list as

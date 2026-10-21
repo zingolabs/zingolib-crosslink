@@ -853,10 +853,16 @@ fn empty_wallet_has_friendly_messages() {
     let out = render(&s, 80, 24);
     assert!(out.contains("No bonds yet."));
     assert!(
-        out.contains("Finalizers"),
-        "the roster still shows with no bonds"
+        out.contains("press f for the list"),
+        "the empty bonds screen points at the finalizers screen"
+    );
+    s.screen = Screen::Finalizers;
+    assert!(
+        render(&s, 80, 24).contains("Finalizers"),
+        "the roster still shows on its own screen"
     );
     s.roster.clear();
+    s.screen = Screen::Bonds;
     assert!(render(&s, 80, 24).contains("No bonds yet."));
 }
 
@@ -928,7 +934,7 @@ fn every_screen_shows_the_staking_calendar() {
 }
 
 #[test]
-fn bonds_lists_every_finalizer_with_its_standing() {
+fn bonds_lists_the_wallets_own_delegations() {
     let mut s = populated();
     s.screen = Screen::Bonds;
     let out = render(&s, 100, 40);
@@ -943,6 +949,19 @@ fn bonds_lists_every_finalizer_with_its_standing() {
     );
     assert!(out.contains("bonded"));
     assert!(out.contains("unbonding"));
+    // the chain's roster is not on this screen: it has its own
+    assert!(
+        !out.contains("● zfinv1cdcd"),
+        "the global finalizer list is not the bonds screen"
+    );
+}
+
+#[test]
+fn finalizers_lists_every_finalizer_with_its_standing() {
+    let mut s = populated();
+    s.screen = Screen::Finalizers;
+    let out = render(&s, 100, 40);
+    assert!(out.contains("finalizer"), "a header names the columns");
     // the roster: everyone's stake, its share, ours marked
     assert!(
         out.contains("100 ZEC at stake across 2 finalizers"),
@@ -954,9 +973,6 @@ fn bonds_lists_every_finalizer_with_its_standing() {
     let theirs = out.lines().find(|l| l.contains("zfinv17777")).unwrap();
     assert!(theirs.contains("25.0%"), "{theirs}");
     assert!(!theirs.contains('●'));
-    assert!(out.contains("2,590,000"), "the height of the last action");
-    assert!(out.contains("5 ZEC staked"));
-    assert!(out.contains("1.2 ZEC unbonding"));
 }
 
 #[test]
