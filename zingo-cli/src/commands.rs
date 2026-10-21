@@ -28,6 +28,7 @@ use zcash_protocol::value::Zatoshis;
 use pepper_sync::wallet::{IronwoodNote, KeyIdInterface, OrchardNote, SaplingNote, SyncMode};
 use zingolib::data::{PollReport, proposal};
 use zingolib::lightclient::LightClient;
+use zingolib::perspective::sync_progress;
 use zingolib::wallet::keys::WalletAddressRef;
 use zingolib::wallet::keys::unified::{ReceiverSelection, UnifiedKeyStore};
 
@@ -517,7 +518,9 @@ impl Command for SyncCommand {
             },
             "status" => RT.block_on(async move {
                 match pepper_sync::sync_status(&*lightclient.wallet.read().await).await {
-                    Ok(status) => json::JsonValue::from(status).pretty(2),
+                    Ok(status) => {
+                        json::JsonValue::from(sync_progress::SyncProgress::from(status)).pretty(2)
+                    }
                     Err(e) => format!("Error: {e}"),
                 }
             }),
@@ -525,7 +528,7 @@ impl Command for SyncCommand {
                 PollReport::NoHandle => "Sync task has not been launched.".to_string(),
                 PollReport::NotReady => "Sync task is not complete.".to_string(),
                 PollReport::Ready(result) => match result {
-                    Ok(sync_result) => sync_result.to_string(),
+                    Ok(sync_result) => sync_progress::SessionReport::from(sync_result).to_string(),
                     Err(e) => format!("Error: {e}"),
                 },
             },

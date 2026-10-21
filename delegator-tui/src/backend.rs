@@ -458,7 +458,7 @@ struct SyncSnapshot {
     birthday: Option<u32>,
     tip: Option<u32>,
     ranges: Vec<ChainRange>,
-    /// Estimated from the percentage the engine reports; zero until it reports one.
+    /// The engine's count of outputs from the birthday to the tip; zero until it has one.
     total_outputs: u64,
     scanned_outputs: u64,
     scanned_blocks: u64,
@@ -833,7 +833,7 @@ impl Backend {
         };
         match poll {
             PollReport::Ready(Ok(result)) => {
-                tracing::info!("sync session finished: {result}");
+                tracing::info!("sync session finished: {result:?}");
                 // the session's last progress, before the counters stop moving
                 self.observe().await;
                 self.session_pending = false;
@@ -982,17 +982,10 @@ async fn snapshot(lc: &LightClient) -> SyncSnapshot {
         ..SyncSnapshot::default()
     };
     if let Some(status) = status {
-        let scanned = u64::from(status.total_sapling_outputs_scanned)
-            + u64::from(status.total_orchard_outputs_scanned);
-        let percent = f64::from(status.percentage_total_outputs_scanned);
-        let total = if percent > 0.0 {
-            (scanned as f64 * 100.0 / percent).round() as u64
-        } else {
-            0
-        };
+        let scanned = status.total_outputs_scanned;
         out.started = u32::from(status.sync_start_height) != 0;
         out.ranges = status.scan_ranges.iter().map(chain_range).collect();
-        out.total_outputs = total.max(scanned);
+        out.total_outputs = status.total_outputs.max(scanned);
         out.scanned_outputs = scanned;
         out.scanned_blocks = u64::from(status.total_blocks_scanned);
     }
@@ -1480,7 +1473,7 @@ mod tests {
         )
         .unwrap();
         match lc.sync_and_await().await {
-            Ok(r) => eprintln!("SYNC OK: {r}"),
+            Ok(r) => eprintln!("SYNC OK: {r:?}"),
             Err(e) => eprintln!("SYNC ERR: {e}\nDEBUG: {e:?}"),
         }
     }
@@ -1505,7 +1498,7 @@ mod tests {
         eprintln!("birthday {}", lc.wallet.read().await.birthday);
         let result = tokio::time::timeout(Duration::from_secs(120), lc.sync_and_await()).await;
         match result {
-            Ok(Ok(r)) => eprintln!("SYNC OK: {r}"),
+            Ok(Ok(r)) => eprintln!("SYNC OK: {r:?}"),
             Ok(Err(e)) => eprintln!("SYNC ERR: {e}\nDEBUG: {e:?}"),
             Err(_) => eprintln!("SYNC STILL RUNNING after 120s"),
         }

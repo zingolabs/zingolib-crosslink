@@ -72,9 +72,6 @@ rayon.workspace = true
 # Error handling
 thiserror.workspace = true
 
-# JSON
-json.workspace = true
-
 # Serialization
 byteorder = { workspace = true, optional = true }
 
@@ -82,6 +79,7 @@ byteorder = { workspace = true, optional = true }
 simple-mermaid.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 zcash_protocol = { workspace = true, features = ["local-consensus"] }
 
 [build-dependencies]

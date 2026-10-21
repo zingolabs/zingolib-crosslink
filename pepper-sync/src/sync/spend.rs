@@ -12,7 +12,7 @@ use zcash_protocol::{
 use zip32::AccountId;
 
 use crate::{
-    client::{self, FetchRequest},
+    client::{self, FetchRequest, IronwoodSizes},
     error::SyncError,
     scan::{DecryptedNoteData, transactions::scan_transactions},
     wallet::{
@@ -37,6 +37,7 @@ pub(super) async fn update_shielded_spends<P, W>(
     consensus_parameters: &P,
     wallet: &mut W,
     fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
+    ironwood_sizes: &IronwoodSizes,
     ufvks: &HashMap<AccountId, UnifiedFullViewingKey>,
     scanned_blocks: &BTreeMap<BlockHeight, WalletBlock>,
     additional_nullifier_map: Option<&mut NullifierMap>,
@@ -106,6 +107,7 @@ where
     scan_spending_transactions(
         fetch_request_sender,
         consensus_parameters,
+        ironwood_sizes,
         wallet,
         ufvks,
         sapling_spend_scan_targets
@@ -140,6 +142,7 @@ where
 async fn scan_spending_transactions<L, P, W>(
     fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
     consensus_parameters: &P,
+    ironwood_sizes: &IronwoodSizes,
     wallet: &mut W,
     ufvks: &HashMap<AccountId, UnifiedFullViewingKey>,
     scan_targets: L,
@@ -175,6 +178,7 @@ where
                     WalletBlock::from_compact_block(
                         consensus_parameters,
                         fetch_request_sender.clone(),
+                        ironwood_sizes,
                         &client::get_compact_block(fetch_request_sender.clone(), block_height)
                             .await?,
                     )
@@ -190,6 +194,7 @@ where
     let spending_transactions = scan_transactions(
         fetch_request_sender,
         consensus_parameters,
+        ironwood_sizes,
         ufvks,
         spending_scan_targets,
         DecryptedNoteData::new(),

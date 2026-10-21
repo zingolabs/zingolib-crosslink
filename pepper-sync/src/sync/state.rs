@@ -15,10 +15,10 @@ use zcash_protocol::{
 };
 
 use crate::{
-    client::{self, FetchRequest},
+    client::{self, FetchRequest, IronwoodSizes},
     error::{ServerError, SyncError},
     keys::transparent::TransparentAddressId,
-    scan::task::ScanTask,
+    scan::task::{ScanTask, TaskId},
     sync::ScanRange,
     wallet::{
         InitialSyncState, ScanTarget, SyncState, TreeBounds, WalletTransaction,
@@ -776,6 +776,7 @@ pub(crate) fn create_scan_task<W>(
     consensus_parameters: &impl consensus::Parameters,
     wallet: &mut W,
     nullifier_map_limit_exceeded: bool,
+    task_id: TaskId,
 ) -> Result<Option<ScanTask>, W::Error>
 where
     W: SyncWallet + SyncBlocks + SyncNullifiers,
@@ -789,6 +790,7 @@ where
             // all continuity checks and scanning is already complete, the scan worker will only re-fetch the nullifiers
             // for final spend detection.
             Ok(Some(ScanTask::from_parts(
+                task_id,
                 selected_range,
                 None,
                 None,
@@ -812,6 +814,7 @@ where
                 .collect();
 
             Ok(Some(ScanTask::from_parts(
+                task_id,
                 selected_range,
                 start_seam_block,
                 end_seam_block,
@@ -828,6 +831,7 @@ where
 pub(super) async fn set_initial_state<W>(
     consensus_parameters: &impl consensus::Parameters,
     fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
+    ironwood_sizes: &IronwoodSizes,
     wallet: &mut W,
     chain_height: BlockHeight,
 ) -> Result<(), SyncError<W::Error>>
@@ -861,6 +865,7 @@ where
         final_tree_sizes(
             consensus_parameters,
             fetch_request_sender.clone(),
+            ironwood_sizes,
             wallet,
             birthday - 1,
         )
@@ -873,6 +878,7 @@ where
     ) = final_tree_sizes(
         consensus_parameters,
         fetch_request_sender.clone(),
+        ironwood_sizes,
         wallet,
         chain_height,
     )
@@ -948,10 +954,12 @@ where
         }))
 }
 
-/// Gets `block_height` final tree sizes from wallet block if it exists, otherwise from frontiers fetched from server.
+/// Gets `block_height` final tree sizes from wallet block if it exists, otherwise from the tree state fetched from
+/// the server, with the Ironwood size resolved through `ironwood_sizes` where the server serves none.
 async fn final_tree_sizes<W>(
     consensus_parameters: &impl consensus::Parameters,
     fetch_request_sender: mpsc::UnboundedSender<FetchRequest>,
+    ironwood_sizes: &IronwoodSizes,
     wallet: &mut W,
     block_height: BlockHeight,
 ) -> Result<(u32, u32, u32), ServerError>
@@ -959,26 +967,21 @@ where
     W: SyncBlocks,
 {
     if let Ok(block) = wallet.get_wallet_block(block_height) {
-        Ok((
-            block.tree_bounds().sapling_final_tree_size,
-            block.tree_bounds().orchard_final_tree_size,
-            block.tree_bounds().ironwood_final_tree_size,
-        ))
+        Ok(block.tree_bounds().final_tree_sizes())
     } else {
-        // TODO: move this whole block into `client::get_frontiers`
         let sapling_activation_height = consensus_parameters
             .activation_height(NetworkUpgrade::Sapling)
             .expect("should have some sapling activation height");
 
         match block_height.cmp(&(sapling_activation_height - 1)) {
             cmp::Ordering::Greater => {
-                let tree_sizes = client::get_tree_sizes(
-                    fetch_request_sender.clone(),
+                client::get_final_tree_sizes(
+                    fetch_request_sender,
                     consensus_parameters,
+                    ironwood_sizes,
                     block_height,
                 )
-                .await?;
-                Ok((tree_sizes.sapling, tree_sizes.orchard, tree_sizes.ironwood))
+                .await
             }
             cmp::Ordering::Equal => Ok((0, 0, 0)),
             cmp::Ordering::Less => panic!("pre-sapling not supported!"),
@@ -1007,6 +1010,20 @@ where
         ironwood_initial_tree_size: start_block.tree_bounds().ironwood_initial_tree_size,
         ironwood_final_tree_size: end_block.tree_bounds().ironwood_final_tree_size,
     })
+}
+
+/// Drops the newest stored shard range for `shielded_protocol`, so a
+/// refetched newest subtree root can rebuild it through
+/// [`add_shard_ranges`] — never duplicated, and corrected when a reorg
+/// moved the subtree's completing height. No-op when no range exists.
+#[cfg(not(feature = "darkside_test"))]
+pub(super) fn pop_newest_shard_range(sync_state: &mut SyncState, shielded_protocol: ShieldedPool) {
+    let shard_ranges: &mut Vec<Range<BlockHeight>> = match shielded_protocol {
+        ShieldedPool::Sapling => sync_state.sapling_shard_ranges.as_mut(),
+        ShieldedPool::Orchard => sync_state.orchard_shard_ranges.as_mut(),
+        ShieldedPool::Ironwood => sync_state.ironwood_shard_ranges.as_mut(),
+    };
+    shard_ranges.pop();
 }
 
 /// Creates block ranges that contain all outputs for the shards associated with `subtree_roots` and adds them to
@@ -1100,6 +1117,75 @@ pub(super) fn update_found_note_shard_priority(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(feature = "darkside_test"))]
+    use zcash_protocol::local_consensus::LocalNetwork;
+
+    #[cfg(not(feature = "darkside_test"))]
+    const BASE_NETWORK: LocalNetwork = LocalNetwork {
+        overwinter: Some(BlockHeight::from_u32(1)),
+        sapling: Some(BlockHeight::from_u32(1)),
+        blossom: Some(BlockHeight::from_u32(1)),
+        heartwood: Some(BlockHeight::from_u32(1)),
+        canopy: Some(BlockHeight::from_u32(1)),
+        nu5: Some(BlockHeight::from_u32(1)),
+        nu6: Some(BlockHeight::from_u32(1)),
+        nu6_1: Some(BlockHeight::from_u32(1)),
+        nu6_2: Some(BlockHeight::from_u32(1)),
+        nu6_3: Some(BlockHeight::from_u32(100)),
+    };
+
+    /// A refetched newest subtree root (see
+    /// `crate::sync::update_subtree_roots`) rebuilds its shard range via
+    /// pop-then-readd: idempotent when the completing height is
+    /// unchanged, corrected when a reorg moved it — never duplicated.
+    #[cfg(not(feature = "darkside_test"))]
+    #[test]
+    fn refetched_newest_root_rebuilds_its_shard_range() {
+        fn root(completing_block_height: u64) -> SubtreeRoot {
+            SubtreeRoot {
+                completing_block_height,
+                ..Default::default()
+            }
+        }
+        let mut sync_state = SyncState::new();
+        add_shard_ranges(
+            &BASE_NETWORK,
+            ShieldedPool::Orchard,
+            &mut sync_state,
+            &[root(100), root(200)],
+        );
+        let initial = sync_state.orchard_shard_ranges.clone();
+        assert_eq!(initial.len(), 2);
+
+        // Unchanged completing height: pop-then-readd is idempotent.
+        pop_newest_shard_range(&mut sync_state, ShieldedPool::Orchard);
+        add_shard_ranges(
+            &BASE_NETWORK,
+            ShieldedPool::Orchard,
+            &mut sync_state,
+            &[root(200)],
+        );
+        assert_eq!(sync_state.orchard_shard_ranges, initial);
+
+        // A reorg moved the completing height: the range is corrected,
+        // not duplicated.
+        pop_newest_shard_range(&mut sync_state, ShieldedPool::Orchard);
+        add_shard_ranges(
+            &BASE_NETWORK,
+            ShieldedPool::Orchard,
+            &mut sync_state,
+            &[root(205)],
+        );
+        assert_eq!(sync_state.orchard_shard_ranges.len(), 2);
+        assert_eq!(
+            sync_state.orchard_shard_ranges.last().unwrap().end,
+            BlockHeight::from_u32(206)
+        );
+        assert_eq!(
+            sync_state.orchard_shard_ranges.last().unwrap().start,
+            BlockHeight::from_u32(100)
+        );
+    }
 
     #[test]
     fn truncate_scan_ranges() {
