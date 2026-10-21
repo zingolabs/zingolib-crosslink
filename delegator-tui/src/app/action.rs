@@ -87,6 +87,12 @@ pub enum Action {
     SeedGenerated(String),
     WalletOpened(WalletInfo),
     OpenFailed(String),
+    /// The chain measured its block spacing after the wallet opened; the wallet's guess
+    /// stands in until then. The network guards a late answer for an earlier wallet.
+    SpacingMeasured {
+        network: Network,
+        spacing_secs: u64,
+    },
     DataLoaded(WalletData),
     Sync(SyncNote, Instant),
     Notice(String),

@@ -17,38 +17,48 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
     let area = inset(area);
     let width = usize::from(area.width);
     let b = &state.balance;
-    let amount = format::zec(b.total());
 
     let mut top = vec![Line::styled("Balance", t.muted)];
-    // Jacquard 24's eight rows on a tall terminal, the small glyphs otherwise
-    let tall = area.height >= 30;
-    let big: Option<(Vec<String>, usize)> = tall
-        .then(|| jacquard::render(&amount))
-        .flatten()
-        .map(|rows| (rows, jacquard::HEIGHT - 2))
-        .or_else(|| bignum::render(&amount).map(|rows| (rows.to_vec(), 2)))
-        .filter(|(rows, _)| rows.iter().map(|r| r.chars().count()).max().unwrap_or(0) + 5 <= width);
-    match big {
-        Some((rows, baseline)) => {
-            for (i, row) in rows.into_iter().enumerate() {
-                let mut spans = vec![Span::styled(row, t.title)];
-                // the unit sits on the baseline row
-                if i == baseline {
-                    spans.push(Span::styled("  ZEC", t.muted));
+    if !state.data_loaded {
+        top.push(Line::styled("unknown until the wallet connects", t.muted));
+        top.push(Line::from(""));
+        top.push(Line::styled("Staked", t.muted));
+        top.push(Line::styled("unknown until the wallet connects", t.muted));
+    } else {
+        let amount = format::zec(b.total());
+
+        // Jacquard 24's eight rows on a tall terminal, the small glyphs otherwise
+        let tall = area.height >= 30;
+        let big: Option<(Vec<String>, usize)> = tall
+            .then(|| jacquard::render(&amount))
+            .flatten()
+            .map(|rows| (rows, jacquard::HEIGHT - 2))
+            .or_else(|| bignum::render(&amount).map(|rows| (rows.to_vec(), 2)))
+            .filter(|(rows, _)| {
+                rows.iter().map(|r| r.chars().count()).max().unwrap_or(0) + 5 <= width
+            });
+        match big {
+            Some((rows, baseline)) => {
+                for (i, row) in rows.into_iter().enumerate() {
+                    let mut spans = vec![Span::styled(row, t.title)];
+                    // the unit sits on the baseline row
+                    if i == baseline {
+                        spans.push(Span::styled("  ZEC", t.muted));
+                    }
+                    top.push(Line::from(spans));
                 }
-                top.push(Line::from(spans));
             }
+            None => top.push(Line::styled(format!("{amount} ZEC"), t.title)),
         }
-        None => top.push(Line::styled(format!("{amount} ZEC"), t.title)),
+        if b.pending() > 0 {
+            top.push(Line::styled(
+                format!("{} ZEC pending", format::zec(b.pending())),
+                t.warning,
+            ));
+        }
+        top.push(Line::from(""));
+        top.extend(stake_lines(state, t));
     }
-    if b.pending() > 0 {
-        top.push(Line::styled(
-            format!("{} ZEC pending", format::zec(b.pending())),
-            t.warning,
-        ));
-    }
-    top.push(Line::from(""));
-    top.extend(stake_lines(state, t));
 
     let [top_area, _, title_area, list_area] = Layout::vertical([
         Constraint::Length(top.len() as u16),
@@ -63,7 +73,9 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
         title_area,
     );
     if state.txs.is_empty() {
-        let message = if state.sync.sessions_done == 0 {
+        let message = if !state.data_loaded {
+            "Nothing known yet. The wallet is still connecting."
+        } else if state.sync.sessions_done == 0 {
             "No transactions yet. The first sync is still running."
         } else {
             "No transactions yet."

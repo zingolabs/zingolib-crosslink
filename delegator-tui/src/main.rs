@@ -8,7 +8,8 @@ use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use tokio::sync::mpsc;
 
 use delegator_tui::app::{
-    Action, Command, KeyMaterial, Network, Onboarding, OpenSpec, Phase, State, reduce,
+    Action, Command, KeyMaterial, Network, Onboarding, OpenSpec, Phase, State, WalletInfo,
+    WalletKind, reduce,
 };
 use delegator_tui::backend::{self, BackendConfig};
 use delegator_tui::cli::Cli;
@@ -82,6 +83,7 @@ async fn run(cli: Cli) -> Result<(), String> {
     tracing::info!("starting delegator-tui on {}", network.name());
 
     let now = Instant::now();
+    let mut placeholder: Option<WalletInfo> = None;
     let (phase, initial): (Phase, Command) = if let (Some(ufvk), Some(birthday)) =
         (cli.ufvk.clone(), cli.birthday)
     {
@@ -111,12 +113,19 @@ async fn run(cli: Cli) -> Result<(), String> {
                 path.display()
             ));
         }
+        placeholder = Some(WalletInfo::placeholder(
+            network,
+            name.clone(),
+            WalletKind::Unknown,
+            0,
+        ));
+        let verified = config.meta_network(network, &name) == Some(network);
         (
-            Phase::Loading("Opening wallet".into()),
+            Phase::Main,
             Command::Open(OpenSpec::Read {
                 network,
                 name,
-                verified: false,
+                verified,
             }),
         )
     } else {
@@ -127,6 +136,7 @@ async fn run(cli: Cli) -> Result<(), String> {
     };
 
     let mut state = State::new(phase, now);
+    state.wallet = placeholder;
     state.ascii_qr = cli.ascii_qr;
     state.dither = match cli.dither.as_str() {
         "braille" => theme::Dither::Braille,

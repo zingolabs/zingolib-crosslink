@@ -30,7 +30,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
         SyncMode::NotRunning if s.error.is_some() => "Sync failed",
         SyncMode::NotRunning if !s.auto => "Paused",
         SyncMode::NotRunning if current => "Up to date",
-        SyncMode::NotRunning => "Starting",
+        SyncMode::NotRunning => "Connecting",
     };
     let headline = Span::styled(headline, sync_style(state, t).add_modifier(Modifier::BOLD));
     let figure = match s.tip {

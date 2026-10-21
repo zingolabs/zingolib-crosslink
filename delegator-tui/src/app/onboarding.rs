@@ -5,7 +5,8 @@
 
 use super::action::{Command, Key, OpenSpec};
 use super::state::{
-    BirthdayMode, Evidence, KeyMaterial, MenuItem, Network, Onboarding, Phase, State, Step, Tip,
+    BirthdayMode, Evidence, KeyMaterial, MenuItem, Network, Onboarding, Overlay, Phase, Screen,
+    State, Step, Tip, WalletInfo,
 };
 use crate::format;
 
@@ -26,7 +27,7 @@ pub fn key(state: &mut State, key: Key) -> Vec<Command> {
     };
     o.error = None;
     match o.step {
-        Step::Wallets => wallets_key(o, key),
+        Step::Wallets => wallets_key(state, key),
         Step::Menu => menu_key(o, key),
         Step::Create => create_key(o, key),
         Step::Restore => restore_key(o, key),
@@ -124,6 +125,8 @@ pub fn open_failed(state: &mut State, message: String) {
             Step::Wallets
         };
         o.error = Some(message);
+        state.wallet = None;
+        state.data_loaded = false;
         state.phase = Phase::Onboarding(Box::new(o));
     } else {
         state.phase = Phase::Fatal(message);
@@ -154,7 +157,10 @@ fn move_sel(sel: &mut usize, len: usize, key: Key) {
     }
 }
 
-fn wallets_key(o: &mut Onboarding, key: Key) -> Vec<Command> {
+fn wallets_key(state: &mut State, key: Key) -> Vec<Command> {
+    let Phase::Onboarding(o) = &mut state.phase else {
+        return Vec::new();
+    };
     let rows = o.wallets.len() + 1;
     move_sel(&mut o.wallet_sel, rows, key);
     match key {
@@ -163,19 +169,32 @@ fn wallets_key(o: &mut Onboarding, key: Key) -> Vec<Command> {
             o.step = Step::Menu;
             fetch_tip(o)
         }
-        Key::Enter | Key::Right => {
-            if let Some(entry) = o.wallets.get(o.wallet_sel) {
+        Key::Enter | Key::Right => match o.wallets.get(o.wallet_sel) {
+            Some(entry) => {
                 let spec = OpenSpec::Read {
                     network: entry.network,
                     name: entry.name.clone(),
                     verified: entry.evidence != Evidence::Unverified,
                 };
+                let placeholder = WalletInfo::placeholder(
+                    entry.network,
+                    entry.name.clone(),
+                    entry.kind,
+                    entry.birthday.unwrap_or(0),
+                );
+                let backup = (**o).clone();
+                state.onboarding_backup = Some(backup);
+                state.wallet = Some(placeholder);
+                state.phase = Phase::Main;
+                state.screen = Screen::Home;
+                state.overlay = Overlay::None;
                 vec![Command::Open(spec)]
-            } else {
+            }
+            None => {
                 o.step = Step::Menu;
                 fetch_tip(o)
             }
-        }
+        },
         _ => Vec::new(),
     }
 }
@@ -759,6 +778,19 @@ mod tests {
                 verified: true,
             })]
         );
+        assert_eq!(s.phase, Phase::Main, "the frame is up before the open");
+        let wallet = s.wallet.as_ref().expect("the placeholder frame");
+        assert_eq!(wallet.wallet_name, "test");
+        assert_eq!(wallet.kind, WalletKind::Seed, "from the list's row");
+        assert!(
+            s.onboarding_backup.is_some(),
+            "a failed open returns to the list"
+        );
+        reduce(&mut s, Action::OpenFailed("too old to read".into()));
+        assert!(matches!(s.phase, Phase::Onboarding(_)));
+        assert!(s.wallet.is_none(), "the placeholder frame is gone");
+        assert_eq!(o(&s).error.as_deref(), Some("too old to read"));
+        assert_eq!(o(&s).wallet_sel, 1);
         // the row after the last wallet is "new"
         let cmds = keys(&mut s, &[Key::Char('j'), Key::Enter]);
         assert_eq!(o(&s).step, Step::Menu);
