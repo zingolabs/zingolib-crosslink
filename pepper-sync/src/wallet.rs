@@ -42,6 +42,7 @@ use crate::{
     error::{ServerError, SyncModeError},
     keys::{self, KeyId, transparent::TransparentAddressId},
     scan::compact_blocks::calculate_block_tree_bounds,
+    shardtree_ext::ShardTreeExt,
     sync::{MAX_REORG_ALLOWANCE, ScanPriority, ScanRange},
     witness,
 };
@@ -670,6 +671,17 @@ impl WalletTransaction {
             }
             _ => (),
         }
+    }
+}
+
+#[cfg(any(test, feature = "test-features"))]
+impl SyncState {
+    /// Creates sync state with the given scan ranges, for tests exercising
+    /// spendability/witness gating without a chain.
+    pub fn new_for_test(scan_ranges: Vec<ScanRange>) -> Self {
+        let mut sync_state = Self::new();
+        sync_state.scan_ranges = scan_ranges;
+        sync_state
     }
 }
 
@@ -1462,15 +1474,20 @@ impl ShardTrees {
         let mut orchard = ShardTree::new(MemoryShardStore::empty(), MAX_REORG_ALLOWANCE as usize);
         let mut ironwood = ShardTree::new(MemoryShardStore::empty(), MAX_REORG_ALLOWANCE as usize);
 
-        sapling
-            .checkpoint(BlockHeight::from_u32(0))
-            .expect("should never fail");
-        orchard
-            .checkpoint(BlockHeight::from_u32(0))
-            .expect("should never fail");
-        ironwood
-            .checkpoint(BlockHeight::from_u32(0))
-            .expect("should never fail");
+        // These trees are freshly created, so the initial checkpoint must
+        // be `Appended`; a `NotAboveNewest` here would break the
+        // initialization invariant that `add_initial_frontier` and
+        // truncation planning rely on.
+        for tree_checkpoint in [
+            sapling.append_checkpoint(BlockHeight::from_u32(0)),
+            orchard.append_checkpoint(BlockHeight::from_u32(0)),
+            ironwood.append_checkpoint(BlockHeight::from_u32(0)),
+        ] {
+            assert_eq!(
+                tree_checkpoint.expect("should never fail"),
+                crate::shardtree_ext::CheckpointAppendOutcome::Appended
+            );
+        }
 
         Self {
             sapling,
