@@ -220,7 +220,7 @@ pub enum ServerError {
     /// activation height.
     ///
     /// For Ironwood this is only returned where the wallet cannot fall back to building the tree from scanned
-    /// blocks (see [`crate::client::IronwoodSizes`]).
+    /// blocks (see `IronwoodSizes` in the client module).
     #[error(
         "server does not serve the {pool} note commitment tree state at height {height}. connect to a server that serves {pool}."
     )]
