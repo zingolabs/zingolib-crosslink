@@ -18,7 +18,7 @@ use crate::{
     client::{self, FetchRequest, IronwoodSizes},
     error::{ServerError, SyncError},
     keys::transparent::TransparentAddressId,
-    scan::task::ScanTask,
+    scan::task::{ScanTask, TaskId},
     sync::ScanRange,
     wallet::{
         InitialSyncState, ScanTarget, SyncState, TreeBounds, WalletTransaction,
@@ -776,6 +776,7 @@ pub(crate) fn create_scan_task<W>(
     consensus_parameters: &impl consensus::Parameters,
     wallet: &mut W,
     nullifier_map_limit_exceeded: bool,
+    task_id: TaskId,
 ) -> Result<Option<ScanTask>, W::Error>
 where
     W: SyncWallet + SyncBlocks + SyncNullifiers,
@@ -789,6 +790,7 @@ where
             // all continuity checks and scanning is already complete, the scan worker will only re-fetch the nullifiers
             // for final spend detection.
             Ok(Some(ScanTask::from_parts(
+                task_id,
                 selected_range,
                 None,
                 None,
@@ -812,6 +814,7 @@ where
                 .collect();
 
             Ok(Some(ScanTask::from_parts(
+                task_id,
                 selected_range,
                 start_seam_block,
                 end_seam_block,

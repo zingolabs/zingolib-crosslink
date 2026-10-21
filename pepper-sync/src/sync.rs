@@ -204,6 +204,33 @@ pub enum ScanPriority {
     Verify,
 }
 
+impl ScanPriority {
+    /// Returns the priority the wallet holds a range selected at this priority while its scan task is in flight.
+    #[must_use]
+    pub fn in_flight(self) -> ScanPriority {
+        if self == ScanPriority::ScannedWithoutMapping {
+            ScanPriority::RefetchingNullifiers
+        } else {
+            ScanPriority::Scanning
+        }
+    }
+}
+
+/// Returns true when the two ranges share at least one block.
+pub(crate) fn overlaps(first: &Range<BlockHeight>, second: &Range<BlockHeight>) -> bool {
+    first.start < second.end && second.start < first.end
+}
+
+/// Returns the scan ranges the wallet holds at `priority`, in wallet order.
+pub(crate) fn held_at(
+    scan_ranges: &[ScanRange],
+    priority: ScanPriority,
+) -> impl Iterator<Item = &ScanRange> {
+    scan_ranges
+        .iter()
+        .filter(move |scan_range| scan_range.priority() == priority)
+}
+
 /// A range of blocks to be scanned, along with its associated priority.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanRange {
@@ -251,6 +278,12 @@ impl ScanRange {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.block_range.is_empty()
+    }
+
+    /// Returns true when this scan range and `block_range` share at least one block.
+    #[must_use]
+    pub fn overlaps(&self, block_range: &Range<BlockHeight>) -> bool {
+        overlaps(&self.block_range, block_range)
     }
 
     /// Returns the number of blocks in the scan range.
@@ -461,23 +494,31 @@ where
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
-            Some((scan_range, scan_results)) = scan_results_receiver.recv() => {
-                let mut wallet_guard = wallet.write().await;
-                process_scan_results(
-                    consensus_parameters,
-                    &mut *wallet_guard,
-                    fetch_request_sender.clone(),
-                    &ironwood_sizes,
-                    &ufvks,
-                    scan_range,
-                    scan_results,
-                    initial_reorg_detection_start_height,
-                    config.performance_level,
-                    &mut nullifier_map_limit_exceeded,
-                )
-                .await?;
-                wallet_guard.set_save_flag().map_err(SyncError::WalletError)?;
-                drop(wallet_guard);
+            Some((load, scan_results)) = scan_results_receiver.recv() => {
+                for (load, scan_results) in scanner.admit_scan_results(load, scan_results) {
+                    let mut wallet_guard = wallet.write().await;
+                    process_scan_results(
+                        consensus_parameters,
+                        &mut *wallet_guard,
+                        fetch_request_sender.clone(),
+                        &ironwood_sizes,
+                        &ufvks,
+                        load.scan_range,
+                        scan_results,
+                        initial_reorg_detection_start_height,
+                        config.performance_level,
+                        &mut nullifier_map_limit_exceeded,
+                    )
+                    .await?;
+                    scanner.retire_finished_tasks(
+                        wallet_guard
+                            .get_sync_state()
+                            .map_err(SyncError::WalletError)?
+                            .scan_ranges(),
+                    );
+                    wallet_guard.set_save_flag().map_err(SyncError::WalletError)?;
+                    drop(wallet_guard);
+                }
             }
 
             Some(raw_transaction) = mempool_transaction_receiver.recv() => {
