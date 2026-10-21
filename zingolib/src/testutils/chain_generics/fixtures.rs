@@ -80,19 +80,10 @@ where
             .any(|vt| { vt.kind == WalletEventKind::Sent(SentWalletEvent::Send) })
     );
 
-    assert!(
-        sender
-            .wallet_events(false)
-            .await
-            .unwrap()
-            .iter()
-            .any(|vt| {
-                vt.kind
-                    == WalletEventKind::Sent(SentWalletEvent::SendToSelf(
-                        SelfSendWalletEvent::MemoToSelf,
-                    ))
-            })
-    );
+    assert!(sender.wallet_events(false).await.unwrap().iter().any(|vt| {
+        vt.kind
+            == WalletEventKind::Sent(SentWalletEvent::SendToSelf(SelfSendWalletEvent::MemoToSelf))
+    }));
 
     assert_eq!(recipient.wallet_events(true).await.unwrap().len(), 1);
 

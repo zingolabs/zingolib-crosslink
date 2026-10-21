@@ -614,14 +614,6 @@ fn screen_key(state: &mut State, key: Key) -> Vec<Command> {
                 _ => Vec::new(),
             }
         }
-        Screen::Bonds => {
-            let len = state.bonds.len();
-            move_selection(&mut state.bond_selected, len, key, state.size.1);
-            match (key, state.selected_bond()) {
-                (Key::Char('y'), Some(bond)) => vec![Command::Copy(bond.finalizer.clone())],
-                _ => Vec::new(),
-            }
-        }
         Screen::Receive => match key {
             Key::Char('v') => {
                 state.receive_kind = match state.receive_kind {

@@ -11,9 +11,6 @@ use std::io::Read as _;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::str::FromStr as _;
-use std::str::FromStr as _;
-use std::str::FromStr as _;
-use std::str::FromStr as _;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use pepper_sync::keys::transparent::TransparentScope;
@@ -707,111 +704,6 @@ impl Backend {
                 self.shutdown().await;
                 self.send(Action::Shutdown);
                 return true;
-            }
-            Command::Faucet { address } => {
-                let Some(lc) = self.lc.as_ref() else {
-                    return false;
-                };
-                let uri = lc.indexer_uri();
-                let actions = self.actions.clone();
-                tokio::spawn(async move {
-                    let _ = actions.send(Action::FaucetDone(request_faucet(uri, address).await));
-                });
-            }
-            Command::ProposeSend { to, amount, memo } => {
-                let result = match self.lc.as_mut() {
-                    Some(lc) => propose_send(lc, &to, amount, memo.as_deref()).await,
-                    None => Err("no wallet is open".into()),
-                };
-                self.send(Action::SendProposed(result));
-            }
-            Command::ConfirmSend => {
-                let result = match self.lc.as_mut() {
-                    Some(lc) => lc
-                        .send_stored_proposal(true)
-                        .await
-                        .map(|txids| txids.iter().map(|id| id.to_string()).collect())
-                        .map_err(|e| e.to_string()),
-                    None => Err("no wallet is open".into()),
-                };
-                self.send(Action::SendDone(result));
-                self.refresh().await;
-            }
-            Command::CancelSend => {
-                if let Some(lc) = self.lc.as_mut() {
-                    lc.wallet.write().await.clear_proposal();
-                    let _ignore = lc.resume_sync();
-                }
-            }
-            Command::Faucet { address } => {
-                let Some(lc) = self.lc.as_ref() else {
-                    return false;
-                };
-                let uri = lc.indexer_uri();
-                let actions = self.actions.clone();
-                tokio::spawn(async move {
-                    let _ = actions.send(Action::FaucetDone(request_faucet(uri, address).await));
-                });
-            }
-            Command::ProposeSend { to, amount, memo } => {
-                let result = match self.lc.as_mut() {
-                    Some(lc) => propose_send(lc, &to, amount, memo.as_deref()).await,
-                    None => Err("no wallet is open".into()),
-                };
-                self.send(Action::SendProposed(result));
-            }
-            Command::ConfirmSend => {
-                let result = match self.lc.as_mut() {
-                    Some(lc) => lc
-                        .send_stored_proposal(true)
-                        .await
-                        .map(|txids| txids.iter().map(|id| id.to_string()).collect())
-                        .map_err(|e| e.to_string()),
-                    None => Err("no wallet is open".into()),
-                };
-                self.send(Action::SendDone(result));
-                self.refresh().await;
-            }
-            Command::CancelSend => {
-                if let Some(lc) = self.lc.as_mut() {
-                    lc.wallet.write().await.clear_proposal();
-                    let _ignore = lc.resume_sync();
-                }
-            }
-            Command::Faucet { address } => {
-                let Some(lc) = self.lc.as_ref() else {
-                    return false;
-                };
-                let uri = lc.indexer_uri();
-                let actions = self.actions.clone();
-                tokio::spawn(async move {
-                    let _ = actions.send(Action::FaucetDone(request_faucet(uri, address).await));
-                });
-            }
-            Command::ProposeSend { to, amount, memo } => {
-                let result = match self.lc.as_mut() {
-                    Some(lc) => propose_send(lc, &to, amount, memo.as_deref()).await,
-                    None => Err("no wallet is open".into()),
-                };
-                self.send(Action::SendProposed(result));
-            }
-            Command::ConfirmSend => {
-                let result = match self.lc.as_mut() {
-                    Some(lc) => lc
-                        .send_stored_proposal(true)
-                        .await
-                        .map(|txids| txids.iter().map(|id| id.to_string()).collect())
-                        .map_err(|e| e.to_string()),
-                    None => Err("no wallet is open".into()),
-                };
-                self.send(Action::SendDone(result));
-                self.refresh().await;
-            }
-            Command::CancelSend => {
-                if let Some(lc) = self.lc.as_mut() {
-                    lc.wallet.write().await.clear_proposal();
-                    let _ignore = lc.resume_sync();
-                }
             }
             Command::Faucet { address } => {
                 let Some(lc) = self.lc.as_ref() else {
