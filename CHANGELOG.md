@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   birthday above the pool's activation fails with `ServerError::IronwoodTreeStateUnavailable`
   instead of mis-positioning notes. `LightClient::fresh_wallet_birthday` probes the server and
   starts a fresh wallet at the Ironwood activation height when needed; `zingo-cli` uses it.
-- `AccountBalance` reports Ironwood balances; transaction summaries and value transfers list
+- `AccountBalance` reports Ironwood balances; transaction summaries and wallet events list
   Ironwood notes, report `pool_received: Ironwood`, and `WalletTransaction` value totals and the
   transaction-kind classifier include the Ironwood pool.
 - `zingolib::crosslink::{staking_window_open, next_staking_window_start, PUBLIC_STAKING_CALENDAR}`;
