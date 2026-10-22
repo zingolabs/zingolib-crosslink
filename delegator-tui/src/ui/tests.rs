@@ -564,17 +564,54 @@ fn the_active_tab_is_highlighted() {
             .map(|x| buffer[(x, 0)].symbol().to_string())
             .collect();
         // the brand is skipped; its letters would shadow the tab letters
-        let at = 14 + col_of(&header, &letter_of(screen));
+        let at = 14 + col_of(&header, &name_of(screen));
         assert_eq!(
             buffer[(at, 0)].fg,
             accent,
             "{screen:?} tab is not in the accent"
         );
         for other in Screen::ALL.into_iter().filter(|o| *o != screen) {
-            let at = 14 + col_of(&header, &letter_of(other));
+            let at = 14 + col_of(&header, &name_of(other));
             assert_ne!(buffer[(at, 0)].fg, accent, "{other:?} highlighted too");
         }
     }
+}
+
+#[test]
+fn the_tabs_spell_out_each_name_after_its_key_letter() {
+    let mut s = populated();
+    s.theme = index_of("gruvbox-dark").unwrap();
+    let t = crate::theme::Theme::new(s.theme, s.color_depth);
+    let buffer = draw(&s, 120, 40);
+    let header: String = (14..120)
+        .map(|x| buffer[(x, 0)].symbol().to_string())
+        .collect();
+    for screen in Screen::ALL {
+        let name = name_of(screen);
+        let at = 14 + col_of(&header, &name);
+        assert_ne!(
+            buffer[(at, 0)].fg,
+            t.muted.fg.unwrap(),
+            "{screen:?}: the key letter stands out"
+        );
+        for x in at + 1..at + name.chars().count() as u16 {
+            assert_eq!(
+                buffer[(x, 0)].fg,
+                t.muted.fg.unwrap(),
+                "{screen:?}: the rest of the name is muted"
+            );
+        }
+    }
+
+    s.screen = Screen::Transactions;
+    let narrow = render(&s, 80, 24);
+    let header = narrow.lines().next().unwrap();
+    assert!(header.contains("transactions"), "{header}");
+    assert!(header.contains("main"), "{header}");
+}
+
+fn name_of(screen: Screen) -> String {
+    screen.title().to_lowercase()
 }
 
 /// The single key letter a screen shows in the tab bar.
