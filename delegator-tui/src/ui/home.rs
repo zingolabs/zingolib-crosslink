@@ -18,7 +18,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
     let width = usize::from(area.width);
     let b = &state.balance;
 
-    let mut top = vec![Line::styled("Balance", t.muted)];
+    let mut top = Vec::new();
     if !state.data_loaded {
         top.push(Line::styled("unknown until the wallet connects", t.muted));
         top.push(Line::from(""));

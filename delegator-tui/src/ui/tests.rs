@@ -1519,7 +1519,7 @@ fn the_chrome_sits_on_the_left_edge_and_content_two_columns_in() {
     // the footer's first key and the body's first word share the content edge, less the rule
     let footer = lines[usize::from(h) - 1];
     assert!(footer.starts_with("j/k move"), "{footer}");
-    assert_eq!(indent_of(&out, "Balance"), EDGE);
+    assert_eq!(indent_of(&out, "Staked"), EDGE);
     // a notice takes the footer over
     s.set_notice("copied");
     let out = render(&s, w, h);
