@@ -278,6 +278,19 @@ fn warn(uri: &str, what: &str) {
     tracing::warn!("discovery probe {uri}: {what}");
 }
 
+/// The one form of an indexer's address, `scheme://host:port`, so that two spellings of the same
+/// node, `http://h:18234` and `http://h:18234/` say, are one candidate. A bare host gets
+/// `http` and the crosslink gRPC port. `None` when `raw` is not an address.
+pub fn indexer_key(raw: &str) -> Option<String> {
+    // scheme and host are case-blind, and an indexer address has no path
+    let uri: http::Uri = normalize_uri(&raw.to_ascii_lowercase())?.parse().ok()?;
+    let scheme = uri.scheme_str().unwrap_or("http");
+    let port = uri
+        .port_u16()
+        .unwrap_or(if scheme == "https" { 443 } else { 80 });
+    Some(format!("{scheme}://{}:{port}", uri.host()?))
+}
+
 fn normalize_uri(raw: &str) -> Option<String> {
     let raw = raw.trim();
     if raw.is_empty() {
