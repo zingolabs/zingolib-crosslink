@@ -109,6 +109,10 @@ pub enum Action {
     SendProposed(Result<(u64, u64), String>),
     /// The send was transmitted: its txids, or why it failed.
     SendDone(Result<Vec<String>, String>),
+    /// The wallet worked out a staking action: its fee in zatoshis, or why it cannot.
+    StakeProposed(Result<u64, String>),
+    /// The staking action was transmitted: its txids, or why it failed.
+    StakeDone(Result<Vec<String>, String>),
     /// The roster poller fetched the finalizer list again, best first.
     RosterUpdated {
         roster: Vec<RosterRow>,
@@ -167,8 +171,30 @@ pub enum Command {
     },
     /// Build and transmit the held send.
     ConfirmSend,
-    /// Drop the held send.
+    /// Drop the held send or staking action.
     CancelSend,
+    /// Work out a new bond of `amount` zatoshis with `finalizer`, `zfinv1…`, and hold it for
+    /// confirmation.
+    ProposeStake {
+        finalizer: String,
+        amount: u64,
+    },
+    /// Work out the start of unbonding for the bond with this key, hex, and hold it.
+    ProposeUnbond {
+        bond: String,
+    },
+    /// Work out moving the bond with this key, hex, to the finalizer `to`, and hold it.
+    ProposeRedelegate {
+        bond: String,
+        to: String,
+    },
+    /// Build and transmit the held staking action.
+    ConfirmStake,
+    /// Withdraw the unbonded bond with this key, hex. A withdrawal has no proposal: the
+    /// wallet builds and transmits it at once.
+    Withdraw {
+        bond: String,
+    },
     /// Persist the theme with this id as the user's preference.
     SaveTheme(&'static str),
     Quit,

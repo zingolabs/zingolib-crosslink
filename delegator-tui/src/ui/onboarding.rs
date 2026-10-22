@@ -546,7 +546,9 @@ fn create(o: &Onboarding, t: &Theme, width: usize) -> Vec<Piece> {
             None => para(
                 &format!(
                     "Asking {} for the chain tip, which sets the birthday…",
-                    o.network.default_server()
+                    o.server
+                        .clone()
+                        .unwrap_or_else(|| format!("the {} indexers", o.network.name()))
                 ),
                 t.muted,
                 width,

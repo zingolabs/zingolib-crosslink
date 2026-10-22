@@ -80,12 +80,29 @@ pub fn draw_finalizers(frame: &mut Frame, area: Rect, state: &State, t: &Theme) 
     roster(frame, heading_area, roster_area, state, t);
 }
 
-/// The wallet's bonds: finalizer, amount, standing, height of the last action.
+/// The wallet's bonds: finalizer, what the bond is worth now, what it earned since it was
+/// created, its standing, and when the chain takes its next action: an unbond while bonded, a
+/// withdrawal while unbonding. The height of the last action is on the bond's menu.
 fn bonds_table(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
     let rows = state.bonds.iter().map(|bond| {
         let (status, style) = match bond.status {
             BondStatus::Bonded => (bond.status.name(), t.info),
             BondStatus::Unbonding => (bond.status.name(), t.negative),
+        };
+        let next = match super::stake::next_action(state, bond) {
+            Some((_, true)) => Span::styled(
+                match bond.status {
+                    BondStatus::Bonded => "unbond now",
+                    BondStatus::Unbonding => "withdraw now",
+                },
+                t.positive,
+            ),
+            Some((_, false)) => {
+                let tip = state.sync.tip.unwrap_or(0);
+                let wait = u64::from(bond.next_action_at(tip) - tip - 1) * state.spacing_secs();
+                Span::styled(format!("in {}", format::duration(wait)), t.muted)
+            }
+            None => Span::raw(""),
         };
         Row::new(vec![
             Cell::from(finalizer(&bond.finalizer, t)),
@@ -96,17 +113,25 @@ fn bonds_table(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
                 ))
                 .alignment(Alignment::Right),
             ),
+            Cell::from(
+                Line::from(match bond.earned() {
+                    0 => Span::styled("—", t.muted),
+                    earned => Span::styled(format!("+{}", format::zec(earned)), t.positive),
+                })
+                .alignment(Alignment::Right),
+            ),
             Cell::from(Span::styled(status, style)),
-            Cell::from(Span::styled(format::group(u64::from(bond.since)), t.muted)),
+            Cell::from(next),
         ])
     });
     let table = Table::new(
         rows,
         [
             Constraint::Length(SHORT_WIDTH as u16 + 2),
-            Constraint::Length(16),
+            Constraint::Length(12),
+            Constraint::Length(11),
             Constraint::Length(10),
-            Constraint::Length(10),
+            Constraint::Fill(1),
         ],
     )
     .column_spacing(2)
@@ -114,8 +139,9 @@ fn bonds_table(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
         Row::new(vec![
             Cell::from("  finalizer"),
             Cell::from(Line::from("amount").alignment(Alignment::Right)),
+            Cell::from(Line::from("earned").alignment(Alignment::Right)),
             Cell::from("status"),
-            Cell::from("since"),
+            Cell::from("next"),
         ])
         .style(t.muted),
     )
@@ -125,14 +151,24 @@ fn bonds_table(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
 }
 
 /// Every finalizer on the chain, largest stake first: its address, the stake with it, and that
-/// stake's share of the whole. A mark leads the ones this wallet has a bond with.
+/// stake's share of the whole. A mark leads the ones this wallet has a bond with. While a bond
+/// waits for a new finalizer, the heading says which.
 fn roster(frame: &mut Frame, heading_area: Rect, area: Rect, state: &State, t: &Theme) {
     let total: u64 = state
         .roster
         .iter()
         .map(|r| r.stake)
         .fold(0, u64::saturating_add);
-    let heading_line = if state.roster.is_empty() {
+    let heading_line = if let Some(bond) = &state.redelegating {
+        let mut spans = vec![
+            Span::styled("Redelegate ", t.title),
+            Span::styled(format!("{} ZEC", format::zec(bond.amount)), t.text),
+            Span::styled(" from ", t.muted),
+        ];
+        spans.extend(finalizer(&bond.finalizer, t).spans);
+        spans.push(Span::styled("  choose the new finalizer", t.warning));
+        Line::from(spans)
+    } else if state.roster.is_empty() {
         Line::styled("Finalizers  the node has not answered yet", t.muted)
     } else {
         Line::from(vec![
@@ -204,8 +240,10 @@ fn roster(frame: &mut Frame, heading_area: Rect, area: Rect, state: &State, t: &
             Cell::from(""),
         ])
         .style(t.muted),
-    );
-    frame.render_widget(table, area);
+    )
+    .row_highlight_style(t.selection);
+    let mut ts = TableState::default().with_selected(Some(state.finalizer_selected));
+    frame.render_stateful_widget(table, area, &mut ts);
 }
 
 /// A bar of `cells` for a percentage, filled by share.

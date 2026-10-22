@@ -42,11 +42,11 @@ async fn run(args: Args) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let config = if network {
-        discovery::DiscoveryConfig::crosslink_stable()
+    let config = delegator_tui::backend::discovery_config(if network {
+        delegator_tui::app::Network::Stable
     } else {
-        discovery::DiscoveryConfig::crosslink_nightly()
-    };
+        delegator_tui::app::Network::Nightly
+    });
     let report = discovery::discover(&config, None).await;
     for error in &report.errors {
         eprintln!("note: {error}");

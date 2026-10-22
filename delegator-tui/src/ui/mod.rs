@@ -16,6 +16,7 @@ mod onboarding;
 mod receive;
 mod send;
 mod sigil;
+mod stake;
 mod sync;
 mod themes;
 mod transactions;
@@ -26,7 +27,10 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
-use crate::app::{FaucetStage, Network, Overlay, Phase, Screen, SendStage, State, SyncMode};
+use crate::app::{
+    BondAction, FaucetStage, Network, Overlay, Phase, Screen, SendStage, StakeOp, StakeStage,
+    State, SyncMode,
+};
 use crate::format;
 use crate::theme::{self, Theme};
 
@@ -264,6 +268,8 @@ fn draw_main(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
         Overlay::NewUnifiedAddress { .. } => "new address".into(),
         Overlay::ThemePicker { .. } => "theme".into(),
         Overlay::Faucet(_) => "faucet".into(),
+        Overlay::BondMenu { .. } => "bond".into(),
+        Overlay::Stake(form) => form.op.verb().into(),
     };
     pane(frame, body, t, &title);
     match &state.overlay {
@@ -275,6 +281,8 @@ fn draw_main(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
         }
         Overlay::ThemePicker { original } => themes::draw(frame, body, state, t, *original),
         Overlay::Faucet(stage) => send::draw_faucet(frame, body, state, t, stage),
+        Overlay::BondMenu { selected } => stake::draw_menu(frame, body, state, t, *selected),
+        Overlay::Stake(form) => stake::draw(frame, body, state, t, form),
         Overlay::Help | Overlay::None => match state.screen {
             Screen::Home => home::draw(frame, body, state, t),
             Screen::Pay => send::draw(frame, body, state, t, &state.send),
@@ -423,6 +431,35 @@ fn hints(state: &State) -> String {
             FaucetStage::Requesting { .. } => Vec::new(),
             FaucetStage::Done { .. } | FaucetStage::Failed(_) => vec![("esc", "close")],
         },
+        Overlay::BondMenu { .. } => vec![
+            ("j/k", "choose"),
+            ("enter", "go"),
+            ("y", "copy finalizer"),
+            ("esc", "back"),
+        ],
+        Overlay::Stake(form) => match &form.stage {
+            StakeStage::Edit => vec![
+                ("↑/↓", "power of ten"),
+                ("enter", "review"),
+                ("esc", "cancel"),
+            ],
+            StakeStage::Proposing => vec![("esc", "cancel")],
+            StakeStage::Confirm { .. } => vec![
+                (
+                    "y",
+                    match form.op {
+                        StakeOp::Stake { .. } => "stake",
+                        StakeOp::Unbond { .. } => "unbond",
+                        StakeOp::Redelegate { .. } => "redelegate",
+                        StakeOp::Withdraw { .. } => "withdraw",
+                    },
+                ),
+                ("n", "back"),
+            ],
+            StakeStage::Sending => Vec::new(),
+            StakeStage::Sent { .. } => vec![("y", "copy txid"), ("esc", "to bonds")],
+            StakeStage::Failed(_) => vec![("esc", "close")],
+        },
         Overlay::None => {
             let mut pairs = match state.screen {
                 Screen::Home => vec![
@@ -441,8 +478,23 @@ fn hints(state: &State) -> String {
                     SendStage::Sent { .. } => vec![("y", "copy txid"), ("esc", "home")],
                 },
                 Screen::Transactions => vec![("j/k", "move"), ("enter", "open")],
-                Screen::Bonds => vec![("j/k", "move"), ("y", "copy finalizer")],
-                Screen::Finalizers => vec![("j/k", "move"), ("y", "copy finalizer")],
+                // the actions first: the footer shares its row with the staking calendar
+                Screen::Bonds => match state.selected_bond() {
+                    Some(bond) => std::iter::once(("enter", "actions"))
+                        .chain(
+                            BondAction::for_status(bond.status)
+                                .iter()
+                                .map(|a| (a.key_name(), a.label())),
+                        )
+                        .collect(),
+                    None => vec![("f", "finalizers, to stake")],
+                },
+                Screen::Finalizers if state.redelegating.is_some() => {
+                    vec![("enter", "move here"), ("esc", "cancel")]
+                }
+                Screen::Finalizers => {
+                    vec![("enter", "stake"), ("y", "copy finalizer"), ("j/k", "move")]
+                }
                 Screen::Receive => vec![
                     ("v", "unified ⇄ transparent"),
                     ("n", "new address"),

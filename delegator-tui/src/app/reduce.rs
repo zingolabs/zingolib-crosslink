@@ -5,8 +5,8 @@ use std::time::Instant;
 use super::action::{Action, Command, Key, SyncNote};
 use super::onboarding;
 use super::state::{
-    DetailMode, FaucetStage, FoundTx, Overlay, Phase, ReceiveKind, Screen, SendField, SendForm,
-    SendStage, State,
+    BondAction, BondRow, BondStatus, DetailMode, FaucetStage, FoundTx, Overlay, Phase, ReceiveKind,
+    Screen, SendField, SendForm, SendStage, StakeForm, StakeOp, StakeStage, StakingDay, State,
 };
 use crate::format;
 
@@ -156,16 +156,57 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Command> {
             }
             Vec::new()
         }
+        Action::StakeProposed(result) => {
+            if let Overlay::Stake(form) = &mut state.overlay
+                && form.stage == StakeStage::Proposing
+            {
+                match result {
+                    Ok(fee) => {
+                        form.error = None;
+                        form.stage = StakeStage::Confirm { fee: Some(fee) };
+                    }
+                    Err(e) => stake_refused(form, e),
+                }
+            }
+            Vec::new()
+        }
+        Action::StakeDone(result) => {
+            let sent = result.is_ok();
+            if let Overlay::Stake(form) = &mut state.overlay {
+                match result {
+                    Ok(txids) => {
+                        form.error = None;
+                        form.stage = StakeStage::Sent { txids };
+                    }
+                    Err(e) => stake_refused(form, e),
+                }
+            }
+            if sent {
+                vec![Command::Refresh]
+            } else {
+                Vec::new()
+            }
+        }
+    }
+}
+
+/// The wallet said no: a new bond goes back to its form with the reason, any other action
+/// ends on it.
+fn stake_refused(form: &mut StakeForm, reason: String) {
+    if matches!(form.op, StakeOp::Stake { .. }) {
+        form.stage = StakeStage::Edit;
+        form.error = Some(reason);
+    } else {
+        form.stage = StakeStage::Failed(reason);
     }
 }
 
 fn clamp_selections(state: &mut State) {
     state.tx_selected = state.tx_selected.min(state.txs.len().saturating_sub(1));
     state.bond_selected = state.bond_selected.min(state.bonds.len().saturating_sub(1));
-    state.bond_selected = state.bond_selected.min(state.bonds.len().saturating_sub(1));
-    state.bond_selected = state.bond_selected.min(state.bonds.len().saturating_sub(1));
-    state.bond_selected = state.bond_selected.min(state.bonds.len().saturating_sub(1));
-    state.bond_selected = state.bond_selected.min(state.bonds.len().saturating_sub(1));
+    state.finalizer_selected = state
+        .finalizer_selected
+        .min(state.roster.len().saturating_sub(1));
     state.addr_selected = state
         .addr_selected
         .min(state.addresses.len().saturating_sub(1));
@@ -275,12 +316,24 @@ fn on_paste(state: &mut State, text: &str) -> Vec<Command> {
     if matches!(state.phase, Phase::Onboarding(_)) {
         return onboarding::paste(state, text);
     }
+    // the stake amount is chosen, never typed, so a paste has nowhere to go
+    if state.overlay != Overlay::None {
+        return Vec::new();
+    }
     if state.screen == Screen::Pay && state.send.stage == SendStage::Edit {
         let text: String = text.chars().filter(|c| state.send.accepts(*c)).collect();
         state.send.value_mut().push_str(&text);
     }
+    // a finalizer address pasted on the list is one to stake with, roster or not
+    let pasted = text.trim();
+    if state.screen == Screen::Finalizers && pasted.starts_with(FINALIZER_PREFIX) {
+        return choose_finalizer(state, pasted.to_string());
+    }
     Vec::new()
 }
+
+/// Every finalizer address starts so; a roster row without it is a bare key.
+const FINALIZER_PREFIX: &str = "zfinv1";
 
 fn on_key(state: &mut State, key: Key) -> Vec<Command> {
     match &state.phase {
@@ -427,8 +480,229 @@ fn main_key(state: &mut State, key: Key) -> Vec<Command> {
             Vec::new()
         }
         Overlay::Faucet(stage) => faucet_key(state, stage, key),
-        Overlay::None => screen_key(state, key),
+        Overlay::BondMenu { selected } => bond_menu_key(state, selected, key),
+        Overlay::Stake(form) => stake_key(state, form, key),
+        Overlay::None => {
+            let commands = screen_key(state, key);
+            // the pick of a new finalizer lasts only while its list is on screen
+            if state.screen != Screen::Finalizers {
+                state.redelegating = None;
+            }
+            commands
+        }
     }
+}
+
+/// The bond menu: the selected bond's actions, chosen with j/k and Enter or by their keys.
+fn bond_menu_key(state: &mut State, selected: usize, key: Key) -> Vec<Command> {
+    let Some(bond) = state.selected_bond().cloned() else {
+        state.overlay = Overlay::None;
+        return Vec::new();
+    };
+    let actions = BondAction::for_status(bond.status);
+    match key {
+        Key::Esc => {
+            state.overlay = Overlay::None;
+            Vec::new()
+        }
+        Key::Down | Key::Char('j') => {
+            state.overlay = Overlay::BondMenu {
+                selected: (selected + 1).min(actions.len() - 1),
+            };
+            Vec::new()
+        }
+        Key::Up | Key::Char('k') => {
+            state.overlay = Overlay::BondMenu {
+                selected: selected.saturating_sub(1),
+            };
+            Vec::new()
+        }
+        Key::Char('y') => vec![Command::Copy(bond.finalizer.clone())],
+        Key::Enter => match actions.get(selected) {
+            Some(action) => bond_action(state, *action, bond),
+            None => Vec::new(),
+        },
+        Key::Char(c) => match actions.iter().find(|a| a.key() == c) {
+            Some(action) => bond_action(state, *action, bond),
+            None => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
+/// Starts `action` on `bond`, or says why it cannot start: the wallet cannot sign, the bond
+/// is in the wrong state, or the chain would not take the action yet.
+fn bond_action(state: &mut State, action: BondAction, bond: BondRow) -> Vec<Command> {
+    if !state.can_spend() {
+        state.overlay = Overlay::None;
+        state.set_notice("this wallet holds a viewing key only · it cannot stake");
+        return Vec::new();
+    }
+    if !BondAction::for_status(bond.status).contains(&action) {
+        state.set_notice(match bond.status {
+            BondStatus::Bonded => "this bond is still bonded · unbond it first",
+            BondStatus::Unbonding => "this bond is unbonding · it can only be withdrawn",
+        });
+        return Vec::new();
+    }
+    if action != BondAction::Redelegate
+        && let Some(tip) = state.sync.tip
+    {
+        let at = bond.next_action_at(tip);
+        if at > tip + 1 {
+            let wait = u64::from(at - tip - 1) * state.spacing_secs();
+            state.set_notice(format!(
+                "the chain takes this {} from block {} · in ≈ {}",
+                action.label(),
+                format::group(u64::from(at)),
+                format::duration(wait)
+            ));
+            return Vec::new();
+        }
+    }
+    match action {
+        BondAction::Unbond => {
+            let command = Command::ProposeUnbond {
+                bond: bond.key.clone(),
+            };
+            state.overlay = Overlay::Stake(StakeForm::new(StakeOp::Unbond { bond }));
+            vec![command]
+        }
+        BondAction::Withdraw => {
+            state.overlay = Overlay::Stake(StakeForm::new(StakeOp::Withdraw { bond }));
+            Vec::new()
+        }
+        BondAction::Redelegate => {
+            state.overlay = Overlay::None;
+            state.redelegating = Some(bond);
+            state.screen = Screen::Finalizers;
+            Vec::new()
+        }
+    }
+}
+
+/// A finalizer was chosen, from the list or by pasting its address: the new bond's target,
+/// or the new home of the bond being redelegated.
+fn choose_finalizer(state: &mut State, finalizer: String) -> Vec<Command> {
+    if !state.can_spend() {
+        state.set_notice("this wallet holds a viewing key only · it cannot stake");
+        return Vec::new();
+    }
+    if !finalizer.starts_with(FINALIZER_PREFIX) {
+        state.set_notice("the node has no address for this finalizer · it cannot take stake");
+        return Vec::new();
+    }
+    match state.redelegating.take() {
+        Some(bond) if bond.finalizer == finalizer => {
+            state.redelegating = Some(bond);
+            state.set_notice("the bond is with this finalizer already · choose another");
+            Vec::new()
+        }
+        Some(bond) => {
+            let command = Command::ProposeRedelegate {
+                bond: bond.key.clone(),
+                to: finalizer.clone(),
+            };
+            state.overlay = Overlay::Stake(StakeForm::new(StakeOp::Redelegate {
+                bond,
+                to: finalizer,
+            }));
+            vec![command]
+        }
+        None => {
+            // a new bond needs a staking day at the next block
+            if let Some(tip) = state.sync.tip {
+                let day = StakingDay::at_height(tip + 1);
+                if !day.open {
+                    state.set_notice(format!(
+                        "no staking day · new bonds open in {} blocks ≈ {}",
+                        format::group(u64::from(day.blocks_left)),
+                        format::duration(day.secs_left(state.spacing_secs()))
+                    ));
+                    return Vec::new();
+                }
+            }
+            state.overlay = Overlay::Stake(StakeForm::new(StakeOp::Stake { finalizer }));
+            Vec::new()
+        }
+    }
+}
+
+/// The staking form: the amount for a new bond, a power of ten, then the fee, then the txid. Esc backs out
+/// of every stage but the transmission itself, and drops what the wallet holds.
+fn stake_key(state: &mut State, mut form: StakeForm, key: Key) -> Vec<Command> {
+    let mut commands = Vec::new();
+    match form.stage.clone() {
+        StakeStage::Edit => match key {
+            Key::Esc => {
+                state.overlay = Overlay::None;
+                return Vec::new();
+            }
+            // the amount moves only from one power of ten to the next
+            Key::Up | Key::Right | Key::Char('k' | 'l' | '+') => form.step(true),
+            Key::Down | Key::Left | Key::Char('j' | 'h' | '-') => form.step(false),
+            Key::Enter => {
+                if let StakeOp::Stake { finalizer } = &form.op {
+                    commands.push(Command::ProposeStake {
+                        finalizer: finalizer.clone(),
+                        amount: form.amount_zats(),
+                    });
+                    form.error = None;
+                    form.stage = StakeStage::Proposing;
+                }
+            }
+            _ => {}
+        },
+        StakeStage::Proposing => {
+            if key == Key::Esc {
+                state.overlay = Overlay::None;
+                return vec![Command::CancelSend];
+            }
+        }
+        StakeStage::Confirm { .. } => match key {
+            Key::Char('y') | Key::Enter => {
+                commands.push(match &form.op {
+                    StakeOp::Withdraw { bond } => Command::Withdraw {
+                        bond: bond.key.clone(),
+                    },
+                    _ => Command::ConfirmStake,
+                });
+                form.stage = StakeStage::Sending;
+            }
+            Key::Char('n') | Key::Esc => {
+                // a withdrawal holds nothing in the wallet until it is sent
+                if !matches!(form.op, StakeOp::Withdraw { .. }) {
+                    commands.push(Command::CancelSend);
+                }
+                if matches!(form.op, StakeOp::Stake { .. }) {
+                    form.stage = StakeStage::Edit;
+                } else {
+                    state.overlay = Overlay::None;
+                    return commands;
+                }
+            }
+            _ => {}
+        },
+        StakeStage::Sending => {}
+        StakeStage::Sent { txids } => match key {
+            Key::Char('y') => return vec![Command::Copy(txids.join("\n"))],
+            // the bond, new or changed, is on the bonds screen
+            Key::Esc | Key::Enter => {
+                state.overlay = Overlay::None;
+                state.screen = Screen::Bonds;
+                return Vec::new();
+            }
+            _ => {}
+        },
+        StakeStage::Failed(_) => {
+            if matches!(key, Key::Esc | Key::Enter | Key::Char(_)) {
+                state.overlay = Overlay::None;
+            }
+            return Vec::new();
+        }
+    }
+    state.overlay = Overlay::Stake(form);
+    commands
 }
 
 /// The pay screen: a form that moves through proposal, confirmation and transmission. Tab
@@ -618,7 +892,12 @@ fn screen_key(state: &mut State, key: Key) -> Vec<Command> {
             return Vec::new();
         }
         Key::Esc => {
-            state.screen = Screen::Home;
+            // a pick for a redelegation backs out to the bond it was for
+            state.screen = if state.screen == Screen::Finalizers && state.redelegating.is_some() {
+                Screen::Bonds
+            } else {
+                Screen::Home
+            };
             return Vec::new();
         }
         _ => {}
@@ -640,8 +919,28 @@ fn screen_key(state: &mut State, key: Key) -> Vec<Command> {
         Screen::Bonds => {
             let len = state.bonds.len();
             move_selection(&mut state.bond_selected, len, key, state.size.1);
-            match (key, state.selected_bond()) {
-                (Key::Char('y'), Some(bond)) => vec![Command::Copy(bond.finalizer.clone())],
+            let Some(bond) = state.selected_bond().cloned() else {
+                return Vec::new();
+            };
+            match key {
+                Key::Char('y') => vec![Command::Copy(bond.finalizer)],
+                Key::Enter => {
+                    state.overlay = Overlay::BondMenu { selected: 0 };
+                    Vec::new()
+                }
+                Key::Char(c) => {
+                    match [
+                        BondAction::Unbond,
+                        BondAction::Redelegate,
+                        BondAction::Withdraw,
+                    ]
+                    .into_iter()
+                    .find(|a| a.key() == c)
+                    {
+                        Some(action) => bond_action(state, action, bond),
+                        None => Vec::new(),
+                    }
+                }
                 _ => Vec::new(),
             }
         }
@@ -650,6 +949,10 @@ fn screen_key(state: &mut State, key: Key) -> Vec<Command> {
             move_selection(&mut state.finalizer_selected, len, key, state.size.1);
             match (key, state.selected_finalizer()) {
                 (Key::Char('y'), Some(row)) => vec![Command::Copy(row.finalizer.clone())],
+                (Key::Enter, Some(row)) => {
+                    let finalizer = row.finalizer.clone();
+                    choose_finalizer(state, finalizer)
+                }
                 _ => Vec::new(),
             }
         }
@@ -1504,5 +1807,327 @@ mod tests {
         );
         keys(&mut s, &[Key::Esc]);
         assert_eq!(s.overlay, Overlay::None);
+    }
+
+    fn seed_state() -> State {
+        let mut s = main_state();
+        s.wallet.as_mut().unwrap().kind = WalletKind::Seed;
+        s
+    }
+
+    fn finalizer(c: &str) -> String {
+        format!("zfinv1{}", c.repeat(128))
+    }
+
+    fn roster_row(finalizer: String) -> crate::app::state::RosterRow {
+        crate::app::state::RosterRow {
+            finalizer,
+            stake: 1,
+            bonds: 1,
+            ours: false,
+        }
+    }
+
+    fn bond(key: &str, status: BondStatus, since: u32) -> BondRow {
+        BondRow {
+            key: key.into(),
+            finalizer: finalizer("a"),
+            amount: 1_000_000_000,
+            initial: 1_000_000_000,
+            status,
+            since,
+        }
+    }
+
+    #[test]
+    fn the_amount_is_only_ever_a_power_of_ten() {
+        let mut form = StakeForm::new(StakeOp::Stake {
+            finalizer: finalizer("a"),
+        });
+        assert_eq!(form.amount_zats(), 100_000_000, "it starts at one ZEC");
+        let mut seen = vec![form.amount_zats()];
+        for _ in 0..20 {
+            form.step(true);
+            seen.push(form.amount_zats());
+        }
+        assert_eq!(
+            form.amount_zats(),
+            10u64.pow(15),
+            "ten million ZEC is the top"
+        );
+        for _ in 0..40 {
+            form.step(false);
+            seen.push(form.amount_zats());
+        }
+        assert_eq!(form.amount_zats(), 1, "one zatoshi is the floor");
+        assert!(
+            seen.iter()
+                .all(|z| zcash_primitives::transaction::is_power_of_10(*z)),
+            "every step lands on a power of ten"
+        );
+        form.power = 8;
+        form.step(true);
+        assert_eq!(form.amount_zats(), 1_000_000_000, "1 → 10 ZEC");
+        form.step(false);
+        form.step(false);
+        assert_eq!(form.amount_zats(), 10_000_000, "1 → 0.1 ZEC");
+    }
+
+    #[test]
+    fn the_amount_cannot_be_typed_or_pasted() {
+        let mut s = seed_state();
+        s.roster = vec![roster_row(finalizer("a"))];
+        keys(&mut s, &[Key::Char('f'), Key::Enter]);
+        for c in "1.5".chars() {
+            keys(&mut s, &[Key::Char(c)]);
+        }
+        reduce(&mut s, Action::Paste("15".into()));
+        let Overlay::Stake(form) = &s.overlay else {
+            panic!("the form closed")
+        };
+        assert_eq!(form.amount_zats(), 100_000_000, "still one ZEC");
+        // every arrow, both ways
+        keys(
+            &mut s,
+            &[Key::Up, Key::Right, Key::Char('+'), Key::Char('k')],
+        );
+        let Overlay::Stake(form) = &s.overlay else {
+            panic!("the form closed")
+        };
+        assert_eq!(form.amount_zats(), 10u64.pow(12), "10,000 ZEC");
+        keys(
+            &mut s,
+            &[
+                Key::Down,
+                Key::Left,
+                Key::Char('-'),
+                Key::Char('j'),
+                Key::Char('h'),
+            ],
+        );
+        assert_eq!(
+            keys(&mut s, &[Key::Enter]),
+            vec![Command::ProposeStake {
+                finalizer: finalizer("a"),
+                amount: 10_000_000,
+            }],
+            "0.1 ZEC"
+        );
+    }
+
+    #[test]
+    fn enter_on_a_finalizer_stakes_with_it() {
+        let mut s = seed_state();
+        s.roster = vec![roster_row(finalizer("a")), roster_row(finalizer("b"))];
+        keys(&mut s, &[Key::Char('f'), Key::Char('j')]);
+        assert!(keys(&mut s, &[Key::Enter]).is_empty());
+        assert_eq!(
+            s.overlay,
+            Overlay::Stake(StakeForm::new(StakeOp::Stake {
+                finalizer: finalizer("b")
+            }))
+        );
+        // one ZEC to start, reviewed as it is
+        assert_eq!(
+            keys(&mut s, &[Key::Enter]),
+            vec![Command::ProposeStake {
+                finalizer: finalizer("b"),
+                amount: 100_000_000,
+            }]
+        );
+        reduce(&mut s, Action::StakeProposed(Ok(20_000)));
+        let Overlay::Stake(form) = &s.overlay else {
+            panic!("the form closed")
+        };
+        assert_eq!(form.stage, StakeStage::Confirm { fee: Some(20_000) });
+        // back to the amount, then on to the transaction
+        assert_eq!(keys(&mut s, &[Key::Char('n')]), vec![Command::CancelSend]);
+        keys(&mut s, &[Key::Enter]);
+        reduce(&mut s, Action::StakeProposed(Ok(20_000)));
+        assert_eq!(keys(&mut s, &[Key::Char('y')]), vec![Command::ConfirmStake]);
+        assert!(keys(&mut s, &[Key::Esc]).is_empty(), "no way out mid-send");
+        let cmds = reduce(&mut s, Action::StakeDone(Ok(vec!["ab12".into()])));
+        assert_eq!(cmds, vec![Command::Refresh]);
+        assert_eq!(
+            keys(&mut s, &[Key::Char('y')]),
+            vec![Command::Copy("ab12".into())]
+        );
+        keys(&mut s, &[Key::Esc]);
+        assert_eq!(s.overlay, Overlay::None);
+        assert_eq!(
+            s.screen,
+            Screen::Bonds,
+            "the new bond is on the bonds screen"
+        );
+    }
+
+    #[test]
+    fn a_refused_bond_goes_back_to_its_form() {
+        let mut s = seed_state();
+        s.roster = vec![roster_row(finalizer("a"))];
+        keys(&mut s, &[Key::Char('f'), Key::Enter, Key::Up, Key::Enter]);
+        reduce(
+            &mut s,
+            Action::StakeProposed(Err("insufficient funds".into())),
+        );
+        let Overlay::Stake(form) = &s.overlay else {
+            panic!("the form closed")
+        };
+        assert_eq!(form.stage, StakeStage::Edit);
+        assert_eq!(form.error.as_deref(), Some("insufficient funds"));
+    }
+
+    #[test]
+    fn a_watch_wallet_and_a_closed_staking_day_stop_a_new_bond() {
+        let mut s = main_state();
+        s.roster = vec![roster_row(finalizer("a")), roster_row("ab".repeat(32))];
+        keys(&mut s, &[Key::Char('f'), Key::Enter]);
+        assert_eq!(s.overlay, Overlay::None);
+        assert!(s.notice_text().unwrap().contains("viewing key"));
+
+        let mut s = seed_state();
+        s.roster = vec![roster_row(finalizer("a")), roster_row("ab".repeat(32))];
+        s.sync.tip = Some(StakingDay::DAY_WINDOW + 10);
+        keys(&mut s, &[Key::Char('f'), Key::Enter]);
+        assert_eq!(s.overlay, Overlay::None);
+        assert!(s.notice_text().unwrap().contains("no staking day"));
+
+        s.sync.tip = Some(StakingDay::PERIOD);
+        keys(&mut s, &[Key::Char('j'), Key::Enter]);
+        assert_eq!(s.overlay, Overlay::None, "a bare key cannot take stake");
+        assert!(s.notice_text().unwrap().contains("no address"));
+    }
+
+    #[test]
+    fn a_pasted_finalizer_address_opens_the_form() {
+        let mut s = seed_state();
+        keys(&mut s, &[Key::Char('f')]);
+        reduce(&mut s, Action::Paste(format!("  {}\n", finalizer("z"))));
+        assert_eq!(
+            s.overlay,
+            Overlay::Stake(StakeForm::new(StakeOp::Stake {
+                finalizer: finalizer("z")
+            }))
+        );
+    }
+
+    #[test]
+    fn bonds_unbond_and_withdraw_by_key_or_menu() {
+        let mut s = seed_state();
+        s.bonds = vec![
+            bond("aa", BondStatus::Bonded, 1),
+            bond("bb", BondStatus::Unbonding, 1),
+        ];
+        keys(&mut s, &[Key::Char('b')]);
+        assert!(keys(&mut s, &[Key::Char('w')]).is_empty());
+        assert!(s.notice_text().unwrap().contains("still bonded"));
+        assert_eq!(
+            keys(&mut s, &[Key::Char('u')]),
+            vec![Command::ProposeUnbond { bond: "aa".into() }]
+        );
+        reduce(&mut s, Action::StakeProposed(Err("window closed".into())));
+        let Overlay::Stake(form) = &s.overlay else {
+            panic!("the form closed")
+        };
+        assert_eq!(form.stage, StakeStage::Failed("window closed".into()));
+        keys(&mut s, &[Key::Enter]);
+        assert_eq!(s.overlay, Overlay::None);
+
+        // the menu on the unbonding bond offers the withdrawal only
+        keys(&mut s, &[Key::Char('j'), Key::Enter]);
+        assert_eq!(s.overlay, Overlay::BondMenu { selected: 0 });
+        keys(&mut s, &[Key::Char('j')]);
+        assert_eq!(s.overlay, Overlay::BondMenu { selected: 0 }, "one action");
+        assert!(keys(&mut s, &[Key::Enter]).is_empty());
+        let Overlay::Stake(form) = &s.overlay else {
+            panic!("the form did not open")
+        };
+        assert_eq!(form.stage, StakeStage::Confirm { fee: None });
+        assert_eq!(
+            keys(&mut s, &[Key::Char('y')]),
+            vec![Command::Withdraw { bond: "bb".into() }]
+        );
+        reduce(&mut s, Action::StakeDone(Err("not unbonding".into())));
+        let Overlay::Stake(form) = &s.overlay else {
+            panic!("the form closed")
+        };
+        assert_eq!(form.stage, StakeStage::Failed("not unbonding".into()));
+    }
+
+    #[test]
+    fn an_unbond_waits_for_the_action_delay() {
+        let mut s = seed_state();
+        let since = 2 * StakingDay::PERIOD;
+        s.bonds = vec![bond("aa", BondStatus::Bonded, since)];
+        s.sync.tip = Some(since + 5);
+        keys(&mut s, &[Key::Char('b')]);
+        assert!(keys(&mut s, &[Key::Char('u')]).is_empty());
+        assert_eq!(s.overlay, Overlay::None);
+        let at = since + StakingDay::PERIOD;
+        assert!(
+            s.notice_text()
+                .unwrap()
+                .contains(&format!("from block {}", format::group(u64::from(at)))),
+            "{:?}",
+            s.notice_text()
+        );
+        // a redelegation is never held back
+        keys(&mut s, &[Key::Char('d')]);
+        assert_eq!(s.screen, Screen::Finalizers);
+    }
+
+    #[test]
+    fn redelegating_picks_the_new_finalizer_on_the_list() {
+        let mut s = seed_state();
+        s.bonds = vec![bond("aa", BondStatus::Bonded, 1)];
+        s.roster = vec![roster_row(finalizer("a")), roster_row(finalizer("b"))];
+        keys(&mut s, &[Key::Char('b'), Key::Enter, Key::Char('j')]);
+        assert_eq!(s.overlay, Overlay::BondMenu { selected: 1 });
+        keys(&mut s, &[Key::Enter]);
+        assert_eq!(s.screen, Screen::Finalizers);
+        assert_eq!(s.redelegating.as_ref().map(|b| b.key.as_str()), Some("aa"));
+        // the bond's own finalizer is no move at all
+        assert!(keys(&mut s, &[Key::Enter]).is_empty());
+        assert!(s.notice_text().unwrap().contains("already"));
+        assert!(s.redelegating.is_some(), "still picking");
+        assert_eq!(
+            keys(&mut s, &[Key::Char('j'), Key::Enter]),
+            vec![Command::ProposeRedelegate {
+                bond: "aa".into(),
+                to: finalizer("b"),
+            }]
+        );
+        assert!(s.redelegating.is_none());
+        assert_eq!(keys(&mut s, &[Key::Esc]), vec![Command::CancelSend]);
+        assert_eq!(s.overlay, Overlay::None);
+
+        // esc while picking goes back to the bonds, and the pick ends
+        keys(&mut s, &[Key::Char('b'), Key::Char('d')]);
+        assert!(s.redelegating.is_some());
+        keys(&mut s, &[Key::Esc]);
+        assert_eq!(s.screen, Screen::Bonds);
+        assert!(s.redelegating.is_none());
+        // so does leaving for another screen
+        keys(&mut s, &[Key::Char('d'), Key::Char('h')]);
+        assert!(s.redelegating.is_none());
+        keys(&mut s, &[Key::Char('f'), Key::Enter]);
+        assert!(
+            matches!(&s.overlay, Overlay::Stake(f) if matches!(f.op, StakeOp::Stake { .. })),
+            "with no pick, enter makes a new bond"
+        );
+    }
+
+    #[test]
+    fn a_reload_keeps_the_finalizer_selection_on_the_list() {
+        let mut s = main_state();
+        s.finalizer_selected = 3;
+        reduce(
+            &mut s,
+            Action::DataLoaded(WalletData {
+                roster: vec![roster_row(finalizer("a"))],
+                ..Default::default()
+            }),
+        );
+        assert_eq!(s.finalizer_selected, 0);
     }
 }
