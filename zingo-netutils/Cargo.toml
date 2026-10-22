@@ -16,9 +16,12 @@ http.workspace = true
 hyper-rustls.workspace = true
 hyper-util.workspace = true
 hyper.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["full"] }
 tokio-rustls.workspace = true
 tonic.workspace = true
+tracing.workspace = true
 
 zcash_client_backend = { workspace = true, features = [
     "lightwalletd-tonic",

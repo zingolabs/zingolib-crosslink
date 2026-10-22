@@ -10,10 +10,10 @@ use ratatui::style::Color;
 
 use super::view;
 use crate::app::{
-    AddressKind, AddressRow, BondRow, BondStatus, ChainRange, DetailMode, FaucetStage, InputRow,
-    Network, OutputRole, OutputRow, Overlay, Phase, Pool, RangePriority, RosterRow, Screen,
-    SendField, SendForm, SendStage, SpendState, State, SyncMode, TxKind, TxRow, TxStatus,
-    WalletEntry, WalletEventRow, WalletInfo, WalletKind,
+    AddressKind, AddressRow, BondRow, BondStatus, ChainRange, DetailMode, FaucetStage, IndexerRow,
+    InputRow, Network, OutputRole, OutputRow, Overlay, Phase, Pool, RangePriority, RosterRow,
+    Screen, SpendState, State, SyncMode, TxKind, TxRow, TxStatus, WalletEntry, WalletEventRow,
+    WalletInfo, WalletKind,
 };
 use crate::app::{BirthdayMode, Evidence, KeyMaterial, Onboarding, Step, Tip};
 use crate::format;
@@ -76,11 +76,13 @@ fn populated() -> State {
         RosterRow {
             finalizer: format!("zfinv1{}", "cd".repeat(64)),
             stake: 7_500_000_000,
+            bonds: 3,
             ours: true,
         },
         RosterRow {
             finalizer: format!("zfinv1{}", "77".repeat(64)),
             stake: 2_500_000_000,
+            bonds: 1,
             ours: false,
         },
     ];
@@ -181,6 +183,7 @@ fn every_main_screen_renders() {
     let mut s = populated();
     for screen in [
         Screen::Home,
+        Screen::Pay,
         Screen::Transactions,
         Screen::Bonds,
         Screen::Receive,
@@ -191,11 +194,22 @@ fn every_main_screen_renders() {
         let out = render(&s, 100, 40);
         let header = out.lines().next().unwrap();
         for tab in Screen::ALL {
+            let letter = tab
+                .title()
+                .chars()
+                .next()
+                .unwrap()
+                .to_lowercase()
+                .to_string();
             assert!(
-                header.contains(&tab.title().to_lowercase()),
-                "{screen:?}: {tab:?} tab"
+                header.contains(&letter),
+                "{screen:?}: {tab:?} tab key letter: [{header}]"
             );
         }
+        assert!(
+            header.contains(&screen.title().to_lowercase()),
+            "{screen:?}: the active tab keeps its name: [{header}]"
+        );
         assert!(header.contains("syncing 25%"), "{screen:?} sync state");
         assert!(
             header.contains("main"),
@@ -544,17 +558,10 @@ fn the_active_tab_is_highlighted() {
     let accent = Color::Rgb(0xd3, 0xa0, 0x50);
     for screen in Screen::ALL {
         s.screen = screen;
-        let buffer = draw(&s, 100, 40);
-        let header: String = (0..100)
+        let buffer = draw(&s, 112, 40);
+        let header: String = (0..112)
             .map(|x| buffer[(x, 0)].symbol().to_string())
             .collect();
-        // the tabs follow the last separator; "sync" also appears in the sync state
-        let tabs_at = header.rfind('·').unwrap();
-        let header = format!(
-            "{}{}",
-            " ".repeat(header[..tabs_at].chars().count()),
-            &header[tabs_at..]
-        );
         let at = col_of(&header, &screen.title().to_lowercase());
         assert_eq!(
             buffer[(at, 0)].fg,
@@ -612,13 +619,11 @@ fn overlays_render() {
         Overlay::NewUnifiedAddress { orchard_only: true },
         Overlay::AddressQr,
         Overlay::ThemePicker { original: 0 },
-        Overlay::Send(Box::default()),
         Overlay::Faucet(FaucetStage::Failed("dry".into())),
     ] {
         s.overlay = overlay.clone();
         let out = render(&s, 100, 40);
         match overlay {
-            Overlay::Send(_) => assert!(out.contains("spendable")),
             Overlay::Faucet(_) => assert!(out.contains("the faucet did not pay")),
             Overlay::Help => assert!(out.contains("delegator-tui — keys")),
             Overlay::TxDetail {
@@ -870,6 +875,9 @@ fn empty_wallet_has_friendly_messages() {
 /// Opening a wallet shows its frame at once, from the opener's facts alone. Nothing waits on
 /// the server: no balance, no sync note, no tip, and still the header, the tabs and the lake.
 #[test]
+/// Opening a wallet shows its frame at once, from the opener's facts alone. Nothing waits
+/// on the server: no balance, no sync note, no tip, and still the header, the tabs and the
+/// lake.
 fn the_wallet_frame_renders_before_any_server_contact() {
     let now = Instant::now();
     let mut s = State::new(Phase::Main, now);
@@ -899,6 +907,49 @@ fn the_wallet_frame_renders_before_any_server_contact() {
 }
 
 #[test]
+/// The Sync screen lists every indexer discovery found, each with its height, age and
+/// speed, and marks the one the wallet is on.
+fn the_sync_screen_lists_the_known_indexers() {
+    let mut s = populated();
+    s.screen = Screen::Sync;
+    s.sync.indexers = vec![
+        IndexerRow {
+            uri: "http://10.0.0.1:18234".into(),
+            tip_height: Some(76_000),
+            tip_age_secs: Some(4),
+            measured_at: Instant::now(),
+            latency_ms: 643,
+            from_peers: false,
+        },
+        IndexerRow {
+            uri: "http://10.0.0.2:18234".into(),
+            tip_height: None,
+            tip_age_secs: None,
+            measured_at: Instant::now(),
+            latency_ms: 5_000,
+            from_peers: true,
+        },
+    ];
+    s.wallet.as_mut().unwrap().server = "http://10.0.0.2:18234".into();
+    let out = render(&s, 100, 40);
+    assert!(out.contains("Indexers"), "{out}");
+    assert!(out.contains("10.0.0.1:18234"), "{out}");
+    assert!(out.contains("76,000"), "{out}");
+    assert!(out.contains("10.0.0.2:18234"), "{out}");
+    assert!(out.contains("found"), "the peer-exchange marker: {out}");
+    let marked = out
+        .lines()
+        .find(|line| line.contains("10.0.0.2"))
+        .expect("the serving row");
+    let unmarked = out
+        .lines()
+        .find(|line| line.contains("10.0.0.1"))
+        .expect("the other row");
+    assert!(marked.contains('◈'), "in use: {marked:?}");
+    assert!(unmarked.contains('◇'), "not in use: {unmarked:?}");
+}
+
+#[test]
 fn unbonding_funds_are_shown_in_the_danger_colour() {
     let mut s = populated();
     s.theme = index_of("srcery").unwrap();
@@ -924,14 +975,14 @@ fn every_screen_shows_the_staking_calendar() {
     // 2,600,000 on the calendar: inside the window, or not
     let day = StakingDay::at_height(2_600_000);
     let expect = if day.open {
-        "● staking day"
+        "✦ staking day"
     } else {
-        "○ no staking day"
+        "✧ no staking day"
     };
     for screen in Screen::ALL {
         s.screen = screen;
         let out = render(&s, 100, 40);
-        let row = out.lines().nth(1).unwrap();
+        let row = out.lines().last().unwrap();
         assert!(row.contains(expect), "{screen:?}: {row}");
         assert!(
             row.contains(&format!(
@@ -946,17 +997,17 @@ fn every_screen_shows_the_staking_calendar() {
     let out = render(&s, 80, 24);
     assert!(
         out.lines()
-            .nth(1)
+            .last()
             .unwrap()
-            .contains("● staking day  closes in 3,456 blocks ≈ 14h24m")
+            .contains("✦ staking day · closes in 3,456 blocks ≈ 14h24m")
     );
     s.sync.tip = Some(StakingDay::PERIOD * 5 + StakingDay::DAY_WINDOW);
     let out = render(&s, 80, 24);
     assert!(
         out.lines()
-            .nth(1)
+            .last()
             .unwrap()
-            .contains("○ no staking day  opens in 6,912 blocks ≈ 1d04h")
+            .contains("✧ no staking day · opens in 6,912 blocks ≈ 1d04h")
     );
     s.sync.tip = None;
     assert!(
@@ -1105,6 +1156,7 @@ fn every_view(s: &mut State) -> Vec<String> {
     let mut seen = Vec::new();
     for screen in [
         Screen::Home,
+        Screen::Pay,
         Screen::Transactions,
         Screen::Bonds,
         Screen::Receive,
@@ -1127,24 +1179,6 @@ fn every_view(s: &mut State) -> Vec<String> {
             },
             Overlay::AddressQr,
             Overlay::ThemePicker { original: 0 },
-            Overlay::Send(Box::default()),
-            Overlay::Send(Box::new(SendForm {
-                to: "u1".to_string() + &"q".repeat(100),
-                amount: "1.5".into(),
-                memo: "rent".into(),
-                field: SendField::Amount,
-                stage: SendStage::Confirm {
-                    fee: 15_000,
-                    total: 150_015_000,
-                },
-                error: None,
-            })),
-            Overlay::Send(Box::new(SendForm {
-                stage: SendStage::Sent {
-                    txids: vec!["ab".repeat(32)],
-                },
-                ..SendForm::new()
-            })),
             Overlay::Faucet(FaucetStage::Ask {
                 address: "u1".to_string() + &"q".repeat(100),
             }),

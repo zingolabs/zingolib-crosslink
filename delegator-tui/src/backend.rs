@@ -19,8 +19,10 @@ use pepper_sync::wallet::{
     IronwoodNote, OrchardNote, OutputInterface, SaplingNote, TransparentCoin,
 };
 use tokio::sync::mpsc;
+use zcash_primitives::transaction::RosterMember;
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::value::Zatoshis;
+use zingo_netutils::discovery;
 use zingolib::config::{ChainType, IndexerList, IndexerNetwork, ZingoConfig, chain_from_str};
 use zingolib::data::PollReport;
 use zingolib::lightclient::LightClient;
@@ -36,7 +38,7 @@ use zingolib::wallet::{LightWallet, SeedDerivation, WalletBase, WalletSettings};
 use crate::app::RosterRow;
 use crate::app::{
     Action, AddressKind, AddressRow, Balance, BondRow, BondStatus, ChainRange, Command, Evidence,
-    InputRow, KeyMaterial, Network, OpenSpec, OutputRole, OutputRow, Pool, PoolBalance,
+    IndexerRow, InputRow, KeyMaterial, Network, OpenSpec, OutputRole, OutputRow, Pool, PoolBalance,
     RangePriority, SpendState, SyncMode, SyncNote, Tip, TxKind, TxRow, TxStatus, WalletData,
     WalletEntry, WalletEventRow, WalletInfo, WalletKind,
 };
@@ -45,6 +47,18 @@ use crate::app::{
 const RESYNC_INTERVAL: Duration = Duration::from_secs(20);
 /// Pause before retrying after a failed session.
 const RETRY_INTERVAL: Duration = Duration::from_secs(30);
+/// How often the known indexers are re-measured: latency, tip, chain fingerprint. Short
+/// enough that the Sync screen's server table is effectively live.
+const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+/// How often the full survey runs: peer exchange for new members, then everyone measured.
+/// The exchange is the only part that touches the node network.
+const SURVEY_INTERVAL: Duration = Duration::from_secs(300);
+/// How far behind the best indexer's tip the current indexer may fall before the wallet
+/// moves on: a node this stale is no longer telling the whole story.
+const STALE_BLOCKS: u64 = 3;
+/// How often the finalizer roster is fetched. The node wallet does this twice a second;
+/// once is enough for a delegation decision and polite to public indexers.
+const ROSTER_POLL: Duration = Duration::from_secs(1);
 const TICK: Duration = Duration::from_millis(500);
 /// Longest we wait for a running session to stop on quit.
 const STOP_TIMEOUT: Duration = Duration::from_secs(120);
@@ -484,7 +498,11 @@ pub fn spawn(
     commands: mpsc::UnboundedReceiver<Command>,
     actions: mpsc::UnboundedSender<Action>,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(Backend::new(config, actions).run(commands))
+    let (reports, report_rx) = mpsc::unbounded_channel();
+    let (roster_tx, roster_rx) = mpsc::unbounded_channel();
+    tokio::spawn(
+        Backend::new(config, actions, reports, roster_tx).run(commands, report_rx, roster_rx),
+    )
 }
 
 /// What the wallet says about the sync, read on one tick.
@@ -525,15 +543,40 @@ struct Backend {
     last_bonds: Vec<BondRow>,
     /// The roster from the last time the server answered.
     last_roster: Vec<RosterRow>,
+    /// Indexer URIs from the last discovery pass, best first, shared with the survey task.
+    discovered: std::sync::Arc<tokio::sync::RwLock<Vec<String>>>,
+    /// Finished survey and health check reports, in from the spawned tasks.
+    reports: mpsc::UnboundedSender<discovery::IndexerReport>,
+    /// When the next health check is due, once a wallet is open.
+    next_health_check: Option<Instant>,
+    /// When the next full survey (peer exchange included) is due.
+    next_survey: Option<Instant>,
+    /// A health check or survey is running; the next one waits rather than stacking.
+    measurement_in_flight: std::sync::atomic::AtomicBool,
+    /// Whether the wallet's server was chosen by the user (flag, or saved with the wallet);
+    /// staleness never overrides an explicit choice.
+    server_pinned: bool,
+    /// The indexer the roster poller should ask, kept current through failovers.
+    current_indexer: std::sync::Arc<std::sync::RwLock<Option<http::Uri>>>,
+    /// The finalizers this wallet has a live bond with; the roster poller reads it.
+    our_finalizers: std::sync::Arc<std::sync::RwLock<HashSet<[u8; 32]>>>,
+    /// Fresh roster rows, in from the poller task.
+    roster_tx: mpsc::UnboundedSender<Vec<RosterRow>>,
 }
 
 impl Backend {
-    fn new(config: BackendConfig, actions: mpsc::UnboundedSender<Action>) -> Self {
+    fn new(
+        config: BackendConfig,
+        actions: mpsc::UnboundedSender<Action>,
+        reports: mpsc::UnboundedSender<discovery::IndexerReport>,
+        roster_tx: mpsc::UnboundedSender<Vec<RosterRow>>,
+    ) -> Self {
         Self {
             network: Network::Stable,
             wallet_name: String::new(),
             config,
             actions,
+            reports,
             lc: None,
             auto: true,
             next_launch: None,
@@ -544,6 +587,14 @@ impl Backend {
             last: SyncSnapshot::default(),
             last_bonds: Vec::new(),
             last_roster: Vec::new(),
+            discovered: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            next_health_check: None,
+            next_survey: None,
+            measurement_in_flight: std::sync::atomic::AtomicBool::new(false),
+            server_pinned: false,
+            current_indexer: std::sync::Arc::new(std::sync::RwLock::new(None)),
+            our_finalizers: std::sync::Arc::new(std::sync::RwLock::new(HashSet::new())),
+            roster_tx,
         }
     }
 
@@ -555,7 +606,12 @@ impl Backend {
         self.send(Action::Sync(note, Instant::now()));
     }
 
-    async fn run(mut self, mut commands: mpsc::UnboundedReceiver<Command>) {
+    async fn run(
+        mut self,
+        mut commands: mpsc::UnboundedReceiver<Command>,
+        mut reports: mpsc::UnboundedReceiver<discovery::IndexerReport>,
+        mut rosters: mpsc::UnboundedReceiver<Vec<RosterRow>>,
+    ) {
         let mut tick = tokio::time::interval(TICK);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -569,6 +625,8 @@ impl Backend {
                     }
                 },
                 _ = tick.tick() => self.on_tick().await,
+                Some(report) = reports.recv() => self.handle_report(report).await,
+                Some(rows) = rosters.recv() => self.handle_roster(rows).await,
             }
         }
     }
@@ -613,8 +671,13 @@ impl Backend {
                         if let Some(lc) = self.lc.as_mut() {
                             lc.save_task().await;
                         }
+                        *self.current_indexer.write().unwrap() = Some(uri.clone());
                         self.refresh(true).await;
                         self.launch().await;
+                        self.start_discovery().await;
+                        self.start_roster_poller();
+                        self.next_health_check = Some(Instant::now() + HEALTH_CHECK_INTERVAL);
+                        self.next_survey = Some(Instant::now() + SURVEY_INTERVAL);
                         let actions = self.actions.clone();
                         tokio::spawn(async move {
                             if let Ok(tip) = fetch_tip(network, uri).await {
@@ -782,7 +845,8 @@ impl Backend {
                 } else {
                     self.verify_chain(network, &name).await?
                 };
-                let server = self.config.server_uri(network, &name, None)?;
+                let (server, pinned) = self.open_server_uri(network, &name, None)?;
+                self.server_pinned = pinned;
                 let config = self.config.client_config(network, &name, server);
                 let lc = LightClient::create_from_wallet_path(config)
                     .map_err(|e| format!("cannot open wallet: {e}"))?;
@@ -802,7 +866,9 @@ impl Backend {
                         path.display()
                     ));
                 }
-                let server_uri = self.config.server_uri(network, &name, server.as_deref())?;
+                let (server_uri, pinned) =
+                    self.open_server_uri(network, &name, server.as_deref())?;
+                self.server_pinned = pinned;
                 // the same rule the create screen applies, for the command line's sake
                 let birthday = match fetch_tip(network, server_uri.clone()).await {
                     Ok(tip) => {
@@ -909,6 +975,292 @@ impl Backend {
         }
     }
 
+    /// Runs one full survey in the background: P2P peer exchange plus the built-in seeds,
+    /// measured and cross-checked against the wallet's own synced block. The report lands
+    /// back on the backend, which ranks, publishes, and arms both clocks.
+    async fn start_discovery(&mut self) {
+        self.measurement_in_flight
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let (fingerprint, network) = match self.lc.as_ref() {
+            Some(lc) => {
+                let wallet = lc.wallet.read().await;
+                let fingerprint = wallet
+                    .wallet_blocks
+                    .last_key_value()
+                    .map(|(height, block)| discovery::ChainFingerprint {
+                        height: u32::from(*height),
+                        hash: block.block_hash().0,
+                    });
+                (fingerprint, self.network)
+            }
+            None => return,
+        };
+        let config = match network {
+            Network::Stable => discovery::DiscoveryConfig::crosslink_stable(),
+            Network::Nightly => discovery::DiscoveryConfig::crosslink_nightly(),
+        };
+        let reports = self.reports.clone();
+        tokio::spawn(async move {
+            let report = discovery::discover(&config, fingerprint).await;
+            tracing::info!(
+                "discovery: {} indexers from {} peers",
+                report.ranking.len(),
+                report.peers_seen
+            );
+            let _ = reports.send(report);
+        });
+    }
+
+    /// Re-measures the indexers already known, without the peer exchange: the refresh that
+    /// keeps the server table honest and notices a node falling behind.
+    async fn start_health_check(&mut self) {
+        self.measurement_in_flight
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let Some(lc) = self.lc.as_ref() else {
+            self.measurement_in_flight
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+            return;
+        };
+        let fingerprint = {
+            let wallet = lc.wallet.read().await;
+            wallet
+                .wallet_blocks
+                .last_key_value()
+                .map(|(height, block)| discovery::ChainFingerprint {
+                    height: u32::from(*height),
+                    hash: block.block_hash().0,
+                })
+        };
+        let config = match self.network {
+            Network::Stable => discovery::DiscoveryConfig::crosslink_stable(),
+            Network::Nightly => discovery::DiscoveryConfig::crosslink_nightly(),
+        };
+        let mut uris: Vec<(String, discovery::Source)> = self
+            .discovered
+            .try_read()
+            .map(|ranking| {
+                ranking
+                    .iter()
+                    .map(|uri| (uri.clone(), discovery::Source::PeerExchange))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let current = lc.indexer_uri().to_string();
+        if !uris.iter().any(|(known, _)| *known == current) {
+            uris.insert(0, (current, discovery::Source::Builtin));
+        }
+        let reports = self.reports.clone();
+        tokio::spawn(async move {
+            let _ = reports.send(discovery::health_check(&config, uris, fingerprint).await);
+        });
+    }
+
+    /// Folds a poller batch into the wallet: the offline fallback keeps the freshest
+    /// roster, and the screen gets the new rows.
+    async fn handle_roster(&mut self, rows: Vec<RosterRow>) {
+        if rows.is_empty() {
+            return;
+        }
+        self.last_roster = rows.clone();
+        self.send(Action::RosterUpdated { roster: rows });
+    }
+
+    /// Spawns the once-a-second roster poller. It holds one connection to the current
+    /// indexer, follows failovers, and pushes every fresh roster to the backend.
+    fn start_roster_poller(&self) {
+        let indexer = self.current_indexer.clone();
+        let our_finalizers = self.our_finalizers.clone();
+        let roster_tx = self.roster_tx.clone();
+        tokio::spawn(async move {
+            let mut client = None;
+            let mut client_uri: Option<http::Uri> = None;
+            let mut tick = tokio::time::interval(ROSTER_POLL);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                let Some(uri) = indexer.read().unwrap().clone() else {
+                    continue;
+                };
+                if client_uri.as_ref() != Some(&uri) {
+                    client = match zingo_netutils::get_client(uri.clone()).await {
+                        Ok(new) => {
+                            client_uri = Some(uri.clone());
+                            Some(new)
+                        }
+                        Err(e) => {
+                            tracing::debug!("roster poller cannot reach {uri}: {e:?}");
+                            None
+                        }
+                    };
+                }
+                let Some(active) = client.as_mut() else {
+                    continue;
+                };
+                let members = match active
+                    .get_roster(zcash_client_backend::proto::service::Empty {})
+                    .await
+                {
+                    Ok(answer) => {
+                        let mut cursor = std::io::Cursor::new(answer.into_inner().data);
+                        let mut members = Vec::new();
+                        while let Ok(member) =
+                            zcash_primitives::transaction::RosterMember::read_from(&mut cursor)
+                        {
+                            members.push(member);
+                        }
+                        members
+                    }
+                    Err(e) => {
+                        tracing::debug!("roster poll: {e}");
+                        client = None;
+                        continue;
+                    }
+                };
+                let ours = our_finalizers.read().unwrap().clone();
+                let rows = roster_rows(members, &ours);
+                if roster_tx.send(rows).is_err() {
+                    return;
+                }
+            }
+        });
+    }
+
+    /// Folds a finished survey or health check into the wallet: refreshes the ranking,
+    /// republishes the server table, and moves off an indexer that stopped answering or
+    /// fell behind the best one's tip — unless the user pinned the server.
+    async fn handle_report(&mut self, report: discovery::IndexerReport) {
+        self.measurement_in_flight
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        if report.ranking.is_empty() {
+            return;
+        }
+        *self.discovered.write().await = report.uris();
+        let indexers = report
+            .ranking
+            .iter()
+            .map(|s| IndexerRow {
+                uri: s.uri.clone(),
+                tip_height: s.tip_height,
+                tip_age_secs: s.tip_age_secs,
+                measured_at: Instant::now(),
+                latency_ms: u64::try_from(s.latency.as_millis()).unwrap_or(u64::MAX),
+                from_peers: s.source == discovery::Source::PeerExchange,
+            })
+            .collect();
+        self.send(Action::IndexersDiscovered {
+            indexers,
+            peers_seen: report.peers_seen,
+            errors: report.errors.len(),
+        });
+
+        let Some(lc) = self.lc.as_ref() else {
+            return;
+        };
+        if self.server_pinned {
+            return;
+        }
+        let current = lc.indexer_uri();
+        let Some(best) = report.ranking.first() else {
+            return;
+        };
+        let Ok(best_uri) = best.uri.parse::<http::Uri>() else {
+            return;
+        };
+        if best_uri == current {
+            return;
+        }
+        let current_row = report
+            .ranking
+            .iter()
+            .find(|s| s.uri.parse::<http::Uri>().ok().as_ref() == Some(&current));
+        let stale = match current_row {
+            None => true,
+            Some(row) => match (row.tip_height, best.tip_height) {
+                (Some(ours), Some(theirs)) => theirs.saturating_sub(ours) > STALE_BLOCKS,
+                _ => false,
+            },
+        };
+        if stale {
+            tracing::info!(
+                "current indexer {} is stale or silent; switching to {}",
+                current,
+                best.uri
+            );
+            self.send(Action::Notice("switching to a fresher indexer".into()));
+            self.move_to(best_uri).await;
+        }
+    }
+
+    /// Points the wallet at `uri`, letting a running session wind down first.
+    async fn move_to(&mut self, uri: http::Uri) {
+        let Some(lc) = self.lc.as_mut() else {
+            return;
+        };
+        lc.set_indexer(uri.clone());
+        *self.current_indexer.write().unwrap() = Some(uri);
+        if lc.sync_mode() != pepper_sync::wallet::SyncMode::NotRunning {
+            let _ = lc.stop_sync();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while matches!(lc.poll_sync(), PollReport::NotReady) && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+        self.session_pending = false;
+        self.launch().await;
+    }
+
+    /// The server a wallet opens against, in order: the one given for this call, the command
+    /// line flag, the one saved with the wallet, the best discovered, the network default.
+    /// Also answers whether the choice was the user's: discovery never overrides a pinned
+    /// server, it only fills in when nobody chose.
+    fn open_server_uri(
+        &self,
+        network: Network,
+        name: &str,
+        override_server: Option<&str>,
+    ) -> Result<(http::Uri, bool), String> {
+        let uri = self.config.server_uri(network, name, override_server)?;
+        let from_default = override_server.is_none()
+            && self.config.server.is_none()
+            && self.config.saved_server(network, name).is_none();
+        if from_default
+            && let Some(best) = self
+                .discovered
+                .try_read()
+                .ok()
+                .and_then(|ranking| ranking.first().cloned())
+            && let Ok(discovered) = parse_server(&best)
+            && discovered != uri
+        {
+            return Ok((discovered, false));
+        }
+        Ok((uri, !from_default))
+    }
+
+    fn failover_to_best(&mut self, failing: http::Uri) -> bool {
+        let Some(lc) = self.lc.as_ref() else {
+            return false;
+        };
+        let current = lc.indexer_uri();
+        let ranking = match self.discovered.try_read() {
+            Ok(ranking) => ranking,
+            Err(_) => return false,
+        };
+        let next = ranking
+            .iter()
+            .filter_map(|uri| uri.parse::<http::Uri>().ok())
+            .find(|uri| *uri != current && *uri != failing);
+        match next {
+            Some(next) => {
+                tracing::info!("failover: switching indexer to {next}");
+                lc.set_indexer(next.clone());
+                *self.current_indexer.write().unwrap() = Some(next);
+                true
+            }
+            None => false,
+        }
+    }
+
     async fn launch(&mut self) {
         if self.lc.is_none() {
             return;
@@ -923,6 +1275,10 @@ impl Backend {
             Err(e) => {
                 tracing::warn!("sync could not start: {e}");
                 self.sync_note(SyncNote::Failed(e.to_string()));
+                let failing = self.lc.as_ref().map(|lc| lc.indexer_uri());
+                if self.failover_to_best(failing.unwrap_or_default()) {
+                    self.send(Action::Notice("switching to a better indexer".into()));
+                }
                 if self.auto {
                     let at = Instant::now() + RETRY_INTERVAL;
                     self.next_launch = Some(at);
@@ -933,6 +1289,20 @@ impl Backend {
     }
 
     async fn on_tick(&mut self) {
+        if self.lc.is_some()
+            && !self
+                .measurement_in_flight
+                .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            let now = Instant::now();
+            if self.next_survey.is_some_and(|at| at <= now) {
+                self.next_survey = Some(now + SURVEY_INTERVAL);
+                self.start_discovery().await;
+            } else if self.next_health_check.is_some_and(|at| at <= now) {
+                self.next_health_check = Some(now + HEALTH_CHECK_INTERVAL);
+                self.start_health_check().await;
+            }
+        }
         let Some(poll) = self.lc.as_mut().map(LightClient::poll_sync) else {
             return;
         };
@@ -957,7 +1327,11 @@ impl Backend {
                 self.session_pending = false;
                 self.sync_note(SyncNote::Failed(e.to_string()));
                 self.dirty = true;
-                if self.auto {
+                let failing = self.lc.as_ref().map(|lc| lc.indexer_uri());
+                if self.failover_to_best(failing.unwrap_or_default()) {
+                    self.send(Action::Notice("switching to a better indexer".into()));
+                    self.launch().await;
+                } else if self.auto {
                     let at = Instant::now() + RETRY_INTERVAL;
                     self.next_launch = Some(at);
                     self.sync_note(SyncNote::Scheduled { at });
@@ -1056,7 +1430,15 @@ impl Backend {
     /// silent.
     async fn refresh(&mut self, from_server: bool) {
         let Some(lc) = self.lc.as_ref() else { return };
-        match load(lc, &self.last_bonds, &self.last_roster, from_server).await {
+        match load(
+            lc,
+            &self.last_bonds,
+            &self.last_roster,
+            from_server,
+            &self.our_finalizers,
+        )
+        .await
+        {
             Ok(data) => {
                 self.last_bonds = data.bonds.clone();
                 self.last_roster = data.roster.clone();
@@ -1345,24 +1727,11 @@ async fn bonds(
 /// The chain's finalizer roster as the node reports it, largest stake first, each marked when
 /// one of this wallet's bonds points at it. `last` stands in when the node is silent. Roster
 /// data lives only on the chain, so `ask_server` false leaves the list to `last`.
-async fn roster(
-    lc: &LightClient,
-    ours: &HashSet<[u8; 32]>,
-    last: &[RosterRow],
-    ask_server: bool,
-) -> Vec<RosterRow> {
+/// Maps decoded roster members onto screen rows, marking the ones this wallet has a bond
+/// with. Shared by the refresh-time fetch and the once-a-second poller.
+fn roster_rows(members: Vec<RosterMember>, ours: &HashSet<[u8; 32]>) -> Vec<RosterRow> {
     use zcash_primitives::bft::PubKeyID;
 
-    if !ask_server {
-        return last.to_vec();
-    }
-    let members = match lc.get_roster_info().await {
-        Ok(roster) => roster.members,
-        Err(e) => {
-            tracing::warn!("cannot read the roster: {e}");
-            return last.to_vec();
-        }
-    };
     let mut rows: Vec<RosterRow> = members
         .into_iter()
         .map(|m| RosterRow {
@@ -1371,6 +1740,7 @@ async fn roster(
                 .map(|a| a.encode())
                 .unwrap_or_else(|| PubKeyID(m.pub_key).to_string()),
             stake: m.voting_power,
+            bonds: m.txids.len(),
             ours: ours.contains(&m.pub_key),
         })
         .collect();
@@ -1382,15 +1752,39 @@ async fn roster(
     rows
 }
 
+async fn roster(
+    lc: &LightClient,
+    ours: &HashSet<[u8; 32]>,
+    last: &[RosterRow],
+    ask_server: bool,
+) -> Vec<RosterRow> {
+    if !ask_server {
+        return last.to_vec();
+    }
+    let members = match lc.get_roster_info().await {
+        Ok(roster) => roster.members,
+        Err(e) => {
+            tracing::warn!("cannot read the roster: {e}");
+            return last.to_vec();
+        }
+    };
+    roster_rows(members, ours)
+}
+
 /// Reads everything the screens show. `last_bonds` and `last_roster` stand in if the server is
 /// silent. `from_server` false keeps the read strictly local: balances, transactions and
 /// addresses come from the wallet file's last synced state, bonds keep what the wallet and the
 /// last read know, and the roster (server data only) stays empty.
+/// Reads everything the screens show. The open-time read (`from_server = false`) uses only
+/// the wallet file, so the last synced balances are up before any connection; every later
+/// read also asks the server about bonds and the roster, keeping the last answers when it
+/// is silent.
 async fn load(
     lc: &LightClient,
     last_bonds: &[BondRow],
     last_roster: &[RosterRow],
     from_server: bool,
+    our_finalizers: &std::sync::Arc<std::sync::RwLock<HashSet<[u8; 32]>>>,
 ) -> Result<WalletData, String> {
     let account = zip32::AccountId::ZERO;
     let balance = {
@@ -1405,6 +1799,7 @@ async fn load(
         }
     };
     let (bonds, ours) = bonds(lc, last_bonds, from_server).await;
+    *our_finalizers.write().unwrap() = ours.clone();
     let roster = roster(lc, &ours, last_roster, from_server).await;
     let sum = |status: BondStatus| -> u64 {
         bonds
@@ -1980,7 +2375,9 @@ mod tests {
             (address, wallet.wallet_blocks.len())
         };
         eprintln!("wallet blocks held: {synced}");
-        let data = load(&lc, &[], &[], true).await.unwrap();
+        let data = load(&lc, &[], &[], true, &Default::default())
+            .await
+            .unwrap();
         eprintln!(
             "balance: ironwood {} orchard {} sapling {} transparent {} (pending {})",
             data.balance.ironwood.total(),
@@ -2046,7 +2443,9 @@ mod tests {
                 Ok(Err(e)) => eprintln!("SYNC ERR: {e}"),
                 Err(_) => eprintln!("SYNC STILL RUNNING"),
             }
-            let data = load(&lc, &[], &[], true).await.unwrap();
+            let data = load(&lc, &[], &[], true, &Default::default())
+                .await
+                .unwrap();
             eprintln!(
                 "after: ironwood {} orchard {} pending {} txs {}",
                 data.balance.ironwood.total(),
@@ -2320,7 +2719,9 @@ mod tests {
         let uri = config.server_uri(Network::Stable, "w", None).unwrap();
         let zc = config.client_config(Network::Stable, "w", uri);
         let lc = LightClient::create_from_wallet_path(zc).unwrap();
-        let data = load(&lc, &[], &[], false).await.unwrap();
+        let data = load(&lc, &[], &[], false, &Default::default())
+            .await
+            .unwrap();
         assert_eq!(data.balance.total(), 0, "a fresh file holds nothing yet");
         assert!(
             !data.addresses.is_empty(),

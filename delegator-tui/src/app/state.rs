@@ -123,6 +123,7 @@ impl Network {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
     Home,
+    Pay,
     Transactions,
     Bonds,
     Finalizers,
@@ -133,8 +134,9 @@ pub enum Screen {
 
 impl Screen {
     /// Tab order. Each screen's key is the first letter of its title.
-    pub const ALL: [Screen; 7] = [
+    pub const ALL: [Screen; 8] = [
         Screen::Home,
+        Screen::Pay,
         Screen::Transactions,
         Screen::Bonds,
         Screen::Finalizers,
@@ -146,6 +148,7 @@ impl Screen {
     pub fn title(self) -> &'static str {
         match self {
             Screen::Home => "Home",
+            Screen::Pay => "Pay",
             Screen::Transactions => "Transactions",
             Screen::Bonds => "Bonds",
             Screen::Finalizers => "Finalizers",
@@ -181,8 +184,6 @@ pub enum Overlay {
     ThemePicker {
         original: usize,
     },
-    /// The send form, through proposal, confirmation and transmission.
-    Send(Box<SendForm>),
     /// A request to the chain's faucet.
     Faucet(FaucetStage),
 }
@@ -716,6 +717,8 @@ pub struct RosterRow {
     pub finalizer: String,
     /// Zatoshis at stake with this finalizer, every delegator's together.
     pub stake: u64,
+    /// How many separate bonds back this finalizer: many small ones beats a whale's one.
+    pub bonds: usize,
     /// Whether this wallet has a bond pointed at it.
     pub ours: bool,
 }
@@ -1038,6 +1041,22 @@ pub struct FoundTx {
     pub at: Instant,
 }
 
+/// One known indexer, as the Sync screen lists it. The facts come from the discovery
+/// pass's measurement of that node.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexerRow {
+    /// The gRPC URI.
+    pub uri: String,
+    pub tip_height: Option<u64>,
+    /// Seconds since the tip block when the node was measured. The screen adds the time
+    /// since this measurement, so the age keeps ticking between probes.
+    pub tip_age_secs: Option<u64>,
+    /// When the probe ran; ages are displayed live from here.
+    pub measured_at: Instant,
+    pub latency_ms: u64,
+    pub from_peers: bool,
+}
+
 /// Sync progress as the Sync screen shows it.
 #[derive(Clone, Debug)]
 pub struct SyncView {
@@ -1059,6 +1078,9 @@ pub struct SyncView {
     pub last_found: Option<FoundTx>,
     pub next_launch: Option<Instant>,
     pub error: Option<String>,
+    /// Every indexer the last discovery pass found, best first. The first is the server the
+    /// wallet tries after a failure; the list is the Sync screen's server table.
+    pub indexers: Vec<IndexerRow>,
 }
 
 impl SyncView {
@@ -1080,6 +1102,7 @@ impl SyncView {
             last_found: None,
             next_launch: None,
             error: None,
+            indexers: Vec::new(),
         }
     }
 
@@ -1215,6 +1238,7 @@ pub struct State {
     pub phase: Phase,
     pub screen: Screen,
     pub overlay: Overlay,
+    pub send: SendForm,
     pub size: (u16, u16),
     pub ascii_qr: bool,
     pub wallet: Option<WalletInfo>,
@@ -1258,6 +1282,7 @@ impl State {
             phase,
             screen: Screen::Home,
             overlay: Overlay::None,
+            send: SendForm::new(),
             size: (80, 24),
             ascii_qr: false,
             wallet: None,

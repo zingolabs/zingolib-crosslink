@@ -9101,10 +9101,12 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "rustls-pemfile",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",
  "tonic",
+ "tracing",
  "x509-parser",
  "zcash_client_backend",
 ]

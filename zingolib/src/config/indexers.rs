@@ -283,6 +283,22 @@ impl IndexerList {
         self
     }
 
+    /// Puts discovered endpoints first among `network`'s, best first, replacing any entry
+    /// with the same URI. The ranking comes from
+    /// [`discovery`](crate::config::discovery); the light client fails over down the list.
+    pub fn prefer_discovered(
+        &mut self,
+        network: IndexerNetwork,
+        uris: impl IntoIterator<Item = String>,
+    ) -> &mut Self {
+        let indexers = uris.into_iter().filter_map(|uri| {
+            uri.parse::<http::Uri>()
+                .ok()
+                .map(|uri| Indexer::new(uri, "discovered"))
+        });
+        self.prefer_all(network, indexers)
+    }
+
     /// [`Self::add`] in builder style.
     #[must_use]
     pub fn with(mut self, network: IndexerNetwork, indexer: Indexer) -> Self {
