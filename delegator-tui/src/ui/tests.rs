@@ -1726,8 +1726,6 @@ fn the_kind_and_the_memo_each_have_their_own_column() {
 fn each_bond_says_when_its_next_action_is_taken() {
     let mut s = populated();
     s.screen = Screen::Bonds;
-    // the tip is past both bonds' action delay, but no staking day is open: the next
-    // opens 2,368 blocks on, at block 2,602,368
     let out = render(&s, 100, 40);
     assert!(out.contains("next"), "a header names the column");
     assert!(out.contains("in 9h51m"), "{out}");
@@ -1812,7 +1810,6 @@ fn every_staking_stage_renders() {
             }
         }
     }
-    // the fee and the total for a new bond
     let mut form = StakeForm::new(StakeOp::Stake { finalizer: to });
     form.power = 9;
     form.stage = StakeStage::Confirm { fee: Some(20_000) };

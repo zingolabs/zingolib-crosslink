@@ -316,7 +316,6 @@ fn on_paste(state: &mut State, text: &str) -> Vec<Command> {
     if matches!(state.phase, Phase::Onboarding(_)) {
         return onboarding::paste(state, text);
     }
-    // the stake amount is chosen, never typed, so a paste has nowhere to go
     if state.overlay != Overlay::None {
         return Vec::new();
     }
@@ -324,7 +323,6 @@ fn on_paste(state: &mut State, text: &str) -> Vec<Command> {
         let text: String = text.chars().filter(|c| state.send.accepts(*c)).collect();
         state.send.value_mut().push_str(&text);
     }
-    // a finalizer address pasted on the list is one to stake with, roster or not
     let pasted = text.trim();
     if state.screen == Screen::Finalizers && pasted.starts_with(FINALIZER_PREFIX) {
         return choose_finalizer(state, pasted.to_string());
@@ -484,7 +482,6 @@ fn main_key(state: &mut State, key: Key) -> Vec<Command> {
         Overlay::Stake(form) => stake_key(state, form, key),
         Overlay::None => {
             let commands = screen_key(state, key);
-            // the pick of a new finalizer lasts only while its list is on screen
             if state.screen != Screen::Finalizers {
                 state.redelegating = None;
             }
@@ -610,7 +607,6 @@ fn choose_finalizer(state: &mut State, finalizer: String) -> Vec<Command> {
             vec![command]
         }
         None => {
-            // a new bond needs a staking day at the next block
             if let Some(tip) = state.sync.tip {
                 let day = StakingDay::at_height(tip + 1);
                 if !day.open {
@@ -638,7 +634,6 @@ fn stake_key(state: &mut State, mut form: StakeForm, key: Key) -> Vec<Command> {
                 state.overlay = Overlay::None;
                 return Vec::new();
             }
-            // the amount moves only from one power of ten to the next
             Key::Up | Key::Right | Key::Char('k' | 'l' | '+') => form.step(true),
             Key::Down | Key::Left | Key::Char('j' | 'h' | '-') => form.step(false),
             Key::Enter => {
@@ -670,7 +665,6 @@ fn stake_key(state: &mut State, mut form: StakeForm, key: Key) -> Vec<Command> {
                 form.stage = StakeStage::Sending;
             }
             Key::Char('n') | Key::Esc => {
-                // a withdrawal holds nothing in the wallet until it is sent
                 if !matches!(form.op, StakeOp::Withdraw { .. }) {
                     commands.push(Command::CancelSend);
                 }
@@ -686,7 +680,6 @@ fn stake_key(state: &mut State, mut form: StakeForm, key: Key) -> Vec<Command> {
         StakeStage::Sending => {}
         StakeStage::Sent { txids } => match key {
             Key::Char('y') => return vec![Command::Copy(txids.join("\n"))],
-            // the bond, new or changed, is on the bonds screen
             Key::Esc | Key::Enter => {
                 state.overlay = Overlay::None;
                 state.screen = Screen::Bonds;
@@ -892,7 +885,6 @@ fn screen_key(state: &mut State, key: Key) -> Vec<Command> {
             return Vec::new();
         }
         Key::Esc => {
-            // a pick for a redelegation backs out to the bond it was for
             state.screen = if state.screen == Screen::Finalizers && state.redelegating.is_some() {
                 Screen::Bonds
             } else {
@@ -1886,7 +1878,6 @@ mod tests {
             panic!("the form closed")
         };
         assert_eq!(form.amount_zats(), 100_000_000, "still one ZEC");
-        // every arrow, both ways
         keys(
             &mut s,
             &[Key::Up, Key::Right, Key::Char('+'), Key::Char('k')],
@@ -1927,7 +1918,6 @@ mod tests {
                 finalizer: finalizer("b")
             }))
         );
-        // one ZEC to start, reviewed as it is
         assert_eq!(
             keys(&mut s, &[Key::Enter]),
             vec![Command::ProposeStake {
@@ -1940,7 +1930,6 @@ mod tests {
             panic!("the form closed")
         };
         assert_eq!(form.stage, StakeStage::Confirm { fee: Some(20_000) });
-        // back to the amount, then on to the transaction
         assert_eq!(keys(&mut s, &[Key::Char('n')]), vec![Command::CancelSend]);
         keys(&mut s, &[Key::Enter]);
         reduce(&mut s, Action::StakeProposed(Ok(20_000)));
@@ -2033,7 +2022,6 @@ mod tests {
         keys(&mut s, &[Key::Enter]);
         assert_eq!(s.overlay, Overlay::None);
 
-        // the menu on the unbonding bond offers the withdrawal only
         keys(&mut s, &[Key::Char('j'), Key::Enter]);
         assert_eq!(s.overlay, Overlay::BondMenu { selected: 0 });
         keys(&mut s, &[Key::Char('j')]);
@@ -2071,7 +2059,6 @@ mod tests {
             "{:?}",
             s.notice_text()
         );
-        // a redelegation is never held back
         keys(&mut s, &[Key::Char('d')]);
         assert_eq!(s.screen, Screen::Finalizers);
     }
@@ -2086,7 +2073,6 @@ mod tests {
         keys(&mut s, &[Key::Enter]);
         assert_eq!(s.screen, Screen::Finalizers);
         assert_eq!(s.redelegating.as_ref().map(|b| b.key.as_str()), Some("aa"));
-        // the bond's own finalizer is no move at all
         assert!(keys(&mut s, &[Key::Enter]).is_empty());
         assert!(s.notice_text().unwrap().contains("already"));
         assert!(s.redelegating.is_some(), "still picking");
@@ -2101,13 +2087,11 @@ mod tests {
         assert_eq!(keys(&mut s, &[Key::Esc]), vec![Command::CancelSend]);
         assert_eq!(s.overlay, Overlay::None);
 
-        // esc while picking goes back to the bonds, and the pick ends
         keys(&mut s, &[Key::Char('b'), Key::Char('d')]);
         assert!(s.redelegating.is_some());
         keys(&mut s, &[Key::Esc]);
         assert_eq!(s.screen, Screen::Bonds);
         assert!(s.redelegating.is_none());
-        // so does leaving for another screen
         keys(&mut s, &[Key::Char('d'), Key::Char('h')]);
         assert!(s.redelegating.is_none());
         keys(&mut s, &[Key::Char('f'), Key::Enter]);

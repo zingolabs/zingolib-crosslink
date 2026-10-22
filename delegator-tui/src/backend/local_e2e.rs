@@ -217,7 +217,6 @@ async fn local_bond_cycle() {
     );
     let mut s = State::new(Phase::Loading("opening".into()), Instant::now());
 
-    // a new seed wallet, born at block 1
     let phrase =
         bip0039::Mnemonic::<bip0039::English>::generate(bip0039::Count::Words24).into_phrase();
     cmd_tx
@@ -251,7 +250,6 @@ async fn local_bond_cycle() {
     let finalizer = s.roster[0].finalizer.clone();
     eprintln!("  finalizer {}…", &finalizer[..24]);
 
-    // funds from the node's faucet
     let address = s
         .faucet_address()
         .expect("an orchard address")
@@ -268,13 +266,11 @@ async fn local_bond_cycle() {
     )
     .await;
 
-    // bond 0.1 ZEC on a staking day
     let next = node_tip() + 1;
     let day = StakingDay::at_height(next);
     if !day.open {
         eprintln!("  no staking day at {next}: mining to {}", day.at);
         generate(day.at - next);
-        // the wallet checks the calendar at the height it has scanned to
         drive(
             "synced to the staking day",
             &mut s,
@@ -305,7 +301,6 @@ async fn local_bond_cycle() {
     .await;
     assert!(s.roster.iter().any(|r| r.finalizer == finalizer && r.ours));
 
-    // past the action delay, to the next staking day: unbond
     let since = s.bonds[0].since;
     let at = s.bonds[0].next_action_at(node_tip());
     eprintln!("  bond since {since}, unbond from {at}");
@@ -342,7 +337,6 @@ async fn local_bond_cycle() {
     )
     .await;
 
-    // and again, to the withdrawal
     let at = s.bonds[0].next_action_at(node_tip());
     eprintln!("  unbonded at {}, withdraw from {at}", s.bonds[0].since);
     generate(at.saturating_sub(1 + node_tip()));

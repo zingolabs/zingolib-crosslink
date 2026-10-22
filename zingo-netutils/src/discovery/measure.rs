@@ -282,7 +282,6 @@ fn warn(uri: &str, what: &str) {
 /// node, `http://h:18234` and `http://h:18234/` say, are one candidate. A bare host gets
 /// `http` and the crosslink gRPC port. `None` when `raw` is not an address.
 pub fn indexer_key(raw: &str) -> Option<String> {
-    // scheme and host are case-blind, and an indexer address has no path
     let uri: http::Uri = normalize_uri(&raw.to_ascii_lowercase())?.parse().ok()?;
     let scheme = uri.scheme_str().unwrap_or("http");
     let port = uri

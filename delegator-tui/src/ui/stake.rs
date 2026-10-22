@@ -122,8 +122,6 @@ pub fn draw_menu(frame: &mut Frame, area: Rect, state: &State, t: &Theme, select
     lines.push(Line::from(""));
     for (i, action) in BondAction::for_status(bond.status).iter().enumerate() {
         let chosen = i == selected;
-        // a redelegation is never held back; the others wait for the calendar, and say so
-        // in place of what they do
         let wait = (*action != BondAction::Redelegate)
             .then(|| next_action(state, bond))
             .flatten()

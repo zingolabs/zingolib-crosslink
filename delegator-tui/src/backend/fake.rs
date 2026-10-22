@@ -997,12 +997,9 @@ impl Fake {
                 confirmed: 30_000_000,
                 pending: 0,
             },
-            // set from the bonds below
             staked: 0,
             unbonding: 0,
         };
-        // three finalizers: two bonds earning, one on its way out; each created with a power
-        // of ten and grown by its rewards since
         let bonds: Vec<BondRow> = [
             (10_000_000_000, 42_000_000, BondStatus::Bonded, 23u64),
             (10_000_000_000, 3_100_000, BondStatus::Bonded, 0),
@@ -1268,7 +1265,6 @@ mod tests {
             s.txs[0].kind == TxKind::Sent && s.txs[0].first_memo() == Some("rent")
         })
         .await;
-        // a bond of any amount but a power of ten is refused
         let to = s.roster.iter().find(|r| !r.ours).unwrap().finalizer.clone();
         let (fake_tx, mut fake_rx) = mpsc::unbounded_channel();
         let mut fake = Fake::new(Network::Stable, fake_tx);
@@ -1281,7 +1277,6 @@ mod tests {
             fake_rx.recv().await,
             Some(Action::StakeProposed(Err(e))) if e.contains("not a power of ten")
         ));
-        // a new bond, then its unbond, a redelegation of another, and a withdrawal
         cmd_tx
             .send(Command::ProposeStake {
                 finalizer: to.clone(),

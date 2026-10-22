@@ -649,8 +649,6 @@ impl Backend {
                 let pinned = self.config.server.is_some();
                 let discovered = self.discovered.clone();
                 tokio::spawn(async move {
-                    // with no server named, the tip comes from the best built-in indexer on
-                    // the chain, which the new wallet then opens against
                     let probed = if pinned {
                         None
                     } else {
@@ -692,8 +690,6 @@ impl Backend {
                         }
                         *self.current_indexer.write().unwrap() = Some(uri.clone());
                         self.refresh(false).await;
-                        // nobody named a server: start on the best built-in one on this
-                        // wallet's chain, not the first in the list
                         let uri = if self.server_pinned {
                             uri
                         } else {
@@ -902,7 +898,6 @@ impl Backend {
                                 .await
                                 .map(|txid| vec![txid.to_string()])
                                 .map_err(|e| e.to_string());
-                            // the withdrawal resumes the sync only when it succeeds
                             if sent.is_err() {
                                 let _ignore = lc.resume_sync();
                             }
@@ -1126,9 +1121,6 @@ impl Backend {
                     .collect()
             })
             .unwrap_or_default();
-        // the light client spells its server with a trailing slash; the list does not, so the
-        // two are compared in one form, or the server in use would be listed twice. One the
-        // list lacks is the user's own choice, not a peer's: discovery labels the seeds itself
         let current = lc.indexer_uri().to_string();
         let current_key = discovery::indexer_key(&current);
         if !uris
@@ -1778,8 +1770,6 @@ async fn propose_staking(lc: &mut LightClient, staking: Staking) -> Result<u64, 
     let finalizer = |address: &str| {
         parse_finalizer_address(address).map_err(|e| format!("that finalizer address fails: {e}"))
     };
-    // a new bond's amount rides in the proposal as an extra fee on top of the ZIP-317 one;
-    // the answer is the fee alone
     let bonded = match &staking {
         Staking::Stake { amount, .. } => *amount,
         Staking::Unbond { .. } | Staking::Redelegate { .. } => 0,
@@ -1789,8 +1779,6 @@ async fn propose_staking(lc: &mut LightClient, staking: Staking) -> Result<u64, 
             finalizer: to,
             amount,
         } => {
-            // a bond is a power of ten zatoshis, whatever the chain's upgrade says: the
-            // wallet builds no other
             if !zingolib::crosslink::is_power_of_10(amount) {
                 return Err(not_a_power_of_ten(amount));
             }

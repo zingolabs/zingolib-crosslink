@@ -396,7 +396,6 @@ mod tests {
 
     #[test]
     fn a_node_that_missed_an_upgrade_is_named_and_dropped() {
-        // an upgrade at 55296: the old branch below it, the new one from it
         let rule = BranchRule::new(|height| {
             if height < 55_296 {
                 0x37a5_165b
@@ -410,7 +409,6 @@ mod tests {
             indexer("http://stale", Some("37a5165b"), Some(62_152)),
             indexer("http://silent", None, None),
             indexer("http://before", Some("37a5165b"), Some(50_000)),
-            // a node at the last block before the upgrade already builds the next one
             indexer("http://edge", Some("46545531"), Some(55_295)),
         ];
         let mut errors = Vec::new();
@@ -428,7 +426,6 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("http://stale"), "{}", errors[0]);
         assert!(errors[0].contains("37a5165b") && errors[0].contains("46545531"));
-        // without a rule nothing is dropped
         let mut all = vec![indexer("http://stale", Some("37a5165b"), Some(62_152))];
         drop_other_branches(&DiscoveryConfig::crosslink_stable(), &mut all, &mut errors);
         assert_eq!(all.len(), 1);
@@ -443,7 +440,6 @@ mod tests {
         let candidates = distinct(
             &config,
             vec![
-                // the light client's own spelling, with a trailing slash, learned as a peer
                 ("http://88.198.67.189:18234/".into(), Source::PeerExchange),
                 ("http://88.198.67.189:18234".into(), Source::PeerExchange),
                 ("95.111.225.120".into(), Source::PeerExchange),

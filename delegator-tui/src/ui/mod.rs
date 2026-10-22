@@ -478,7 +478,6 @@ fn hints(state: &State) -> String {
                     SendStage::Sent { .. } => vec![("y", "copy txid"), ("esc", "home")],
                 },
                 Screen::Transactions => vec![("j/k", "move"), ("enter", "open")],
-                // the actions first: the footer shares its row with the staking calendar
                 Screen::Bonds => match state.selected_bond() {
                     Some(bond) => std::iter::once(("enter", "actions"))
                         .chain(
