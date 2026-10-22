@@ -12,8 +12,8 @@ use super::view;
 use crate::app::{
     AddressKind, AddressRow, BondRow, BondStatus, ChainRange, DetailMode, FaucetStage, IndexerRow,
     InputRow, Network, OutputRole, OutputRow, Overlay, Phase, Pool, RangePriority, RosterRow,
-    Screen, SpendState, State, SyncMode, TxKind, TxRow, TxStatus, WalletEntry, WalletEventRow,
-    WalletInfo, WalletKind,
+    Screen, SpendState, StakeForm, StakeOp, StakeStage, State, SyncMode, TxKind, TxRow, TxStatus,
+    WalletEntry, WalletEventRow, WalletInfo, WalletKind,
 };
 use crate::app::{BirthdayMode, Evidence, KeyMaterial, Onboarding, Step, Tip};
 use crate::format;
@@ -61,6 +61,7 @@ fn populated() -> State {
             key: "ab".repeat(32),
             finalizer: format!("zfinv1{}", "cd".repeat(64)),
             amount: 500_000_000,
+            initial: 100_000_000,
             status: BondStatus::Bonded,
             since: 2_590_000,
         },
@@ -68,6 +69,7 @@ fn populated() -> State {
             key: "ef".repeat(32),
             finalizer: format!("zfinv1{}", "01".repeat(64)),
             amount: 120_000_000,
+            initial: 120_000_000,
             status: BondStatus::Unbonding,
             since: 2_595_000,
         },
@@ -670,11 +672,28 @@ fn overlays_render() {
         Overlay::AddressQr,
         Overlay::ThemePicker { original: 0 },
         Overlay::Faucet(FaucetStage::Failed("dry".into())),
+        Overlay::BondMenu { selected: 1 },
+        Overlay::Stake(StakeForm::new(StakeOp::Stake {
+            finalizer: format!("zfinv1{}", "77".repeat(64)),
+        })),
     ] {
         s.overlay = overlay.clone();
         let out = render(&s, 100, 40);
         match overlay {
             Overlay::Faucet(_) => assert!(out.contains("the faucet did not pay")),
+            Overlay::BondMenu { .. } => {
+                assert!(
+                    out.contains("> redelegate"),
+                    "the caret is on the second action"
+                );
+                assert!(out.contains("unbond"));
+            }
+            Overlay::Stake(_) => {
+                assert!(out.contains("New bond"));
+                assert!(out.contains("25 ZEC at stake with it already"), "{out}");
+                assert!(out.contains("a power of ten"));
+                assert!(out.contains("0.1  ‹ 1 ZEC ›  10"), "{out}");
+            }
             Overlay::Help => assert!(out.contains("delegator-tui — keys")),
             Overlay::TxDetail {
                 mode: DetailMode::InputsOutputs,
@@ -1701,4 +1720,140 @@ fn the_kind_and_the_memo_each_have_their_own_column() {
             "{screen:?}: the memo sits in its own column after the kind"
         );
     }
+}
+
+#[test]
+fn each_bond_says_when_its_next_action_is_taken() {
+    let mut s = populated();
+    s.screen = Screen::Bonds;
+    let out = render(&s, 100, 40);
+    assert!(out.contains("next"), "a header names the column");
+    assert!(out.contains("in 9h51m"), "{out}");
+    s.sync.tip = Some(2_602_368);
+    let out = render(&s, 100, 40);
+    assert!(out.contains("unbond now"), "{out}");
+    assert!(out.contains("withdraw now"), "{out}");
+}
+
+#[test]
+fn the_finalizer_list_highlights_the_pick_and_names_a_redelegation() {
+    let mut s = populated();
+    s.screen = Screen::Finalizers;
+    s.finalizer_selected = 1;
+    let buffer = draw(&s, 100, 40);
+    let t = crate::theme::Theme::new(s.theme, s.color_depth);
+    let row = (0..buffer.area.height)
+        .find(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, *y)].symbol())
+                .collect::<String>()
+                .contains("zfinv17777")
+        })
+        .unwrap();
+    assert_eq!(
+        buffer[(10, row)].bg,
+        t.selection.bg.unwrap(),
+        "the selected finalizer is highlighted"
+    );
+    s.redelegating = Some(s.bonds[0].clone());
+    let out = render(&s, 100, 40);
+    assert!(out.contains("Redelegate 5 ZEC from zfinv1cdcd"), "{out}");
+    assert!(out.contains("choose the new finalizer"));
+    assert!(out.contains("enter move here"));
+}
+
+#[test]
+fn every_staking_stage_renders() {
+    let mut s = populated();
+    s.screen = Screen::Bonds;
+    let bond = s.bonds[0].clone();
+    let unbonding = s.bonds[1].clone();
+    let to = format!("zfinv1{}", "77".repeat(64));
+    let stages = [
+        StakeStage::Edit,
+        StakeStage::Proposing,
+        StakeStage::Confirm { fee: Some(20_000) },
+        StakeStage::Sending,
+        StakeStage::Sent {
+            txids: vec!["ef".repeat(32)],
+        },
+        StakeStage::Failed("the staking window is closed".into()),
+    ];
+    for op in [
+        StakeOp::Stake {
+            finalizer: to.clone(),
+        },
+        StakeOp::Unbond { bond: bond.clone() },
+        StakeOp::Redelegate {
+            bond: bond.clone(),
+            to: to.clone(),
+        },
+        StakeOp::Withdraw { bond: unbonding },
+    ] {
+        for stage in &stages {
+            let mut form = StakeForm::new(op.clone());
+            form.power = 9;
+            form.stage = stage.clone();
+            s.overlay = Overlay::Stake(form);
+            for (w, h) in [(80, 24), (100, 40)] {
+                let out = render(&s, w, h);
+                match stage {
+                    StakeStage::Confirm { .. } => {
+                        assert!(out.contains(&format!("y to {}", op.verb())), "{out}")
+                    }
+                    StakeStage::Failed(_) => {
+                        assert!(out.contains(&format!("the wallet did not {}", op.verb())))
+                    }
+                    StakeStage::Sent { .. } => assert!(out.contains("efefefef")),
+                    _ => {}
+                }
+            }
+        }
+    }
+    let mut form = StakeForm::new(StakeOp::Stake { finalizer: to });
+    form.power = 9;
+    form.stage = StakeStage::Confirm { fee: Some(20_000) };
+    s.overlay = Overlay::Stake(form);
+    let out = render(&s, 100, 40);
+    assert!(out.contains("0.0002 ZEC"), "{out}");
+    assert!(out.contains("10.0002 ZEC"), "{out}");
+}
+
+#[test]
+fn the_amount_shows_its_neighbours_and_warns_past_the_balance() {
+    let mut s = populated();
+    s.screen = Screen::Finalizers;
+    let mut form = StakeForm::new(StakeOp::Stake {
+        finalizer: format!("zfinv1{}", "77".repeat(64)),
+    });
+    form.power = 0;
+    s.overlay = Overlay::Stake(form.clone());
+    let out = render(&s, 80, 24);
+    assert!(out.contains("0.00000001 ZEC ›  0.0000001"), "{out}");
+    assert!(!out.contains("‹"), "nothing below one zatoshi");
+    form.power = StakeForm::MAX_POWER;
+    s.overlay = Overlay::Stake(form);
+    let out = render(&s, 80, 24);
+    assert!(out.contains("1,000,000  ‹ 10,000,000 ZEC"), "{out}");
+    assert!(!out.contains("›"), "nothing above the top");
+    assert!(out.contains("more than the spendable balance"));
+}
+
+#[test]
+fn a_bond_shows_what_it_earned_beside_what_it_is_worth() {
+    let mut s = populated();
+    s.screen = Screen::Bonds;
+    let out = render(&s, 80, 24);
+    assert!(out.contains("earned"), "a header names the column");
+    let grown = out.lines().find(|l| l.contains("zfinv1cdcd")).unwrap();
+    assert!(grown.contains('5') && grown.contains("+4"), "{grown}");
+    let flat = out.lines().find(|l| l.contains("zfinv10101")).unwrap();
+    assert!(flat.contains('—'), "nothing earned: {flat}");
+    s.overlay = Overlay::BondMenu { selected: 0 };
+    let out = render(&s, 80, 24);
+    assert!(out.contains("5 ZEC · 1 bonded + 4 earned"), "{out}");
+    assert!(
+        out.contains("block 2,590,000"),
+        "the last action moved to the menu"
+    );
 }

@@ -5,6 +5,8 @@
 //! status on every tick and reports what changed since the last one.
 
 pub mod fake;
+#[cfg(test)]
+mod local_e2e;
 
 use std::collections::HashSet;
 use std::io::Read as _;
@@ -644,7 +646,22 @@ impl Backend {
             Command::FetchTip(network) => {
                 let actions = self.actions.clone();
                 let server = self.config.server_uri(network, "", None);
+                let pinned = self.config.server.is_some();
+                let discovered = self.discovered.clone();
                 tokio::spawn(async move {
+                    let probed = if pinned {
+                        None
+                    } else {
+                        probe_seeds(network, None).await
+                    };
+                    let server = match probed {
+                        Some(ranking) => {
+                            let best = parse_server(&ranking[0]);
+                            *discovered.write().await = ranking;
+                            best
+                        }
+                        None => server,
+                    };
                     let result = match server {
                         Ok(uri) => fetch_tip(network, uri).await,
                         Err(e) => Err(e),
@@ -672,7 +689,12 @@ impl Backend {
                             lc.save_task().await;
                         }
                         *self.current_indexer.write().unwrap() = Some(uri.clone());
-                        self.refresh(true).await;
+                        self.refresh(false).await;
+                        let uri = if self.server_pinned {
+                            uri
+                        } else {
+                            self.go_to_best_seed().await.unwrap_or(uri)
+                        };
                         self.launch().await;
                         self.start_discovery().await;
                         self.start_roster_poller();
@@ -691,7 +713,7 @@ impl Backend {
                     Err(message) => self.send(Action::OpenFailed(message)),
                 }
             }
-            Command::Refresh => self.refresh(false).await,
+            Command::Refresh => self.refresh(true).await,
             Command::NewUnifiedAddress { orchard, sapling } => {
                 if let Some(lc) = self.lc.as_mut() {
                     match lc
@@ -706,7 +728,7 @@ impl Backend {
                                 "new unified address #{}",
                                 id.address_index
                             )));
-                            self.refresh(false).await;
+                            self.refresh(true).await;
                         }
                         Err(e) => self.send(Action::Notice(format!("cannot derive address: {e}"))),
                     }
@@ -723,7 +745,7 @@ impl Backend {
                                 "new transparent address #{}",
                                 id.address_index().index()
                             )));
-                            self.refresh(false).await;
+                            self.refresh(true).await;
                         }
                         Err(e) => self.send(Action::Notice(format!("cannot derive address: {e}"))),
                     }
@@ -786,7 +808,7 @@ impl Backend {
                         self.sync_note(SyncNote::Scheduled { at });
                     }
                 }
-                self.refresh(false).await;
+                self.refresh(true).await;
             }
             Command::Quit => {
                 self.shutdown().await;
@@ -820,13 +842,73 @@ impl Backend {
                     None => Err("no wallet is open".into()),
                 };
                 self.send(Action::SendDone(result));
-                self.refresh(false).await
+                self.refresh(true).await
             }
             Command::CancelSend => {
                 if let Some(lc) = self.lc.as_mut() {
                     lc.wallet.write().await.clear_proposal();
                     let _ignore = lc.resume_sync();
                 }
+            }
+            Command::ProposeStake { finalizer, amount } => {
+                let result = match self.lc.as_mut() {
+                    Some(lc) => propose_staking(lc, Staking::Stake { finalizer, amount }).await,
+                    None => Err("no wallet is open".into()),
+                };
+                self.send(Action::StakeProposed(result));
+            }
+            Command::ProposeUnbond { bond } => {
+                let result = match self.lc.as_mut() {
+                    Some(lc) => propose_staking(lc, Staking::Unbond { bond }).await,
+                    None => Err("no wallet is open".into()),
+                };
+                self.send(Action::StakeProposed(result));
+            }
+            Command::ProposeRedelegate { bond, to } => {
+                let result = match self.lc.as_mut() {
+                    Some(lc) => propose_staking(lc, Staking::Redelegate { bond, to }).await,
+                    None => Err("no wallet is open".into()),
+                };
+                self.send(Action::StakeProposed(result));
+            }
+            Command::ConfirmStake => {
+                let result = match self.lc.as_mut() {
+                    Some(lc) => {
+                        let sent = lc
+                            .send_stored_proposal(true)
+                            .await
+                            .map(|txids| txids.iter().map(|id| id.to_string()).collect())
+                            .map_err(|e| e.to_string());
+                        if sent.is_err() {
+                            let _ignore = lc.resume_sync();
+                        }
+                        sent
+                    }
+                    None => Err("no wallet is open".into()),
+                };
+                self.send(Action::StakeDone(result));
+                self.refresh(true).await
+            }
+            Command::Withdraw { bond } => {
+                let result = match self.lc.as_mut() {
+                    Some(lc) => match bond_key(&bond) {
+                        Ok(key) => {
+                            let sent = lc
+                                .withdraw_bond(key, zip32::AccountId::ZERO)
+                                .await
+                                .map(|txid| vec![txid.to_string()])
+                                .map_err(|e| e.to_string());
+                            if sent.is_err() {
+                                let _ignore = lc.resume_sync();
+                            }
+                            sent
+                        }
+                        Err(e) => Err(e),
+                    },
+                    None => Err("no wallet is open".into()),
+                };
+                self.send(Action::StakeDone(result));
+                self.refresh(true).await
             }
             Command::Copy(_) | Command::SaveTheme(_) | Command::ForceQuit => {}
         }
@@ -995,10 +1077,7 @@ impl Backend {
             }
             None => return,
         };
-        let config = match network {
-            Network::Stable => discovery::DiscoveryConfig::crosslink_stable(),
-            Network::Nightly => discovery::DiscoveryConfig::crosslink_nightly(),
-        };
+        let config = discovery_config(network);
         let reports = self.reports.clone();
         tokio::spawn(async move {
             let report = discovery::discover(&config, fingerprint).await;
@@ -1031,10 +1110,7 @@ impl Backend {
                     hash: block.block_hash().0,
                 })
         };
-        let config = match self.network {
-            Network::Stable => discovery::DiscoveryConfig::crosslink_stable(),
-            Network::Nightly => discovery::DiscoveryConfig::crosslink_nightly(),
-        };
+        let config = discovery_config(self.network);
         let mut uris: Vec<(String, discovery::Source)> = self
             .discovered
             .try_read()
@@ -1046,7 +1122,11 @@ impl Backend {
             })
             .unwrap_or_default();
         let current = lc.indexer_uri().to_string();
-        if !uris.iter().any(|(known, _)| *known == current) {
+        let current_key = discovery::indexer_key(&current);
+        if !uris
+            .iter()
+            .any(|(known, _)| discovery::indexer_key(known) == current_key)
+        {
             uris.insert(0, (current, discovery::Source::Builtin));
         }
         let reports = self.reports.clone();
@@ -1191,6 +1271,33 @@ impl Backend {
         }
     }
 
+    /// Measures the built-in indexers with this wallet's newest block as the fingerprint, and
+    /// points the wallet at the best one on its chain. The answer is where it now points, or
+    /// `None` when no seed answered and it stays put. Called before the first sync, so there is
+    /// no session to stop.
+    async fn go_to_best_seed(&mut self) -> Option<http::Uri> {
+        let lc = self.lc.as_mut()?;
+        let fingerprint = {
+            let wallet = lc.wallet.read().await;
+            wallet
+                .wallet_blocks
+                .last_key_value()
+                .map(|(height, block)| discovery::ChainFingerprint {
+                    height: u32::from(*height),
+                    hash: block.block_hash().0,
+                })
+        };
+        let ranking = probe_seeds(self.network, fingerprint).await?;
+        let best = parse_server(&ranking[0]).ok()?;
+        if best != lc.indexer_uri() {
+            tracing::info!("seed probe: starting on {best}");
+            lc.set_indexer(best.clone());
+        }
+        *self.current_indexer.write().unwrap() = Some(best.clone());
+        *self.discovered.write().await = ranking;
+        Some(best)
+    }
+
     /// Points the wallet at `uri`, letting a running session wind down first.
     async fn move_to(&mut self, uri: http::Uri) {
         let Some(lc) = self.lc.as_mut() else {
@@ -1237,7 +1344,13 @@ impl Backend {
         Ok((uri, !from_default))
     }
 
+    /// Moves the wallet to the best discovered indexer other than `failing`. Never moves off a
+    /// pinned server: a node the user named, a local one say, may be on a chain of its own
+    /// that no discovered indexer serves.
     fn failover_to_best(&mut self, failing: http::Uri) -> bool {
+        if self.server_pinned {
+            return false;
+        }
         let Some(lc) = self.lc.as_ref() else {
             return false;
         };
@@ -1363,7 +1476,7 @@ impl Backend {
         }
         if self.dirty {
             self.dirty = false;
-            self.refresh(false).await;
+            self.refresh(true).await;
         }
     }
 
@@ -1539,6 +1652,50 @@ fn pool_balance<Op: OutputInterface>(
     }
 }
 
+/// Discovery for `network`, keeping only indexers on the consensus branch this wallet's own
+/// rules give their height. A node that missed a network upgrade keeps answering on a chain of
+/// its own, and it can be every built-in seed: in October 2026 three of the stable chain's
+/// four stayed on the branch from before FeaturenetUpgrade1.
+pub fn discovery_config(network: Network) -> discovery::DiscoveryConfig {
+    use zcash_protocol::consensus::{BlockHeight, BranchId};
+
+    let config = match network {
+        Network::Stable => discovery::DiscoveryConfig::crosslink_stable(),
+        Network::Nightly => discovery::DiscoveryConfig::crosslink_nightly(),
+    };
+    let chain = chain_type(network);
+    config.with_branch_rule(discovery::BranchRule::new(move |height| {
+        let height = BlockHeight::from_u32(u32::try_from(height).unwrap_or(u32::MAX));
+        u32::from(BranchId::for_height(&chain, height))
+    }))
+}
+
+/// Measures `network`'s built-in seeds, without the peer exchange, and answers the ones that
+/// serve this chain, best first, or `None` when none answered. A wallet's newest block, when
+/// it has one, tells the stable and nightly chains apart. Takes one probe timeout at most.
+async fn probe_seeds(
+    network: Network,
+    fingerprint: Option<discovery::ChainFingerprint>,
+) -> Option<Vec<String>> {
+    let config = discovery_config(network);
+    let seeds = config
+        .seed_uris
+        .iter()
+        .map(|uri| (uri.clone(), discovery::Source::Builtin))
+        .collect();
+    let report = discovery::health_check(&config, seeds, fingerprint).await;
+    for error in &report.errors {
+        tracing::info!("seed probe: {error}");
+    }
+    let ranking: Vec<String> = report
+        .ranking
+        .into_iter()
+        .filter(|indexer| indexer.tip_height.is_some())
+        .map(|indexer| indexer.uri)
+        .collect();
+    (!ranking.is_empty()).then_some(ranking)
+}
+
 /// Asks the faucet to pay `address`. The answer is what it sent, in zatoshis.
 async fn request_faucet(uri: http::Uri, address: String) -> Result<u64, String> {
     use zcash_client_backend::proto::service::FaucetRequest;
@@ -1593,6 +1750,81 @@ async fn propose_send(
         .map(|step| u64::from(step.balance().fee_required()))
         .sum();
     Ok((fee, amount.saturating_add(fee)))
+}
+
+/// A staking action the wallet works out before it is confirmed. Bonds and finalizers come
+/// as the screens hold them: a bond key in hex, a finalizer address as `zfinv1…`.
+enum Staking {
+    Stake { finalizer: String, amount: u64 },
+    Unbond { bond: String },
+    Redelegate { bond: String, to: String },
+}
+
+/// Works out a staking action and stores it in the wallet for
+/// [`LightClient::send_stored_proposal`]. Sync pauses while a proposal is held, and resumes
+/// when the wallet refuses. The answer is the fee, without the amount a new bond locks.
+async fn propose_staking(lc: &mut LightClient, staking: Staking) -> Result<u64, String> {
+    use zingolib::crosslink::parse_finalizer_address;
+
+    let account = zip32::AccountId::ZERO;
+    let finalizer = |address: &str| {
+        parse_finalizer_address(address).map_err(|e| format!("that finalizer address fails: {e}"))
+    };
+    let bonded = match &staking {
+        Staking::Stake { amount, .. } => *amount,
+        Staking::Unbond { .. } | Staking::Redelegate { .. } => 0,
+    };
+    let proposal = match staking {
+        Staking::Stake {
+            finalizer: to,
+            amount,
+        } => {
+            if !zingolib::crosslink::is_power_of_10(amount) {
+                return Err(not_a_power_of_ten(amount));
+            }
+            let target = finalizer(&to)?;
+            let amount = Zatoshis::from_u64(amount).map_err(|_| "the amount is out of range")?;
+            lc.propose_stake(amount, target, account).await
+        }
+        Staking::Unbond { bond } => lc.propose_begin_unstake(bond_key(&bond)?, account).await,
+        Staking::Redelegate { bond, to } => {
+            let target = finalizer(&to)?;
+            lc.propose_retarget_bond(bond_key(&bond)?, target, account)
+                .await
+        }
+    };
+    match proposal {
+        Ok(proposal) => Ok(proposal
+            .proportional_fee_proposal()
+            .steps()
+            .iter()
+            .map(|step| u64::from(step.balance().fee_required()))
+            .sum::<u64>()
+            .saturating_sub(bonded)),
+        Err(e) => {
+            let _ignore = lc.resume_sync();
+            Err(e.to_string())
+        }
+    }
+}
+
+/// Why a bond of `amount` zatoshis is refused.
+pub fn not_a_power_of_ten(amount: u64) -> String {
+    format!(
+        "{} ZEC is not a power of ten · a bond is 0.1, 1, 10, 100, 1,000 ZEC and so on",
+        crate::format::zec_exact(amount)
+    )
+}
+
+/// A bond key from the hex the bonds screen holds it in.
+fn bond_key(hex: &str) -> Result<[u8; 32], String> {
+    let bytes: Option<Vec<u8>> = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
+        .collect();
+    bytes
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+        .ok_or_else(|| format!("not a bond key: {hex}"))
 }
 
 /// The wallet's delegation bonds: every bond it created and has not withdrawn, with the
@@ -1700,6 +1932,7 @@ async fn bonds(
                 key: key_hex,
                 finalizer: finalizer.clone(),
                 amount: info.amount,
+                initial: created_with,
                 status: if info.status == 1 {
                     BondStatus::Unbonding
                 } else {
@@ -1713,6 +1946,7 @@ async fn bonds(
                     key: key_hex,
                     finalizer: finalizer.clone(),
                     amount: created_with,
+                    initial: created_with,
                     status: BondStatus::Bonded,
                     since: height,
                 },

@@ -20,11 +20,12 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
         Line::styled("delegator-tui — keys", t.title),
         Line::from(""),
         key(
-            "h t b r a s",
-            "home, transactions, bonds, receive, addresses, sync",
+            "h p t b f r a s",
+            "home, pay, transactions, bonds, finalizers, receive, …",
         ),
         key("j / k · ↑ / ↓", "move; g G, home, end jump"),
-        key("enter", "open the highlighted row"),
+        key("enter", "open the row; on finalizers, stake with it"),
+        key("u d w", "bonds: unbond, redelegate, withdraw"),
         key("esc", "close the current view, or go home"),
         key("v", "transaction: inputs/outputs ⇄ wallet events"),
         key("", "receive: unified ⇄ transparent address"),
@@ -43,8 +44,8 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
     let kind = state.wallet.as_ref().map(|w| w.kind);
     lines.push(Line::styled(
         match kind {
-            Some(WalletKind::Seed) => "  this wallet holds a seed phrase · it can send",
-            _ => "  this wallet holds a viewing key only · it cannot send",
+            Some(WalletKind::Seed) => "  this wallet holds a seed phrase · it can send and stake",
+            _ => "  this wallet holds a viewing key only · it cannot send or stake",
         },
         t.muted,
     ));

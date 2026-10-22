@@ -38,6 +38,16 @@ pub fn spawn(
 /// One made-up transaction: days ago, hours, kind, value, fee, memo.
 type Story = (u64, u64, TxKind, u64, Option<u64>, &'static str);
 
+/// A held staking action: a new bond's finalizer and amount, or the key of the bond to act on.
+enum FakeStaking {
+    Stake { finalizer: String, amount: u64 },
+    Unbond { bond: String },
+    Redelegate { bond: String, to: String },
+}
+
+/// What every made-up staking transaction pays.
+const STAKE_FEE: u64 = 20_000;
+
 /// A small deterministic generator, so the data is the same every run.
 struct Rng(u64);
 
@@ -93,6 +103,8 @@ struct Fake {
     opened: bool,
     /// A send waiting for confirmation: to, amount, memo, fee.
     proposal: Option<(String, u64, Option<String>, u64)>,
+    /// A staking action waiting for confirmation.
+    staking: Option<FakeStaking>,
     mode: SyncMode,
     auto: bool,
     scanned: u64,
@@ -115,6 +127,7 @@ impl Fake {
             data: WalletData::default(),
             opened: false,
             proposal: None,
+            staking: None,
             mode: SyncMode::NotRunning,
             auto: true,
             scanned: 0,
@@ -384,10 +397,151 @@ impl Fake {
                 self.send(Action::SendDone(result));
                 self.send(Action::DataLoaded(self.data.clone()));
             }
-            Command::CancelSend => self.proposal = None,
+            Command::CancelSend => {
+                self.proposal = None;
+                self.staking = None;
+            }
+            Command::ProposeStake { finalizer, amount } => {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                let spendable = self.data.balance.total() - self.data.balance.pending();
+                let result = if !zcash_primitives::transaction::is_power_of_10(amount) {
+                    Err(super::not_a_power_of_ten(amount))
+                } else if finalizer.len() != 134 {
+                    Err("that finalizer address fails: invalid finalizer address encoding".into())
+                } else if amount + STAKE_FEE > spendable {
+                    Err(format!(
+                        "not enough spendable funds: {} ZEC after the fee",
+                        crate::format::zec(spendable.saturating_sub(STAKE_FEE))
+                    ))
+                } else {
+                    self.staking = Some(FakeStaking::Stake { finalizer, amount });
+                    Ok(STAKE_FEE)
+                };
+                self.send(Action::StakeProposed(result));
+            }
+            Command::ProposeUnbond { bond } => {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                self.staking = Some(FakeStaking::Unbond { bond });
+                self.send(Action::StakeProposed(Ok(STAKE_FEE)));
+            }
+            Command::ProposeRedelegate { bond, to } => {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                self.staking = Some(FakeStaking::Redelegate { bond, to });
+                self.send(Action::StakeProposed(Ok(STAKE_FEE)));
+            }
+            Command::ConfirmStake => {
+                tokio::time::sleep(Duration::from_millis(900)).await;
+                let result = match self.staking.take() {
+                    Some(staking) => Ok(vec![self.stake(staking)]),
+                    None => Err("nothing is proposed".to_string()),
+                };
+                self.send(Action::StakeDone(result));
+                self.send(Action::DataLoaded(self.data.clone()));
+            }
+            Command::Withdraw { bond } => {
+                tokio::time::sleep(Duration::from_millis(900)).await;
+                let result = match self.data.bonds.iter().position(|b| b.key == bond) {
+                    Some(i) if self.data.bonds[i].status == BondStatus::Unbonding => {
+                        let bond = self.data.bonds.remove(i);
+                        self.data.balance.unbonding -= bond.amount;
+                        self.data.balance.ironwood.pending += bond.amount;
+                        self.data.balance.orchard.confirmed -= STAKE_FEE;
+                        Ok(vec![self.staking_tx(TxKind::WithdrawBond, bond.amount)])
+                    }
+                    Some(_) => Err("the bond is not unbonding".to_string()),
+                    None => Err("the node has no such bond".to_string()),
+                };
+                self.send(Action::StakeDone(result));
+                self.send(Action::DataLoaded(self.data.clone()));
+            }
             Command::Copy(_) | Command::SaveTheme(_) | Command::ForceQuit => {}
         }
         false
+    }
+
+    /// Applies a confirmed staking action to the made-up wallet and chain. The answer is the
+    /// txid.
+    fn stake(&mut self, staking: FakeStaking) -> String {
+        let height = self.tip + 1;
+        self.data.balance.orchard.confirmed -= STAKE_FEE;
+        match staking {
+            FakeStaking::Stake { finalizer, amount } => {
+                self.data.balance.orchard.confirmed -= amount;
+                self.data.balance.staked += amount;
+                self.data.bonds.push(BondRow {
+                    key: self.rng.hex(64),
+                    finalizer: finalizer.clone(),
+                    amount,
+                    initial: amount,
+                    status: BondStatus::Bonded,
+                    since: height,
+                });
+                self.move_stake(None, Some(&finalizer), amount);
+                self.staking_tx(TxKind::CreateBond, amount)
+            }
+            FakeStaking::Unbond { bond } => {
+                let Some(row) = self.data.bonds.iter_mut().find(|b| b.key == bond) else {
+                    return self.staking_tx(TxKind::BeginUnbond, 0);
+                };
+                row.status = BondStatus::Unbonding;
+                row.since = height;
+                let (amount, finalizer) = (row.amount, row.finalizer.clone());
+                self.data.balance.staked -= amount;
+                self.data.balance.unbonding += amount;
+                self.move_stake(Some(&finalizer), None, amount);
+                self.staking_tx(TxKind::BeginUnbond, amount)
+            }
+            FakeStaking::Redelegate { bond, to } => {
+                let Some(row) = self.data.bonds.iter_mut().find(|b| b.key == bond) else {
+                    return self.staking_tx(TxKind::RetargetBond, 0);
+                };
+                let from = std::mem::replace(&mut row.finalizer, to.clone());
+                row.since = height;
+                let amount = row.amount;
+                self.move_stake(Some(&from), Some(&to), amount);
+                self.staking_tx(TxKind::RetargetBond, amount)
+            }
+        }
+    }
+
+    /// Moves `amount` of stake on the roster from one finalizer to another, either end
+    /// optional, and marks the ones the wallet has a bond with, as the real backend does.
+    fn move_stake(&mut self, from: Option<&str>, to: Option<&str>, amount: u64) {
+        let roster = &mut self.data.roster;
+        if let Some(row) = from.and_then(|f| roster.iter_mut().find(|r| r.finalizer == f)) {
+            row.stake = row.stake.saturating_sub(amount);
+            row.bonds = row.bonds.saturating_sub(1);
+        }
+        if let Some(to) = to {
+            match roster.iter_mut().find(|r| r.finalizer == to) {
+                Some(row) => {
+                    row.stake += amount;
+                    row.bonds += 1;
+                }
+                None => roster.push(RosterRow {
+                    finalizer: to.to_string(),
+                    stake: amount,
+                    bonds: 1,
+                    ours: true,
+                }),
+            }
+        }
+        let bonds = &self.data.bonds;
+        for row in roster.iter_mut() {
+            row.ours = bonds.iter().any(|b| b.finalizer == row.finalizer);
+        }
+        roster.sort_by(|a, b| b.stake.cmp(&a.stake));
+    }
+
+    /// A staking transaction just sent, at the head of the history. The answer is its txid.
+    fn staking_tx(&mut self, kind: TxKind, value: u64) -> String {
+        let mut tx = self.payment(kind, value, Some(STAKE_FEE), None, None, self.tip + 1);
+        for event in &mut tx.wallet_events {
+            event.kind = kind.long().into();
+        }
+        let txid = tx.txid.clone();
+        self.data.txs.insert(0, tx);
+        txid
     }
 
     /// A payment just made or just received, still in the mempool.
@@ -843,24 +997,36 @@ impl Fake {
                 confirmed: 30_000_000,
                 pending: 0,
             },
-            staked: 25_000_000_000,
-            unbonding: 2_500_000_000,
+            staked: 0,
+            unbonding: 0,
         };
-        // three finalizers: two bonds earning, one on its way out
         let bonds: Vec<BondRow> = [
-            (15_000_000_000, BondStatus::Bonded, 23u64),
-            (10_000_000_000, BondStatus::Bonded, 0),
-            (2_500_000_000, BondStatus::Unbonding, 9),
+            (10_000_000_000, 42_000_000, BondStatus::Bonded, 23u64),
+            (10_000_000_000, 3_100_000, BondStatus::Bonded, 0),
+            (1_000_000_000, 12_500_000, BondStatus::Unbonding, 9),
         ]
         .into_iter()
-        .map(|(amount, status, days_ago)| BondRow {
+        .map(|(initial, earned, status, days_ago)| BondRow {
             key: self.rng.hex(64),
             finalizer: self.rng.finalizer(),
-            amount,
+            amount: initial + earned,
+            initial,
             status,
             since: at(days_ago, 0).1,
         })
         .collect();
+        let sum = |status: BondStatus| -> u64 {
+            bonds
+                .iter()
+                .filter(|b| b.status == status)
+                .map(|b| b.amount)
+                .sum()
+        };
+        let balance = Balance {
+            staked: sum(BondStatus::Bonded),
+            unbonding: sum(BondStatus::Unbonding),
+            ..balance
+        };
         // the chain's roster: ours among seven, with everyone's stake
         let mut roster: Vec<RosterRow> = bonds
             .iter()
@@ -1099,6 +1265,52 @@ mod tests {
             s.txs[0].kind == TxKind::Sent && s.txs[0].first_memo() == Some("rent")
         })
         .await;
+        let to = s.roster.iter().find(|r| !r.ours).unwrap().finalizer.clone();
+        let (fake_tx, mut fake_rx) = mpsc::unbounded_channel();
+        let mut fake = Fake::new(Network::Stable, fake_tx);
+        fake.handle(Command::ProposeStake {
+            finalizer: to.clone(),
+            amount: 150_000_000,
+        })
+        .await;
+        assert!(matches!(
+            fake_rx.recv().await,
+            Some(Action::StakeProposed(Err(e))) if e.contains("not a power of ten")
+        ));
+        cmd_tx
+            .send(Command::ProposeStake {
+                finalizer: to.clone(),
+                amount: 100_000_000,
+            })
+            .unwrap();
+        cmd_tx.send(Command::ConfirmStake).unwrap();
+        drive(&mut s, &mut act_rx, &cmd_tx, |s| s.bonds.len() == 4).await;
+        assert_eq!(s.txs[0].kind, TxKind::CreateBond);
+        assert!(s.roster.iter().any(|r| r.finalizer == to && r.ours));
+        let fresh = s.bonds[3].key.clone();
+        cmd_tx
+            .send(Command::ProposeUnbond {
+                bond: fresh.clone(),
+            })
+            .unwrap();
+        cmd_tx.send(Command::ConfirmStake).unwrap();
+        drive(&mut s, &mut act_rx, &cmd_tx, |s| {
+            s.bonds[3].status == BondStatus::Unbonding
+        })
+        .await;
+        let first = s.bonds[0].clone();
+        cmd_tx
+            .send(Command::ProposeRedelegate {
+                bond: first.key.clone(),
+                to: to.clone(),
+            })
+            .unwrap();
+        cmd_tx.send(Command::ConfirmStake).unwrap();
+        drive(&mut s, &mut act_rx, &cmd_tx, |s| s.bonds[0].finalizer == to).await;
+        assert_eq!(s.txs[0].kind, TxKind::RetargetBond);
+        cmd_tx.send(Command::Withdraw { bond: fresh }).unwrap();
+        drive(&mut s, &mut act_rx, &cmd_tx, |s| s.bonds.len() == 3).await;
+        assert_eq!(s.txs[0].kind, TxKind::WithdrawBond);
         cmd_tx.send(Command::NewTransparentAddress).unwrap();
         drive(&mut s, &mut act_rx, &cmd_tx, |s| {
             s.addresses.len() > addresses

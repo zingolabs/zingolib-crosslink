@@ -65,22 +65,18 @@ impl Network {
             .unwrap_or_else(|| "http://127.0.0.1:18234".to_string())
     }
 
-    /// This chain's indexers, in the order to try them. The stable chain's are the nodes
-    /// Shielded Labs hands out for it (October 2026); zingolib's first featurenet entry is an
-    /// older deployment that serves no Ironwood tree state and is left out. The nightly chain's
-    /// come from zingolib's built-in list.
+    /// This chain's built-in indexers, from zingolib's list, in the order to try them. They are
+    /// a starting point only: before it connects, the wallet measures them and goes to the
+    /// best one on its own chain (see the backend's seed probe), and the peer exchange finds
+    /// the rest. In October 2026 the stable chain's first entry is the node on the live chain;
+    /// the three Shielded Labs nodes after it stayed on the branch from before
+    /// FeaturenetUpgrade1, a chain that stopped at block 62,152.
     pub fn servers(self) -> Vec<String> {
-        match self {
-            Network::Stable => ["45.63.75.9", "70.34.220.94", "64.177.44.176"]
-                .into_iter()
-                .map(|host| format!("http://{host}:18234"))
-                .collect(),
-            Network::Nightly => zingolib::config::IndexerList::builtin()
-                .iter()
-                .filter(|(network, _)| *network == self.indexer_network())
-                .map(|(_, i)| i.uri.to_string().trim_end_matches('/').to_string())
-                .collect(),
-        }
+        zingolib::config::IndexerList::builtin()
+            .iter()
+            .filter(|(network, _)| *network == self.indexer_network())
+            .map(|(_, i)| i.uri.to_string().trim_end_matches('/').to_string())
+            .collect()
     }
 
     /// The lowest birthday a wallet can have. Both crosslink chains are live from block 1, and
@@ -186,6 +182,175 @@ pub enum Overlay {
     },
     /// A request to the chain's faucet.
     Faucet(FaucetStage),
+    /// The selected bond with what can be done to it. `selected` indexes
+    /// [`BondAction::for_status`].
+    BondMenu {
+        selected: usize,
+    },
+    /// A staking action on its way from a choice to a transaction.
+    Stake(StakeForm),
+}
+
+/// What can be done to one of the wallet's bonds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BondAction {
+    Unbond,
+    Redelegate,
+    Withdraw,
+}
+
+impl BondAction {
+    /// The actions a bond in `status` takes, in menu order. A bonded bond can start
+    /// unbonding or move to another finalizer; an unbonding one can only be withdrawn.
+    pub fn for_status(status: BondStatus) -> &'static [BondAction] {
+        match status {
+            BondStatus::Bonded => &[BondAction::Unbond, BondAction::Redelegate],
+            BondStatus::Unbonding => &[BondAction::Withdraw],
+        }
+    }
+
+    /// The key that runs the action from the bonds list.
+    pub fn key(self) -> char {
+        match self {
+            BondAction::Unbond => 'u',
+            BondAction::Redelegate => 'd',
+            BondAction::Withdraw => 'w',
+        }
+    }
+
+    /// [`BondAction::key`] as the hints write it.
+    pub fn key_name(self) -> &'static str {
+        match self {
+            BondAction::Unbond => "u",
+            BondAction::Redelegate => "d",
+            BondAction::Withdraw => "w",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BondAction::Unbond => "unbond",
+            BondAction::Redelegate => "redelegate",
+            BondAction::Withdraw => "withdraw",
+        }
+    }
+
+    pub fn detail(self) -> &'static str {
+        match self {
+            BondAction::Unbond => "stop earning; the funds can be withdrawn later",
+            BondAction::Redelegate => "move the stake to another finalizer, still earning",
+            BondAction::Withdraw => "bring the unbonded funds back to the wallet",
+        }
+    }
+}
+
+/// A staking action, as the user chose it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StakeOp {
+    /// A new bond with this finalizer, `zfinv1…`. The amount is typed on the form.
+    Stake { finalizer: String },
+    /// Begin unbonding this bond.
+    Unbond { bond: BondRow },
+    /// Point this bond at the finalizer `to`. The stake moves without unbonding.
+    Redelegate { bond: BondRow, to: String },
+    /// Bring this unbonded bond's value back into the wallet.
+    Withdraw { bond: BondRow },
+}
+
+impl StakeOp {
+    /// The word for the action, as titles and the confirm key name it.
+    pub fn verb(&self) -> &'static str {
+        match self {
+            StakeOp::Stake { .. } => "stake",
+            StakeOp::Unbond { .. } => "unbond",
+            StakeOp::Redelegate { .. } => "redelegate",
+            StakeOp::Withdraw { .. } => "withdraw",
+        }
+    }
+
+    /// The bond the action works on; a new bond has none yet.
+    pub fn bond(&self) -> Option<&BondRow> {
+        match self {
+            StakeOp::Stake { .. } => None,
+            StakeOp::Unbond { bond }
+            | StakeOp::Redelegate { bond, .. }
+            | StakeOp::Withdraw { bond } => Some(bond),
+        }
+    }
+}
+
+/// Where a staking action stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StakeStage {
+    /// The amount is being typed. Only a new bond has one.
+    Edit,
+    /// The wallet is choosing notes for the fee and checking the action.
+    Proposing,
+    /// Ready to go. `fee` is what the wallet pays on top; a withdrawal has `None`, since its
+    /// fee is set as the transaction is built.
+    Confirm {
+        fee: Option<u64>,
+    },
+    /// The transaction is being built and transmitted.
+    Sending,
+    Sent {
+        txids: Vec<String>,
+    },
+    /// The wallet refused. A new bond goes back to its form instead.
+    Failed(String),
+}
+
+/// The staking form: one action, its amount when it is a new bond, and how far it has got.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StakeForm {
+    pub op: StakeOp,
+    /// A new bond's amount as a power of ten zatoshis: 8 is 1 ZEC, 9 is 10 ZEC, 7 is 0.1 ZEC.
+    /// Consensus takes a bond of no other amount, so the form holds no other.
+    pub power: u32,
+    pub stage: StakeStage,
+    pub error: Option<String>,
+}
+
+impl StakeForm {
+    /// The largest bond: 10^15 zatoshis, ten million ZEC.
+    pub const MAX_POWER: u32 = 15;
+    /// Where the amount starts: 10^8 zatoshis, 1 ZEC.
+    const START_POWER: u32 = 8;
+
+    /// The form for `op` at its first stage: a new bond starts at its amount, a withdrawal
+    /// at its confirmation, and the others while the wallet works them out.
+    pub fn new(op: StakeOp) -> Self {
+        let stage = match op {
+            StakeOp::Stake { .. } => StakeStage::Edit,
+            StakeOp::Withdraw { .. } => StakeStage::Confirm { fee: None },
+            StakeOp::Unbond { .. } | StakeOp::Redelegate { .. } => StakeStage::Proposing,
+        };
+        Self {
+            op,
+            power: Self::START_POWER,
+            stage,
+            error: None,
+        }
+    }
+
+    /// The amount in zatoshis: always a power of ten.
+    pub fn amount_zats(&self) -> u64 {
+        Self::zats_at(self.power)
+    }
+
+    /// 10^`power` zatoshis.
+    pub fn zats_at(power: u32) -> u64 {
+        10u64.pow(power.min(Self::MAX_POWER))
+    }
+
+    /// Moves the amount one power of ten up or down, from one zatoshi to [`Self::MAX_POWER`].
+    pub fn step(&mut self, up: bool) {
+        self.power = if up {
+            (self.power + 1).min(Self::MAX_POWER)
+        } else {
+            self.power.saturating_sub(1)
+        };
+    }
 }
 
 /// Which field of the send form has the cursor.
@@ -642,6 +807,15 @@ impl StakingDay {
     pub const PERIOD: u32 = zcash_primitives::transaction::STAKING_PERIOD;
     /// Blocks of each period during which staking actions are valid.
     pub const DAY_WINDOW: u32 = zcash_primitives::transaction::STAKING_DAY_WINDOW;
+    /// Blocks a bond's last action must age before an unbond or a withdrawal: one more than a
+    /// staking day, so the two never fall on the same day.
+    pub const ACTION_DELAY: u32 = zcash_primitives::transaction::STAKING_ACTION_DELAY;
+
+    /// The first height at or after `height` on a staking day.
+    pub fn next_open(height: u32) -> u32 {
+        let day = Self::at_height(height);
+        if day.open { height } else { day.at }
+    }
 
     pub fn at_height(height: u32) -> Self {
         let into = height % Self::PERIOD;
@@ -749,10 +923,33 @@ pub struct BondRow {
     pub key: String,
     /// The finalizer the bond is delegated to, its public key in hex.
     pub finalizer: String,
+    /// What the bond is worth now, as the node reports it: what it was created with, grown by
+    /// the rewards it earned.
     pub amount: u64,
+    /// What the bond was created with.
+    pub initial: u64,
     pub status: BondStatus,
     /// Height of the last staking action on the bond: its creation, retarget or unbonding.
     pub since: u32,
+}
+
+impl BondRow {
+    /// What the bond earned since it was created.
+    pub fn earned(&self) -> u64 {
+        self.amount.saturating_sub(self.initial)
+    }
+
+    /// The first height at which the chain takes this bond's next timed action, an unbond
+    /// while bonded or a withdrawal while unbonding, with the chain at `tip`: the last action
+    /// [`StakingDay::ACTION_DELAY`] blocks old, a staking day open, and no earlier than the
+    /// next block. A redelegation waits for neither.
+    pub fn next_action_at(&self, tip: u32) -> u32 {
+        StakingDay::next_open(
+            self.since
+                .saturating_add(StakingDay::ACTION_DELAY)
+                .max(tip.saturating_add(1)),
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1254,6 +1451,8 @@ pub struct State {
     pub tx_selected: usize,
     pub bond_selected: usize,
     pub finalizer_selected: usize,
+    /// The bond waiting for a new finalizer: the Finalizers screen is picking one for it.
+    pub redelegating: Option<BondRow>,
     pub addr_selected: usize,
     pub receive_kind: ReceiveKind,
     pub detail_scroll: u16,
@@ -1296,6 +1495,7 @@ impl State {
             tx_selected: 0,
             bond_selected: 0,
             finalizer_selected: 0,
+            redelegating: None,
             addr_selected: 0,
             receive_kind: ReceiveKind::Unified,
             detail_scroll: 0,

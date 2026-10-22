@@ -1220,6 +1220,7 @@ mod tests {
             concurrency: 1,
             max_peers: 64,
             crawl_peers: true,
+            expected_branch: None,
         };
         let (peers, peers_seen) = peer_exchange(&config)
             .await

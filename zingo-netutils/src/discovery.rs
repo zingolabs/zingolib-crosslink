@@ -14,8 +14,10 @@ pub mod measure;
 pub mod p2p;
 pub mod seeds;
 
-/// Where a candidate indexer was learned from, in order of trust.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub use measure::indexer_key;
+
+/// Where a candidate indexer was learned from, in order of trust: the first is trusted most.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Source {
     /// A built-in seed endpoint, shipped with the library.
     Builtin,
@@ -52,6 +54,49 @@ pub struct ChainFingerprint {
     pub hash: [u8; 32],
 }
 
+/// The consensus branch a node must report to serve the caller's chain, as a function of the
+/// node's tip height. A node that missed a network upgrade keeps its old branch ID past the
+/// upgrade height and builds a chain of its own: its blocks answer, its tip even moves, but
+/// the caller's transactions fail there and its own history disagrees with it. Callers build
+/// the rule from their own consensus parameters, so "the right branch" means the one their
+/// transactions are built for.
+#[derive(Clone)]
+pub struct BranchRule(std::sync::Arc<dyn Fn(u64) -> u32 + Send + Sync>);
+
+impl BranchRule {
+    /// A rule from a function of the height to the branch ID valid there.
+    pub fn new(rule: impl Fn(u64) -> u32 + Send + Sync + 'static) -> Self {
+        Self(std::sync::Arc::new(rule))
+    }
+
+    /// The branch ID valid at `height`.
+    pub fn at(&self, height: u64) -> u32 {
+        (self.0)(height)
+    }
+
+    /// Why `indexer` is on another chain, or `None` when it is not known to be. A node reports
+    /// the branch of the block it would build next, so either its tip's branch or the next
+    /// block's passes; a node that reports no branch or no tip is not condemned.
+    pub fn mismatch(&self, indexer: &ScoredIndexer) -> Option<String> {
+        let reported = indexer.consensus_branch.as_deref()?;
+        let tip = indexer.tip_height?;
+        let branch = u32::from_str_radix(reported.trim_start_matches("0x"), 16).ok()?;
+        let expected = self.at(tip.saturating_add(1));
+        (branch != expected && branch != self.at(tip)).then(|| {
+            format!(
+                "{}: consensus branch {branch:08x} at height {tip}, this chain's is {expected:08x}",
+                indexer.uri
+            )
+        })
+    }
+}
+
+impl std::fmt::Debug for BranchRule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BranchRule")
+    }
+}
+
 /// Knobs for one discovery run. Defaults come from [`seeds`].
 #[derive(Clone, Debug)]
 pub struct DiscoveryConfig {
@@ -74,6 +119,19 @@ pub struct DiscoveryConfig {
     pub max_peers: usize,
     /// Whether to attempt a P2P address exchange at all. `false` measures the seeds only.
     pub crawl_peers: bool,
+    /// The branch each node must report, when the caller knows its chain's upgrades. Nodes on
+    /// another branch never rank, and each one is named in the report's errors.
+    pub expected_branch: Option<BranchRule>,
+}
+
+impl DiscoveryConfig {
+    /// This configuration, keeping only nodes on the branch `rule` gives their height.
+    pub fn with_branch_rule(self, rule: BranchRule) -> Self {
+        Self {
+            expected_branch: Some(rule),
+            ..self
+        }
+    }
 }
 
 impl DiscoveryConfig {
@@ -95,6 +153,7 @@ impl DiscoveryConfig {
             concurrency: seeds::PROBE_CONCURRENCY,
             max_peers: seeds::MAX_PEERS,
             crawl_peers: true,
+            expected_branch: None,
         }
     }
 
@@ -174,22 +233,66 @@ pub async fn discover(
         .collect();
     for (host, p2p_port) in candidate_hosts.drain(..) {
         let grpc_port = p2p_port.saturating_add(config.grpc_port_offset);
-        let uri = format!("http://{host}:{grpc_port}");
-        if !candidates.iter().any(|(known, _)| *known == uri) {
-            candidates.push((uri, Source::PeerExchange));
-        }
+        candidates.push((format!("http://{host}:{grpc_port}"), Source::PeerExchange));
     }
+    let candidates = distinct(config, candidates);
 
-    let ranking = measure::rank(
+    let mut ranking = measure::rank(
         measure::measure_all(candidates, wallet_chain, config.timeout, config.concurrency).await,
         wallet_chain,
     );
+    drop_other_branches(config, &mut ranking, &mut errors);
 
     IndexerReport {
         ranking,
         peers_seen,
         errors,
     }
+}
+
+/// Each indexer once, in its [`indexer_key`] form, in first-seen order. A node listed twice keeps
+/// its most trusted source, and one of `config`'s seeds is always [`Source::Builtin`], whatever
+/// the caller learned it as. Candidates that are not addresses are dropped.
+fn distinct(config: &DiscoveryConfig, candidates: Vec<(String, Source)>) -> Vec<(String, Source)> {
+    let seeds: Vec<String> = config
+        .seed_uris
+        .iter()
+        .filter_map(|uri| indexer_key(uri))
+        .collect();
+    let mut out: Vec<(String, Source)> = Vec::with_capacity(candidates.len());
+    for (uri, source) in candidates {
+        let Some(key) = indexer_key(&uri) else {
+            continue;
+        };
+        let source = if seeds.contains(&key) {
+            Source::Builtin
+        } else {
+            source
+        };
+        match out.iter_mut().find(|(known, _)| *known == key) {
+            Some((_, known)) => *known = (*known).min(source),
+            None => out.push((key, source)),
+        }
+    }
+    out
+}
+
+/// Removes the nodes `config`'s branch rule says sit on another chain, naming each in `errors`.
+fn drop_other_branches(
+    config: &DiscoveryConfig,
+    ranking: &mut Vec<ScoredIndexer>,
+    errors: &mut Vec<String>,
+) {
+    let Some(rule) = &config.expected_branch else {
+        return;
+    };
+    ranking.retain(|indexer| match rule.mismatch(indexer) {
+        Some(why) => {
+            errors.push(why);
+            false
+        }
+        None => true,
+    });
 }
 
 /// Runs a health check over a known list of indexers: the same measurements and ranking as
@@ -202,14 +305,17 @@ pub async fn health_check(
     uris: Vec<(String, Source)>,
     wallet_chain: Option<ChainFingerprint>,
 ) -> IndexerReport {
-    let ranking = measure::rank(
+    let uris = distinct(config, uris);
+    let mut ranking = measure::rank(
         measure::measure_all(uris, wallet_chain, config.timeout, config.concurrency).await,
         wallet_chain,
     );
+    let mut errors = Vec::new();
+    drop_other_branches(config, &mut ranking, &mut errors);
     IndexerReport {
         ranking,
         peers_seen: 0,
-        errors: Vec::new(),
+        errors,
     }
 }
 
@@ -274,6 +380,84 @@ mod tests {
         );
         assert_eq!(report.peers_seen, 12);
         let _ = fingerprint(1);
+    }
+
+    fn indexer(uri: &str, branch: Option<&str>, tip: Option<u64>) -> ScoredIndexer {
+        ScoredIndexer {
+            uri: uri.into(),
+            chain_name: Some("test".into()),
+            consensus_branch: branch.map(str::to_string),
+            tip_height: tip,
+            tip_age_secs: Some(5),
+            latency: std::time::Duration::from_millis(20),
+            source: Source::Builtin,
+        }
+    }
+
+    #[test]
+    fn a_node_that_missed_an_upgrade_is_named_and_dropped() {
+        let rule = BranchRule::new(|height| {
+            if height < 55_296 {
+                0x37a5_165b
+            } else {
+                0x4654_5531
+            }
+        });
+        let config = DiscoveryConfig::crosslink_stable().with_branch_rule(rule.clone());
+        let mut ranking = vec![
+            indexer("http://upgraded", Some("46545531"), Some(78_916)),
+            indexer("http://stale", Some("37a5165b"), Some(62_152)),
+            indexer("http://silent", None, None),
+            indexer("http://before", Some("37a5165b"), Some(50_000)),
+            indexer("http://edge", Some("46545531"), Some(55_295)),
+        ];
+        let mut errors = Vec::new();
+        drop_other_branches(&config, &mut ranking, &mut errors);
+        let kept: Vec<&str> = ranking.iter().map(|i| i.uri.as_str()).collect();
+        assert_eq!(
+            kept,
+            [
+                "http://upgraded",
+                "http://silent",
+                "http://before",
+                "http://edge"
+            ]
+        );
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("http://stale"), "{}", errors[0]);
+        assert!(errors[0].contains("37a5165b") && errors[0].contains("46545531"));
+        let mut all = vec![indexer("http://stale", Some("37a5165b"), Some(62_152))];
+        drop_other_branches(&DiscoveryConfig::crosslink_stable(), &mut all, &mut errors);
+        assert_eq!(all.len(), 1);
+    }
+
+    #[test]
+    fn one_node_spelled_two_ways_is_one_candidate_and_a_seed_stays_builtin() {
+        let config = DiscoveryConfig {
+            seed_uris: vec!["http://88.198.67.189:18234".into()],
+            ..DiscoveryConfig::crosslink_stable()
+        };
+        let candidates = distinct(
+            &config,
+            vec![
+                ("http://88.198.67.189:18234/".into(), Source::PeerExchange),
+                ("http://88.198.67.189:18234".into(), Source::PeerExchange),
+                ("95.111.225.120".into(), Source::PeerExchange),
+                ("http://95.111.225.120:18234".into(), Source::DnsSeed),
+                ("not a uri".into(), Source::PeerExchange),
+            ],
+        );
+        assert_eq!(
+            candidates,
+            vec![
+                ("http://88.198.67.189:18234".to_string(), Source::Builtin),
+                ("http://95.111.225.120:18234".to_string(), Source::DnsSeed),
+            ]
+        );
+        assert_eq!(
+            indexer_key("HTTPS://Node.Example"),
+            Some("https://node.example:443".into())
+        );
     }
 
     #[test]
