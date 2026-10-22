@@ -246,16 +246,12 @@ fn draw_main(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
             },
         ));
     }
-    let status_width: usize = status.iter().map(Span::width).sum();
-    let room = usize::from(area.width)
-        .saturating_sub(TITLE.chars().count() + 1)
-        .saturating_sub(status_width + 1);
     header(
         frame,
         header_area,
         state,
         t,
-        screen_tabs(state, t, room),
+        screen_tabs(state, t),
         Some(status),
     );
     let title = match &state.overlay {
@@ -319,32 +315,32 @@ fn draw_main(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
 /// The screens as a row of names, the current one bright. Each opens with its first
 /// letter. When the line cannot hold every name, the inactive screens shrink to their
 /// letters and the current one keeps its name.
-fn screen_tabs(state: &State, t: &Theme, room: usize) -> Vec<Span<'static>> {
-    let tabs = |compact: bool| -> Vec<Span<'static>> {
-        let mut spans = Vec::new();
-        for (i, screen) in Screen::ALL.iter().enumerate() {
+/// The screens as a row of key letters, the current one bright — the pane's title carries
+/// the name, so the bar stays lean and doubles as the key legend.
+fn screen_tabs(state: &State, t: &Theme) -> Vec<Span<'static>> {
+    Screen::ALL
+        .iter()
+        .enumerate()
+        .flat_map(|(i, screen)| {
+            let letter = screen
+                .title()
+                .chars()
+                .next()
+                .unwrap()
+                .to_lowercase()
+                .to_string();
+            let mut spans = Vec::new();
             if i > 0 {
                 spans.push(Span::raw(" "));
             }
-            let label = screen.title().to_lowercase();
             if *screen == state.screen {
-                spans.push(Span::styled(label, t.accent.add_modifier(Modifier::BOLD)));
+                spans.push(Span::styled(letter, t.accent.add_modifier(Modifier::BOLD)));
             } else {
-                let mut chars = label.chars();
-                let first = chars.next().map(String::from).unwrap_or_default();
-                spans.push(Span::styled(first, t.text));
-                if !compact {
-                    spans.push(Span::styled(chars.as_str().to_string(), t.muted));
-                }
+                spans.push(Span::styled(letter, t.muted));
             }
-        }
-        spans
-    };
-    let width = |spans: &[Span<'static>]| spans.iter().map(Span::width).sum::<usize>();
-    if width(&tabs(false)) <= room {
-        return tabs(false);
-    }
-    tabs(true)
+            spans
+        })
+        .collect()
 }
 
 /// The staking calendar as one footer line, right of the hints: whether a staking day is

@@ -206,24 +206,25 @@ fn every_main_screen_renders() {
                 "{screen:?}: {tab:?} tab key letter: [{header}]"
             );
         }
-        assert!(
-            header.contains(&screen.title().to_lowercase()),
-            "{screen:?}: the active tab keeps its name: [{header}]"
-        );
         assert!(header.contains("syncing 25%"), "{screen:?} sync state");
         assert!(
             header.contains("main"),
             "{screen:?} header names the wallet: [{header}]"
         );
+        let pane_title = out.lines().nth(1).unwrap();
+        assert!(
+            pane_title.contains(&screen.title().to_lowercase()),
+            "{screen:?}: the pane names the screen: {pane_title}"
+        );
         let narrow = render(&s, 80, 24);
         let narrow_header = narrow.lines().next().unwrap();
         assert!(
-            narrow_header.contains(&screen.title().to_lowercase()),
-            "{screen:?}: the active tab keeps its name at 80 columns: {narrow_header}"
+            narrow_header.contains(&letter_of(screen)),
+            "{screen:?}: the active tab's letter shows at 80 columns: {narrow_header}"
         );
         assert!(
             narrow_header.contains("main"),
-            "{screen:?}: the letters leave room for the name at 80 columns: {narrow_header}"
+            "{screen:?}: status still names the wallet at 80 columns: {narrow_header}"
         );
         for noise in ["height", ".dat", "mainnet"] {
             assert!(!header.contains(noise), "{screen:?} header shows {noise}");
@@ -559,20 +560,32 @@ fn the_active_tab_is_highlighted() {
     for screen in Screen::ALL {
         s.screen = screen;
         let buffer = draw(&s, 112, 40);
-        let header: String = (0..112)
+        let header: String = (14..112)
             .map(|x| buffer[(x, 0)].symbol().to_string())
             .collect();
-        let at = col_of(&header, &screen.title().to_lowercase());
+        // the brand is skipped; its letters would shadow the tab letters
+        let at = 14 + col_of(&header, &letter_of(screen));
         assert_eq!(
             buffer[(at, 0)].fg,
             accent,
             "{screen:?} tab is not in the accent"
         );
         for other in Screen::ALL.into_iter().filter(|o| *o != screen) {
-            let at = col_of(&header, &other.title().to_lowercase());
+            let at = 14 + col_of(&header, &letter_of(other));
             assert_ne!(buffer[(at, 0)].fg, accent, "{other:?} highlighted too");
         }
     }
+}
+
+/// The single key letter a screen shows in the tab bar.
+fn letter_of(screen: Screen) -> String {
+    screen
+        .title()
+        .chars()
+        .next()
+        .unwrap()
+        .to_lowercase()
+        .to_string()
 }
 
 #[test]
@@ -1228,14 +1241,15 @@ fn a_palette_theme_paints_its_background_and_accent() {
         gruvbox_bg,
         "even an empty corner is themed"
     );
-    let header: String = (0..100)
+    let header: String = (14..100)
         .map(|x| buffer[(x, 0)].symbol().to_string())
         .collect();
-    let key = col_of(&header, "home");
+    // the active screen's key letter is in the accent, past the brand
+    let key = 14 + col_of(&header, "h");
     assert_eq!(
         buffer[(key, 0)].fg,
         Color::Rgb(0xfe, 0x80, 0x19),
-        "the active screen's name is in the accent"
+        "the active screen's letter is in the accent"
     );
 
     s.theme = index_of("catppuccin-latte").unwrap();
