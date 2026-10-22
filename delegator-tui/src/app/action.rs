@@ -3,7 +3,8 @@
 use std::time::Instant;
 
 use super::state::{
-    ChainRange, KeyMaterial, Network, SyncMode, Tip, WalletData, WalletEntry, WalletInfo,
+    ChainRange, IndexerRow, KeyMaterial, Network, RosterRow, SyncMode, Tip, WalletData,
+    WalletEntry, WalletInfo,
 };
 
 /// A normalised key press. The terminal layer maps raw events onto this.
@@ -87,6 +88,11 @@ pub enum Action {
     SeedGenerated(String),
     WalletOpened(WalletInfo),
     OpenFailed(String),
+    IndexersDiscovered {
+        indexers: Vec<IndexerRow>,
+        peers_seen: usize,
+        errors: usize,
+    },
     /// The chain measured its block spacing after the wallet opened; the wallet's guess
     /// stands in until then. The network guards a late answer for an earlier wallet.
     SpacingMeasured {
@@ -103,6 +109,10 @@ pub enum Action {
     SendProposed(Result<(u64, u64), String>),
     /// The send was transmitted: its txids, or why it failed.
     SendDone(Result<Vec<String>, String>),
+    /// The roster poller fetched the finalizer list again, best first.
+    RosterUpdated {
+        roster: Vec<RosterRow>,
+    },
     /// The backend finished shutting down.
     Shutdown,
 }

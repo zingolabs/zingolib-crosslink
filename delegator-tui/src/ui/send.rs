@@ -14,6 +14,21 @@ use crate::theme::{self, Theme};
 
 pub fn draw(frame: &mut Frame, area: Rect, state: &State, t: &Theme, form: &SendForm) {
     let area = inset(area);
+    if !state.can_spend() {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::styled("Pay", t.title),
+                Line::from(""),
+                Line::styled(
+                    "this wallet holds a viewing key only · it cannot send",
+                    t.muted,
+                ),
+                Line::styled("open a wallet from a seed phrase to pay", t.muted),
+            ]),
+            area,
+        );
+        return;
+    }
     let editing = form.stage == SendStage::Edit;
     let mut lines = vec![
         Line::styled("Send", t.title),

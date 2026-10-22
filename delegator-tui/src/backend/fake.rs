@@ -868,6 +868,7 @@ impl Fake {
             .map(|(bond, stake)| RosterRow {
                 finalizer: bond.finalizer.clone(),
                 stake,
+                bonds: 2,
                 ours: true,
             })
             .collect();
@@ -880,6 +881,7 @@ impl Fake {
             roster.push(RosterRow {
                 finalizer: self.rng.finalizer(),
                 stake,
+                bonds: 1,
                 ours: false,
             });
         }

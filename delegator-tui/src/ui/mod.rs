@@ -63,11 +63,11 @@ pub fn view(frame: &mut Frame, state: &State) {
                 header_area,
                 state,
                 &t,
-                Span::styled(
+                vec![Span::styled(
                     format!("{} {}", theme::spinner(state.elapsed_secs()), label),
                     t.muted,
-                ),
-                Vec::new(),
+                )],
+                None,
             );
             centered(
                 frame,
@@ -140,23 +140,29 @@ pub fn separator(frame: &mut Frame, area: Rect, t: &Theme) {
     );
 }
 
-/// The header line: the shimmering title, a status mark, then the breadcrumb or tabs.
+/// The header line: the shimmering brand and the navigation on the left, anything in
+/// `status` right-aligned at the opposite edge, so state and navigation never share a
+/// corner.
 pub fn header(
     frame: &mut Frame,
     area: Rect,
     state: &State,
     t: &Theme,
-    indicator: Span<'static>,
-    crumbs: Vec<Span<'static>>,
+    tabs: Vec<Span<'static>>,
+    status: Option<Vec<Span<'static>>>,
 ) {
-    let mut spans = theme::shimmer(t, TITLE, state.elapsed_secs(), state.color_depth);
-    spans.push(Span::raw(" "));
-    spans.push(indicator);
-    if !crumbs.is_empty() {
-        spans.push(Span::styled(" ", t.muted));
-        spans.extend(crumbs);
+    let mut left = theme::shimmer(t, TITLE, state.elapsed_secs(), state.color_depth);
+    left.push(Span::raw(" "));
+    left.extend(tabs);
+    let width = |spans: &[Span<'static>]| spans.iter().map(Span::width).sum::<usize>();
+    let gap = area
+        .width
+        .saturating_sub((width(&left) + status.as_ref().map(|s| width(s)).unwrap_or(0)) as u16);
+    left.push(Span::raw(" ".repeat(usize::from(gap))));
+    if let Some(status) = status {
+        left.extend(status);
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    frame.render_widget(Paragraph::new(Line::from(left)), area);
 }
 
 /// A pane: a rule down its left edge with the title on the first row. Returns the content area,
@@ -227,17 +233,26 @@ pub fn modal(
 
 fn draw_main(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
     let [header_area, body, footer_area] = split(area);
-    let indicator = sync_indicator(state, t);
-    // what is left after the title, its gap, the indicator and the separator before the tabs
-    let room =
-        usize::from(area.width).saturating_sub(TITLE.chars().count() + 1 + indicator.width() + 1);
+    let mut status = vec![sync_indicator(state, t)];
+    if let Some(w) = &state.wallet {
+        status.push(Span::styled(" · ", t.muted));
+        status.push(Span::styled(w.wallet_name.clone(), t.text));
+        status.push(Span::styled(
+            format!(" {}", w.network.name()),
+            if w.network == Network::Stable {
+                t.muted
+            } else {
+                t.warning
+            },
+        ));
+    }
     header(
         frame,
         header_area,
         state,
         t,
-        indicator,
-        screen_tabs(state, t, room),
+        screen_tabs(state, t),
+        Some(status),
     );
     let title = match &state.overlay {
         Overlay::Help | Overlay::None => state.screen.title().to_lowercase(),
@@ -246,11 +261,9 @@ fn draw_main(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
         Overlay::RescanConfirm => "rescan".into(),
         Overlay::NewUnifiedAddress { .. } => "new address".into(),
         Overlay::ThemePicker { .. } => "theme".into(),
-        Overlay::Send(_) => "send".into(),
         Overlay::Faucet(_) => "faucet".into(),
     };
     pane(frame, body, t, &title);
-    staking_day(frame, body, state, t);
     match &state.overlay {
         Overlay::TxDetail { mode } => transactions::draw_detail(frame, body, state, t, *mode),
         Overlay::AddressQr => addresses::draw_qr(frame, body, state, t),
@@ -259,10 +272,10 @@ fn draw_main(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
             receive::draw_new_address(frame, body, t, *orchard_only)
         }
         Overlay::ThemePicker { original } => themes::draw(frame, body, state, t, *original),
-        Overlay::Send(form) => send::draw(frame, body, state, t, form),
         Overlay::Faucet(stage) => send::draw_faucet(frame, body, state, t, stage),
         Overlay::Help | Overlay::None => match state.screen {
             Screen::Home => home::draw(frame, body, state, t),
+            Screen::Pay => send::draw(frame, body, state, t, &state.send),
             Screen::Transactions => transactions::draw(frame, body, state, t),
             Screen::Bonds => bonds::draw(frame, body, state, t),
             Screen::Finalizers => bonds::draw_finalizers(frame, body, state, t),
@@ -282,99 +295,77 @@ fn draw_main(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
     } else {
         hints(state)
     };
-    footer(frame, footer_area, state, t, &keys);
+    let chip = staking_day(state, t);
+    let chip_width = chip
+        .as_ref()
+        .map(|line| u16::try_from(line.width()).unwrap_or(u16::MAX))
+        .unwrap_or(0);
+    let [hints_area, chip_area] = Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Length(if chip_width > 0 { chip_width + 2 } else { 0 }),
+    ])
+    .areas(footer_area);
+    footer(frame, hints_area, state, t, &keys);
+    if let Some(line) = chip {
+        frame.render_widget(Paragraph::new(line), chip_area);
+    }
 }
 
 /// The screens as a row of names, the current one bright. Each opens with its first letter.
-/// The wallet's name comes first when the line has room for it. When even the names do not
-/// fit in `room` cells, the other screens shrink to their letters and the current one keeps
-/// its name.
-fn screen_tabs(state: &State, t: &Theme, room: usize) -> Vec<Span<'static>> {
-    let name: Vec<Span<'static>> = match &state.wallet {
-        Some(w) => vec![
-            Span::styled(w.wallet_name.clone(), t.text),
-            Span::styled(
-                format!(" {}", w.network.name()),
-                if w.network == Network::Stable {
-                    t.muted
-                } else {
-                    t.warning
-                },
-            ),
-            Span::styled(" · ", t.muted),
-        ],
-        None => Vec::new(),
-    };
-    let tabs = |compact: bool| -> Vec<Span<'static>> {
-        let mut spans = Vec::new();
-        for (i, screen) in Screen::ALL.iter().enumerate() {
+/// The screens as a row of names, the current one bright. Each opens with its first
+/// letter. When the line cannot hold every name, the inactive screens shrink to their
+/// letters and the current one keeps its name.
+/// The screens as a row of key letters, the current one bright — the pane's title carries
+/// the name, so the bar stays lean and doubles as the key legend.
+fn screen_tabs(state: &State, t: &Theme) -> Vec<Span<'static>> {
+    Screen::ALL
+        .iter()
+        .enumerate()
+        .flat_map(|(i, screen)| {
+            let letter = screen
+                .title()
+                .chars()
+                .next()
+                .unwrap()
+                .to_lowercase()
+                .to_string();
+            let mut spans = Vec::new();
             if i > 0 {
                 spans.push(Span::raw(" "));
             }
-            let label = screen.title().to_lowercase();
             if *screen == state.screen {
-                spans.push(Span::styled(label, t.accent.add_modifier(Modifier::BOLD)));
+                spans.push(Span::styled(letter, t.accent.add_modifier(Modifier::BOLD)));
             } else {
-                let mut chars = label.chars();
-                let first = chars.next().map(String::from).unwrap_or_default();
-                spans.push(Span::styled(first, t.text));
-                if !compact {
-                    spans.push(Span::styled(chars.as_str().to_string(), t.muted));
-                }
+                spans.push(Span::styled(letter, t.muted));
             }
-        }
-        spans
-    };
-    let width = |spans: &[Span<'static>]| spans.iter().map(Span::width).sum::<usize>();
-    // the name first and it never yields: the tabs give up their words, then themselves
-    for (with_name, compact) in [(true, false), (true, true), (false, true)] {
-        let mut spans = if with_name { name.clone() } else { Vec::new() };
-        spans.extend(tabs(compact));
-        if width(&spans) <= room {
-            return spans;
-        }
-    }
-    tabs(true)
+            spans
+        })
+        .collect()
 }
 
-/// The staking calendar on the right of the pane's title row, on every screen: whether a
-/// staking day is open, and how many blocks and how long until that changes.
-fn staking_day(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
-    let Some(day) = state.staking_day() else {
-        return;
-    };
+/// The staking calendar as one footer line, right of the hints: whether a staking day is
+/// open, and how many blocks and how long until that changes. `None` before a tip is
+/// known.
+fn staking_day(state: &State, t: &Theme) -> Option<Line<'static>> {
+    let day = state.staking_day()?;
     let secs = day.secs_left(state.spacing_secs());
     let (mark, word, style) = if day.open {
-        ("●", "staking day", t.positive.add_modifier(Modifier::BOLD))
+        ("✦", "staking day", t.positive.add_modifier(Modifier::BOLD))
     } else {
-        ("○", "no staking day", t.warning)
+        ("✧", "no staking day", t.warning)
     };
     let what = if day.open { "closes" } else { "opens" };
-    let spans = vec![
+    Some(Line::from(vec![
         Span::styled(format!("{mark} {word}"), style),
         Span::styled(
             format!(
-                "  {what} in {} blocks ≈ {}",
+                " · {what} in {} blocks ≈ {}",
                 format::group(u64::from(day.blocks_left)),
                 format::duration(secs)
             ),
             t.muted,
         ),
-    ];
-    let line = Line::from(spans);
-    let width = u16::try_from(line.width()).unwrap_or(u16::MAX);
-    if width + 2 > area.width {
-        return;
-    }
-    frame.render_widget(
-        Paragraph::new(line),
-        Rect {
-            x: area.x + area.width - width - 1,
-            y: area.y,
-            width,
-            height: 1,
-        },
-    );
+    ]))
 }
 
 /// The sync state as one mark and a word: what the user acts on.
@@ -384,9 +375,9 @@ fn sync_indicator(state: &State, t: &Theme) -> Span<'static> {
     let text = match s.mode {
         SyncMode::Running => format!("{} {}", theme::spinner(state.elapsed_secs()), s.label()),
         SyncMode::NotRunning if s.error.is_none() && s.auto && s.sessions_done > 0 => {
-            format!("● {}", s.label())
+            format!("◉ {}", s.label())
         }
-        _ => format!("○ {}", s.label()),
+        _ => format!("◌ {}", s.label()),
     };
     Span::styled(text, style)
 }
@@ -422,17 +413,6 @@ fn hints(state: &State) -> String {
         Overlay::ThemePicker { .. } => {
             vec![("j/k", "preview"), ("enter", "keep"), ("esc", "revert")]
         }
-        Overlay::Send(form) => match form.stage {
-            SendStage::Edit => vec![
-                ("tab", "next field"),
-                ("enter", "review"),
-                ("esc", "cancel"),
-            ],
-            SendStage::Proposing => vec![("esc", "cancel")],
-            SendStage::Confirm { .. } => vec![("y", "send"), ("n", "back")],
-            SendStage::Sending => Vec::new(),
-            SendStage::Sent { .. } => vec![("y", "copy txid"), ("esc", "close")],
-        },
         Overlay::Faucet(stage) => match stage {
             FaucetStage::Ask { .. } => vec![("y", "ask"), ("n", "cancel")],
             FaucetStage::Requesting { .. } => Vec::new(),
@@ -443,10 +423,18 @@ fn hints(state: &State) -> String {
                 Screen::Home => vec![
                     ("j/k", "move"),
                     ("enter", "open"),
-                    ("p", "pay"),
                     ("F", "faucet"),
                     ("c", "theme"),
                 ],
+                Screen::Pay => match state.send.stage {
+                    SendStage::Edit => {
+                        vec![("tab", "next field"), ("enter", "review"), ("esc", "home")]
+                    }
+                    SendStage::Proposing => vec![("esc", "cancel")],
+                    SendStage::Confirm { .. } => vec![("y", "send"), ("n", "back")],
+                    SendStage::Sending => Vec::new(),
+                    SendStage::Sent { .. } => vec![("y", "copy txid"), ("esc", "home")],
+                },
                 Screen::Transactions => vec![("j/k", "move"), ("enter", "open")],
                 Screen::Bonds => vec![("j/k", "move"), ("y", "copy finalizer")],
                 Screen::Finalizers => vec![("j/k", "move"), ("y", "copy finalizer")],

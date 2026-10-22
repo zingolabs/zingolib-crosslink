@@ -69,6 +69,60 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
             ));
         }
     }
+    if !s.indexers.is_empty() {
+        let serving = state
+            .wallet
+            .as_ref()
+            .and_then(|w| w.server.parse::<http::Uri>().ok())
+            .map(|uri| uri.to_string());
+        below.push(Line::styled("Indexers", t.muted));
+        for indexer in &s.indexers {
+            let parsed = indexer.uri.parse::<http::Uri>().ok();
+            let in_use = parsed
+                .as_ref()
+                .map(|uri| uri.to_string())
+                .as_deref()
+                .zip(serving.as_deref())
+                .is_some_and(|(a, b)| a == b);
+            let (mark, style) = if in_use {
+                ("◈", t.positive.add_modifier(Modifier::BOLD))
+            } else {
+                ("◇", t.muted)
+            };
+            let uri = parsed
+                .map(|uri| {
+                    format!(
+                        "{}:{}",
+                        uri.host().unwrap_or("?"),
+                        uri.port_u16().unwrap_or(0)
+                    )
+                })
+                .unwrap_or_else(|| indexer.uri.clone());
+            let height = indexer
+                .tip_height
+                .map(format::group)
+                .unwrap_or_else(|| "?".into());
+            let age = indexer
+                .tip_age_secs
+                .map(|secs| {
+                    let live = secs + indexer.measured_at.elapsed().as_secs();
+                    format!(" · {} old", format::duration(live))
+                })
+                .unwrap_or_default();
+            let mut line = vec![
+                Span::styled(format!("{mark} "), style),
+                Span::styled(uri, style),
+                Span::styled(
+                    format!(" · {height}{age} · {} ms", indexer.latency_ms),
+                    t.muted,
+                ),
+            ];
+            if indexer.from_peers {
+                line.push(Span::styled(" · found", t.muted));
+            }
+            below.push(Line::from(line));
+        }
+    }
     let found = s.last_found.as_ref().map(|f| {
         Line::from(vec![
             Span::styled("Last found  ", t.muted),

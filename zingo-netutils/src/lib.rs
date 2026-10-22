@@ -3,6 +3,8 @@
 //! This crate provides the `GrpcConnector` struct,
 //! used to communicate with an indexer.
 
+pub mod discovery;
+
 #[cfg(test)]
 use tokio_rustls::rustls::RootCertStore;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};

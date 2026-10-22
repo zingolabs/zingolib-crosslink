@@ -110,7 +110,15 @@ fn bonds_table(frame: &mut Frame, area: Rect, state: &State, t: &Theme) {
         ],
     )
     .column_spacing(2)
-    .header(Row::new(vec!["  finalizer", "amount", "status", "since"]).style(t.muted))
+    .header(
+        Row::new(vec![
+            Cell::from("  finalizer"),
+            Cell::from(Line::from("amount").alignment(Alignment::Right)),
+            Cell::from("status"),
+            Cell::from("since"),
+        ])
+        .style(t.muted),
+    )
     .row_highlight_style(t.selection);
     let mut ts = TableState::default().with_selected(Some(state.bond_selected));
     frame.render_stateful_widget(table, area, &mut ts);
@@ -170,6 +178,9 @@ fn roster(frame: &mut Frame, heading_area: Rect, area: Rect, state: &State, t: &
             Cell::from(
                 Line::from(Span::styled(format!("{share:.1}%"), style)).alignment(Alignment::Right),
             ),
+            Cell::from(
+                Line::from(Span::styled(r.bonds.to_string(), style)).alignment(Alignment::Right),
+            ),
             Cell::from(Span::styled(share_bar(share, 20), t.info)),
         ])
     });
@@ -179,11 +190,21 @@ fn roster(frame: &mut Frame, heading_area: Rect, area: Rect, state: &State, t: &
             Constraint::Length(SHORT_WIDTH as u16 + 2),
             Constraint::Length(16),
             Constraint::Length(7),
+            Constraint::Length(7),
             Constraint::Fill(1),
         ],
     )
     .column_spacing(2)
-    .header(Row::new(vec!["  finalizer", "stake", "share", ""]).style(t.muted));
+    .header(
+        Row::new(vec![
+            Cell::from("  finalizer"),
+            Cell::from(Line::from("stake").alignment(Alignment::Right)),
+            Cell::from(Line::from("share").alignment(Alignment::Right)),
+            Cell::from(Line::from("bonds").alignment(Alignment::Right)),
+            Cell::from(""),
+        ])
+        .style(t.muted),
+    );
     frame.render_widget(table, area);
 }
 
