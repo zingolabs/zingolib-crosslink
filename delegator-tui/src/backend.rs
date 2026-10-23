@@ -135,6 +135,21 @@ impl BackendConfig {
         config
     }
 
+    /// The endpoints to try for a network, in order: the configured or saved one, then every
+    /// built-in one listed for the network.
+    fn tip_candidates(&self, network: Network) -> Vec<http::Uri> {
+        let mut out = Vec::new();
+        if let Ok(uri) = self.server_uri(network, "", None) {
+            out.push(uri);
+        }
+        for indexer in IndexerList::builtin().for_network(&network.indexer_network()) {
+            if !out.contains(&indexer.uri) {
+                out.push(indexer.uri.clone());
+            }
+        }
+        out
+    }
+
     /// Every crosslink wallet file under the data directory, newest first. Files for other
     /// chains are left out: see [`classify`].
     pub fn list_wallets(&self) -> Vec<WalletEntry> {
@@ -316,13 +331,24 @@ fn read_meta(path: &Path, entry: &mut WalletEntry) -> bool {
     named
 }
 
-/// Asks `server` for its chain tip, and measures the block spacing from the times of the tip
-/// and a block a thousand back.
-async fn fetch_tip(network: Network, server: http::Uri) -> Result<Tip, String> {
+/// Asks the first reachable `server` for its chain tip, and measures the block spacing from
+/// the times of the tip and a block a thousand back.
+async fn fetch_tip(network: Network, servers: Vec<http::Uri>) -> Result<Tip, String> {
     use zcash_client_backend::proto::service::{BlockId, Empty};
-    let mut client = zingo_netutils::get_client(server.clone())
-        .await
-        .map_err(|e| format!("cannot connect to {server}: {e}"))?;
+    let mut failures = Vec::new();
+    let mut connected = None;
+    for server in servers {
+        match zingo_netutils::get_client(server.clone()).await {
+            Ok(client) => {
+                connected = Some((server, client));
+                break;
+            }
+            Err(e) => failures.push(format!("{server}: {e}")),
+        }
+    }
+    let Some((server, mut client)) = connected else {
+        return Err(format!("no indexer answered ({})", failures.join("; ")));
+    };
     let info = client
         .get_lightd_info(Empty {})
         .await
@@ -542,12 +568,9 @@ impl Backend {
             }
             Command::FetchTip(network) => {
                 let actions = self.actions.clone();
-                let server = self.config.server_uri(network, "", None);
+                let servers = self.config.tip_candidates(network);
                 tokio::spawn(async move {
-                    let result = match server {
-                        Ok(uri) => fetch_tip(network, uri).await,
-                        Err(e) => Err(e),
-                    };
+                    let result = fetch_tip(network, servers).await;
                     let _ = actions.send(Action::TipFetched(result.map_err(|e| (network, e))));
                 });
             }
@@ -682,6 +705,16 @@ impl Backend {
     }
 
     async fn open(&mut self, spec: OpenSpec) -> Result<(LightClient, WalletInfo), String> {
+        // A server given for this open or on the command line is a choice; anything else
+        // (the file beside the wallet, the built-in default) is a starting guess.
+        let explicit_server = self.config.server.is_some()
+            || matches!(
+                &spec,
+                OpenSpec::Create {
+                    server: Some(_),
+                    ..
+                }
+            );
         let (lc, network, name) = match spec {
             OpenSpec::Read {
                 network,
@@ -741,6 +774,37 @@ impl Backend {
                 (lc, network, name)
             }
         };
+        // One endpoint is a single point of failure, and the built-in defaults have been known
+        // to sit on a stale fork, so unless the server was chosen explicitly, probe every
+        // endpoint listed for this network and ride the one reporting the highest tip.
+        if !explicit_server {
+            match lc.select_best_indexer().await {
+                Ok(best) => {
+                    let tip = best
+                        .result
+                        .as_ref()
+                        .map(|info| info.block_height)
+                        .unwrap_or(0);
+                    let uri = best.indexer.uri.to_string();
+                    if let Err(e) = self.config.save_server(network, &name, &uri) {
+                        tracing::warn!("cannot save the indexer beside the wallet: {e}");
+                    }
+                    self.send(Action::Notice(format!("indexer {uri} at tip {tip}")));
+                }
+                Err(probes) => {
+                    self.send(Action::Notice(format!(
+                        "no indexer answered ({}); trying {} anyway",
+                        probes
+                            .iter()
+                            .filter_map(|probe| probe.result.as_ref().err())
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                        lc.indexer_uri()
+                    )));
+                }
+            }
+        }
         let (has_orchard, kind, birthday, known) = {
             let wallet = lc.wallet.read().await;
             let Some(keys) = wallet.unified_key_store.get(&zip32::AccountId::ZERO) else {
