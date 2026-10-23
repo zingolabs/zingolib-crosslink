@@ -233,7 +233,7 @@ impl IndexerList {
                 "Shielded Labs (node default peer)",
             );
         }
-        for host in ["45.32.186.234", "64.177.122.73"] {
+        for host in ["45.32.186.234", "64.177.122.73", "70.34.201.146"] {
             add(
                 &mut list,
                 IndexerNetwork::CROSSLINK_NIGHTLY,
