@@ -8,10 +8,28 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, mpsc};
 use zcash_client_backend::proto::service::{BlockId, ChainSpec, Empty};
 
 use super::{ChainFingerprint, ScoredIndexer, Source};
+
+/// One snapshot of how far a measurement batch has gotten, sent on a
+/// progress channel after each probe starts and each one finishes. A consumer
+/// keeps the batch's `total` and renders "probing {finished}/{total}".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProbeProgress {
+    /// Probes that have begun their actual work (a permit was acquired).
+    pub started: usize,
+    /// Probes that returned a sample, success or failure.
+    pub finished: usize,
+    /// How many candidates this batch measures.
+    pub total: usize,
+}
+
+/// Where a batch reports its progress. Each held copy sends one
+/// [`ProbeProgress`] snapshot per probe start and finish; keep the receiving
+/// half of the `mpsc::unbounded_channel`.
+pub type ProgressSender = mpsc::UnboundedSender<ProbeProgress>;
 
 /// One probe result: which indexer was asked, how long it took, and what it
 /// answered.
@@ -54,19 +72,75 @@ pub struct SampleFacts {
 /// Returns one [`Sample`] per candidate that ran to completion, in candidate
 /// order; a probe task that panics is logged and skipped rather than failing
 /// the batch.
+///
+/// Without a total budget (see [`measure_all_with_budget`]) the batch waits on
+/// every probe's own timeout, so a wide candidate list with unreachable hosts
+/// takes the whole `timeout` per wave of `concurrency`.
 pub async fn measure_all(
     candidates: Vec<(String, Source)>,
     wallet_chain: Option<ChainFingerprint>,
     timeout: Duration,
     concurrency: usize,
 ) -> Vec<Sample> {
+    measure_all_with(
+        candidates,
+        wallet_chain,
+        timeout,
+        concurrency,
+        None,
+        None,
+    )
+    .await
+}
+
+/// [`measure_all`] under a whole-batch wall-clock budget. `Some(ZERO)` counts
+/// as no budget.
+///
+/// When the budget runs out, the in-flight probes are abandoned and the
+/// samples that finished come back: the unreachable hosts cost nothing but
+/// their rank omission, and the answers already in hand still rank.
+pub async fn measure_all_with_budget(
+    candidates: Vec<(String, Source)>,
+    wallet_chain: Option<ChainFingerprint>,
+    timeout: Duration,
+    concurrency: usize,
+    total_budget: Option<Duration>,
+) -> Vec<Sample> {
+    measure_all_with(candidates, wallet_chain, timeout, concurrency, total_budget, None).await
+}
+
+/// [`measure_all`] with every knob: a whole-batch [`Duration`] ceiling and an
+/// optional progress channel. `Some(ZERO)` counts as no budget.
+pub async fn measure_all_with(
+    candidates: Vec<(String, Source)>,
+    wallet_chain: Option<ChainFingerprint>,
+    timeout: Duration,
+    concurrency: usize,
+    total_budget: Option<Duration>,
+    progress: Option<ProgressSender>,
+) -> Vec<Sample> {
     let semaphore = Arc::new(Semaphore::new(concurrency.max(1)));
-    let mut handles = Vec::with_capacity(candidates.len());
+    let started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let total = candidates.len();
+    let mut tasks: Vec<std::pin::Pin<Box<dyn std::future::Future<Output = Sample> + Send>>> =
+        Vec::with_capacity(candidates.len());
     for (uri, source) in candidates {
         let semaphore = Arc::clone(&semaphore);
-        handles.push(tokio::spawn(async move {
+        let started = Arc::clone(&started);
+        let progress = progress.clone();
+        tasks.push(Box::pin(async move {
             match semaphore.acquire_owned().await {
-                Ok(_permit) => probe_one(uri, source, wallet_chain, timeout).await,
+                Ok(_permit) => {
+                    let count = started.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    if let Some(channel) = &progress {
+                        let _ = channel.send(ProbeProgress {
+                            started: count,
+                            finished: 0,
+                            total,
+                        });
+                    }
+                    probe_one(uri, source, wallet_chain, timeout).await
+                }
                 Err(e) => {
                     warn(&uri, &format!("probe limiter closed: {e}"));
                     Sample {
@@ -80,11 +154,46 @@ pub async fn measure_all(
         }));
     }
 
-    let mut probes = Vec::with_capacity(handles.len());
-    for handle in handles {
-        match handle.await {
+    let mut probes = Vec::with_capacity(total);
+    let mut batch = tokio::task::JoinSet::new();
+    for task in tasks {
+        batch.spawn(task);
+    }
+    let deadline = total_budget
+        .filter(|budget| !budget.is_zero())
+        .map(|budget| tokio::time::Instant::now() + budget);
+    let channel = progress;
+    loop {
+        let next = match deadline {
+            None => batch.join_next().await,
+            Some(deadline) => match tokio::time::timeout_at(deadline, batch.join_next()).await {
+                Ok(next) => next,
+                Err(_) => {
+                    let remaining = batch.len();
+                    warn(
+                        "(batch)",
+                        &format!(
+                            "total budget elapsed: abandoning {remaining} probes, keeping {}",
+                            probes.len()
+                        ),
+                    );
+                    break;
+                }
+            },
+        };
+        let Some(joined) = next else {
+            break;
+        };
+        match joined {
             Ok(probe) => probes.push(probe),
             Err(e) => warn("(join)", &format!("probe task failed: {e}")),
+        }
+        if let Some(channel) = &channel {
+            let _ = channel.send(ProbeProgress {
+                started: started.load(std::sync::atomic::Ordering::Relaxed),
+                finished: probes.len(),
+                total,
+            });
         }
     }
     probes
@@ -312,6 +421,7 @@ fn normalize_uri(raw: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::tests_support::{mock_node, now_secs, spawn_mock};
     use super::*;
 
     fn answer() -> SampleFacts {
@@ -432,7 +542,195 @@ mod tests {
         assert_eq!(normalize_uri("http://[bad"), None);
     }
 
-    struct MockNode {
+    #[tokio::test]
+    async fn measure_all_reads_canned_answers_from_mock_node() {
+        let addr = spawn_mock(mock_node(now_secs())).await;
+
+        let candidates = vec![(format!("{}:{}", addr.ip(), addr.port()), Source::Builtin)];
+        let wallet_chain = Some(ChainFingerprint {
+            height: 900,
+            hash: [7u8; 32],
+        });
+
+        let probes = measure_all(candidates, wallet_chain, Duration::from_secs(5), 4).await;
+
+        assert_eq!(probes.len(), 1);
+        let answer = probes[0]
+            .answer
+            .as_ref()
+            .expect("probe against mock node answered");
+        assert_eq!(answer.chain_name.as_deref(), Some("test"));
+        assert_eq!(answer.consensus_branch.as_deref(), Some("abc123"));
+        assert_eq!(answer.tip_height, Some(1000));
+        assert_eq!(answer.fingerprint_match, Some(true));
+        assert!(
+            answer.tip_age_secs.unwrap() < 60,
+            "tip should read as fresh"
+        );
+    }
+
+    #[tokio::test]
+    async fn wrong_chain_answer_is_reported_then_dropped_by_rank() {
+        let addr = spawn_mock(mock_node(now_secs())).await;
+
+        let wallet_chain = Some(ChainFingerprint {
+            height: 900,
+            hash: [1u8; 32],
+        });
+        let probes = measure_all(
+            vec![(format!("http://{addr}"), Source::PeerExchange)],
+            wallet_chain,
+            Duration::from_secs(5),
+            4,
+        )
+        .await;
+
+        let answer = probes[0].answer.as_ref().expect("answered");
+        assert_eq!(answer.fingerprint_match, Some(false));
+        assert!(
+            rank(probes, wallet_chain).is_empty(),
+            "wrong chain must not rank"
+        );
+    }
+
+    #[tokio::test]
+    async fn unreachable_node_answers_err_without_hanging() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let addr = listener.local_addr().expect("local_addr");
+        drop(listener);
+
+        let probes = measure_all(
+            vec![(format!("http://{addr}"), Source::Builtin)],
+            None,
+            Duration::from_millis(500),
+            1,
+        )
+        .await;
+
+        assert_eq!(probes.len(), 1);
+        let error = probes[0].answer.as_ref().expect_err("must fail fast");
+        assert!(!error.is_empty());
+    }
+
+    /// A listener that accepts connections and never answers: the probe's own
+    /// timeout is the only thing that would eventually free it.
+    async fn spawn_silent_server() -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let addr = listener.local_addr().expect("local_addr");
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket); // sockets kept open, never answered
+            }
+        });
+        addr
+    }
+
+    fn seconds_elapsed(started: std::time::Instant) -> u64 {
+        started.elapsed().as_secs()
+    }
+
+    #[tokio::test]
+    async fn the_total_budget_ends_the_batch_and_keeps_the_fast_answers() {
+        let slow = spawn_silent_server().await;
+        let fast = spawn_mock(mock_node(now_secs())).await;
+
+        let started = std::time::Instant::now();
+        let probes = measure_all_with_budget(
+            vec![
+                (format!("http://{slow}"), Source::Builtin),
+                (format!("http://{fast}"), Source::Builtin),
+            ],
+            None,
+            Duration::from_secs(30),
+            4,
+            Some(Duration::from_secs(1)),
+        )
+        .await;
+
+        let elapsed_secs = seconds_elapsed(started);
+        let elapsed_ms = started.elapsed().as_millis();
+        assert!(
+            elapsed_ms < 5_000,
+            "the batch must end near the {elapsed_secs}s budget, took {elapsed_ms}ms"
+        );
+
+        let fast_uri = format!("http://{fast}");
+        let answer = probes
+            .iter()
+            .find(|probe| probe.uri == fast_uri)
+            .expect("the fast probe survived the budget")
+            .answer
+            .as_ref()
+            .expect("the fast probe answered");
+        assert_eq!(answer.chain_name.as_deref(), Some("test"));
+        let slow_uri = format!("http://{slow}");
+        assert!(
+            probes.iter().all(|probe| probe.uri != slow_uri),
+            "the probe past the budget never ranked"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_zero_budget_counts_as_no_budget() {
+        let probes = measure_all_with_budget(
+            vec![("http://does-not-resolve.invalid".to_string(), Source::Builtin)],
+            None,
+            Duration::from_millis(300),
+            1,
+            Some(Duration::ZERO),
+        )
+        .await;
+        assert!(!probes.is_empty(), "the per-probe timeout still applied");
+    }
+
+    #[tokio::test]
+    async fn progress_events_show_started_and_finished_counts() {
+        let slow = spawn_silent_server().await;
+        let fast = spawn_mock(mock_node(now_secs())).await;
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+
+        measure_all_with(
+            vec![
+                (format!("http://{slow}"), Source::Builtin),
+                (format!("http://{fast}"), Source::Builtin),
+            ],
+            None,
+            Duration::from_secs(30),
+            4,
+            Some(Duration::from_secs(1)),
+            Some(sender),
+        )
+        .await;
+
+        let events: Vec<ProbeProgress> =
+            std::iter::from_fn(|| receiver.try_recv().ok()).collect();
+        assert!(
+            events.iter().any(|event| event.started == 2 && event.total == 2),
+            "both probes must report as started: {events:?}"
+        );
+        let first = events.first().expect("progress events were sent");
+        assert_eq!((first.started, first.finished), (1, 0), "{first:?}");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.finished == 1 && event.total == 2),
+            "the finished count reaches 1 of 2: {events:?}"
+        );
+    }
+}
+
+/// A canned lightwalletd gRPC node for this crate's test modules: it answers
+/// `GetLightdInfo`, `GetLatestBlock`, and `GetBlock` from its block table.
+#[cfg(test)]
+pub(super) mod tests_support {
+    use std::sync::Arc;
+
+    pub(crate) struct MockNode {
         chain_name: String,
         consensus_branch_id: String,
         blocks: std::collections::HashMap<u64, (Vec<u8>, u32)>,
@@ -611,7 +909,8 @@ mod tests {
         grpc_response(&[], "12")
     }
 
-    async fn spawn_mock(node: MockNode) -> std::net::SocketAddr {
+    /// Spawn `node` on a loopback port and answer that port.
+    pub(crate) async fn spawn_mock(node: MockNode) -> std::net::SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind loopback");
@@ -636,7 +935,9 @@ mod tests {
         addr
     }
 
-    fn mock_node(tip_time: u32) -> MockNode {
+    /// A crosslink-looking node: chain `test`, branch `abc123`, tip 1000, and a
+    /// block 900 whose hash the fingerprint checks hit.
+    pub(crate) fn mock_node(tip_time: u32) -> MockNode {
         let mut blocks = std::collections::HashMap::new();
         blocks.insert(1000, (vec![9u8; 32], tip_time));
         blocks.insert(900, (vec![7u8; 32], tip_time));
@@ -648,82 +949,10 @@ mod tests {
         }
     }
 
-    fn now_secs() -> u32 {
+    pub(crate) fn now_secs() -> u32 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock before epoch")
             .as_secs() as u32
-    }
-
-    #[tokio::test]
-    async fn measure_all_reads_canned_answers_from_mock_node() {
-        let addr = spawn_mock(mock_node(now_secs())).await;
-
-        let candidates = vec![(format!("{}:{}", addr.ip(), addr.port()), Source::Builtin)];
-        let wallet_chain = Some(ChainFingerprint {
-            height: 900,
-            hash: [7u8; 32],
-        });
-
-        let probes = measure_all(candidates, wallet_chain, Duration::from_secs(5), 4).await;
-
-        assert_eq!(probes.len(), 1);
-        let answer = probes[0]
-            .answer
-            .as_ref()
-            .expect("probe against mock node answered");
-        assert_eq!(answer.chain_name.as_deref(), Some("test"));
-        assert_eq!(answer.consensus_branch.as_deref(), Some("abc123"));
-        assert_eq!(answer.tip_height, Some(1000));
-        assert_eq!(answer.fingerprint_match, Some(true));
-        assert!(
-            answer.tip_age_secs.unwrap() < 60,
-            "tip should read as fresh"
-        );
-    }
-
-    #[tokio::test]
-    async fn wrong_chain_answer_is_reported_then_dropped_by_rank() {
-        let addr = spawn_mock(mock_node(now_secs())).await;
-
-        let wallet_chain = Some(ChainFingerprint {
-            height: 900,
-            hash: [1u8; 32],
-        });
-        let probes = measure_all(
-            vec![(format!("http://{addr}"), Source::PeerExchange)],
-            wallet_chain,
-            Duration::from_secs(5),
-            4,
-        )
-        .await;
-
-        let answer = probes[0].answer.as_ref().expect("answered");
-        assert_eq!(answer.fingerprint_match, Some(false));
-        assert!(
-            rank(probes, wallet_chain).is_empty(),
-            "wrong chain must not rank"
-        );
-    }
-
-    #[tokio::test]
-    async fn unreachable_node_answers_err_without_hanging() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind loopback");
-        let addr = listener.local_addr().expect("local_addr");
-        drop(listener);
-
-        let probes = measure_all(
-            vec![(format!("http://{addr}"), Source::Builtin)],
-            None,
-            Duration::from_millis(500),
-            1,
-        )
-        .await;
-
-        assert_eq!(probes.len(), 1);
-        let error = probes[0].answer.as_ref().expect_err("must fail fast");
-        assert!(!error.is_empty());
     }
 }
