@@ -113,6 +113,11 @@ pub struct DiscoveryConfig {
     pub magic: Option<[u8; 4]>,
     /// Per-peer and per-probe timeout.
     pub timeout: std::time::Duration,
+    /// The whole measurement batch's wall-clock ceiling, `Duration::ZERO` for
+    /// none. When it runs out the in-flight probes are abandoned and what was
+    /// answered still ranks, so unreachable hosts beyond the budget cannot
+    /// stall a wallet open. Defaults to [`seeds::TOTAL_BUDGET`].
+    pub total_budget: std::time::Duration,
     /// Probe concurrency bound.
     pub concurrency: usize,
     /// Cap on peers crawled from the P2P network, so one loud node cannot flood the list.
@@ -132,6 +137,29 @@ impl DiscoveryConfig {
             ..self
         }
     }
+
+    /// This configuration with a whole-batch wall-clock ceiling, overriding
+    /// [`seeds::TOTAL_BUDGET`].
+    pub fn with_total_budget(mut self, budget: std::time::Duration) -> Self {
+        self.total_budget = budget;
+        self
+    }
+
+    /// This configuration without the P2P address exchange: the seeds alone are
+    /// measured. For sandboxed clients, where the peers' P2P ports sit behind
+    /// the same firewall as everything else and the crawl contributes nothing
+    /// but delay.
+    pub fn without_peer_crawl(mut self) -> Self {
+        self.crawl_peers = false;
+        self
+    }
+
+    /// This configuration with the P2P address exchange on, against the
+    /// default for the chain's seeds.
+    pub fn with_peer_crawl(mut self) -> Self {
+        self.crawl_peers = true;
+        self
+    }
 }
 
 impl DiscoveryConfig {
@@ -150,6 +178,7 @@ impl DiscoveryConfig {
             grpc_port_offset: seeds::GRPC_PORT_OFFSET,
             magic: Some(seeds::CROSSLINK_STABLE_MAGIC),
             timeout: seeds::PROBE_TIMEOUT,
+            total_budget: seeds::TOTAL_BUDGET,
             concurrency: seeds::PROBE_CONCURRENCY,
             max_peers: seeds::MAX_PEERS,
             crawl_peers: true,
@@ -214,7 +243,7 @@ pub async fn discover(
 ) -> IndexerReport {
     let mut errors = Vec::new();
 
-    let (mut candidate_hosts, peers_seen) = if config.crawl_peers {
+    let (mut candidate_hosts, peers_seen) = if crawl_worth_attempting(config) {
         match p2p::peer_exchange(config).await {
             Ok(peers) => peers,
             Err(e) => {
@@ -238,7 +267,14 @@ pub async fn discover(
     let candidates = distinct(config, candidates);
 
     let mut ranking = measure::rank(
-        measure::measure_all(candidates, wallet_chain, config.timeout, config.concurrency).await,
+        measure::measure_all_with_budget(
+            candidates,
+            wallet_chain,
+            config.timeout,
+            config.concurrency,
+            total_budget(config),
+        )
+        .await,
         wallet_chain,
     );
     drop_other_branches(config, &mut ranking, &mut errors);
@@ -248,6 +284,27 @@ pub async fn discover(
         peers_seen,
         errors,
     }
+}
+
+/// Whether the config asks for the P2P exchange and there is a published
+/// bootstrap for it. Crawl candidates with no DNS seeds are only the built-in
+/// seed IPs' own P2P ports; where those ports sit behind a sandbox's firewall,
+/// the crawl hands back nothing but a full wave of connection timeouts, so
+/// [`discover`] skips it rather than delaying the measurements. A caller that
+/// wants the exchange anyway can call [`p2p::peer_exchange`] itself.
+fn crawl_worth_attempting(config: &DiscoveryConfig) -> bool {
+    let worth_it = config.crawl_peers && !config.dns_seeds.is_empty();
+    if config.crawl_peers && !worth_it {
+        tracing::info!(
+            "discovery: crawl_peers is on but no DNS seeds are published; measuring the seeds only"
+        );
+    }
+    worth_it
+}
+
+/// The config's batch ceiling, or none when unset.
+fn total_budget(config: &DiscoveryConfig) -> Option<std::time::Duration> {
+    (!config.total_budget.is_zero()).then_some(config.total_budget)
 }
 
 /// Each indexer once, in its [`indexer_key`] form, in first-seen order. A node listed twice keeps
@@ -305,9 +362,29 @@ pub async fn health_check(
     uris: Vec<(String, Source)>,
     wallet_chain: Option<ChainFingerprint>,
 ) -> IndexerReport {
+    health_check_with_progress(config, uris, wallet_chain, None).await
+}
+
+/// [`health_check`] told anyone watching how the probes are getting on: `hooks`
+/// receives a [`measure::ProbeProgress`] snapshot after each probe starts and
+/// after each one finishes, so a UI can render "probing 2/5" without polling.
+pub async fn health_check_with_progress(
+    config: &DiscoveryConfig,
+    uris: Vec<(String, Source)>,
+    wallet_chain: Option<ChainFingerprint>,
+    progress: Option<measure::ProgressSender>,
+) -> IndexerReport {
     let uris = distinct(config, uris);
     let mut ranking = measure::rank(
-        measure::measure_all(uris, wallet_chain, config.timeout, config.concurrency).await,
+        measure::measure_all_with(
+            uris,
+            wallet_chain,
+            config.timeout,
+            config.concurrency,
+            total_budget(config),
+            progress,
+        )
+        .await,
         wallet_chain,
     );
     let mut errors = Vec::new();
@@ -321,6 +398,7 @@ pub async fn health_check(
 
 #[cfg(test)]
 mod tests {
+    use super::measure::tests_support::{mock_node, now_secs, spawn_mock};
     use super::*;
 
     fn fingerprint(height: u32) -> ChainFingerprint {
@@ -343,6 +421,72 @@ mod tests {
         assert_eq!(nightly.magic, None, "the nightly's magic is not published");
         assert!(!nightly.crawl_peers, "no magic, no peer exchange");
         assert!(stable.crawl_peers);
+        assert_eq!(stable.total_budget, seeds::TOTAL_BUDGET);
+        assert_eq!(nightly.total_budget, seeds::TOTAL_BUDGET);
+    }
+
+    #[test]
+    fn the_builders_turn_the_knobs() {
+        let config = DiscoveryConfig::crosslink_stable();
+        assert!(config.crawl_peers, "stable crawls by default");
+        assert!(
+            !super::crawl_worth_attempting(&config),
+            "no DNS seeds published, so discover skips the crawl"
+        );
+        let mut published = config.clone();
+        published.dns_seeds = vec!["seed.example".into()];
+        assert!(
+            super::crawl_worth_attempting(&published),
+            "a published DNS seed makes the exchange worth attempting"
+        );
+        assert!(!super::crawl_worth_attempting(
+            &config.clone().without_peer_crawl()
+        ),
+            "without_peer_crawl opts the exchange out"
+        );
+        assert!(config.crawl_peers, "the bare config is untouched");
+        assert_eq!(
+            config
+                .clone()
+                .without_peer_crawl()
+                .with_peer_crawl()
+                .crawl_peers,
+            true,
+            "with_peer_crawl opts it back in"
+        );
+        assert_eq!(
+            config
+                .clone()
+                .with_total_budget(std::time::Duration::from_secs(3))
+                .total_budget,
+            std::time::Duration::from_secs(3)
+        );
+        assert_eq!(
+            super::total_budget(&config),
+            Some(seeds::TOTAL_BUDGET),
+            "the defaults carry the seed budget"
+        );
+        assert_eq!(
+            super::total_budget(&config.with_total_budget(std::time::Duration::ZERO)),
+            None,
+            "zero means no budget"
+        );
+    }
+
+    #[test]
+    fn the_crawl_is_skipped_when_no_dns_seed_is_published() {
+        let config = DiscoveryConfig::crosslink_stable();
+        assert!(
+            !super::crawl_worth_attempting(&config),
+            "the stable chains publish no DNS seeds; their crawl only dials \
+             the built-in seeds' P2P ports, unreachable from a sandbox"
+        );
+        let mut with_seeds = config.clone();
+        with_seeds.dns_seeds = vec!["seed.example".into()];
+        assert!(
+            super::crawl_worth_attempting(&with_seeds),
+            "a published DNS seed makes the exchange worth attempting"
+        );
     }
 
     #[test]
@@ -472,6 +616,82 @@ mod tests {
             super::health_check(&DiscoveryConfig::crosslink_stable(), Vec::new(), None).await;
         assert!(report.ranking.is_empty());
         assert_eq!(report.peers_seen, 0, "a health_check never crawls");
+    }
+
+    /// A listener that accepts connections and never answers, so the probe can
+    /// only end through a timeout.
+    async fn spawn_silent_server() -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let addr = listener.local_addr().expect("local_addr");
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket); // sockets kept open, never answered
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn a_health_check_over_unreachable_hosts_keeps_its_budget_and_ranks_the_fast_one() {
+        let slow = spawn_silent_server().await;
+        let fast = spawn_mock(mock_node(now_secs())).await;
+        let config = DiscoveryConfig {
+            timeout: std::time::Duration::from_secs(30),
+            total_budget: std::time::Duration::from_secs(1),
+            ..DiscoveryConfig::crosslink_stable()
+        };
+        let uris = vec![
+            (format!("http://{slow}"), Source::Builtin),
+            (format!("http://{fast}"), Source::Builtin),
+        ];
+
+        let started = std::time::Instant::now();
+        let report = super::health_check(&config, uris.clone(), None).await;
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "the health check must honor the total budget, took {elapsed:?}"
+        );
+        let fast_uri = format!("http://{fast}");
+        let ranked: Vec<&str> = report.ranking.iter().map(|i| i.uri.as_str()).collect();
+        assert_eq!(ranked, [fast_uri.as_str()], "the fast seed ranks first");
+        assert!(report.uris().contains(&fast_uri));
+    }
+
+    #[tokio::test]
+    async fn progress_reaches_the_consumer_during_a_health_check() {
+        let slow = spawn_silent_server().await;
+        let fast = spawn_mock(mock_node(now_secs())).await;
+        let config = DiscoveryConfig {
+            timeout: std::time::Duration::from_secs(30),
+            total_budget: std::time::Duration::from_secs(1),
+            ..DiscoveryConfig::crosslink_stable()
+        };
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+
+        let report = super::health_check_with_progress(
+            &config,
+            vec![
+                (format!("http://{slow}"), Source::Builtin),
+                (format!("http://{fast}"), Source::Builtin),
+            ],
+            None,
+            Some(sender),
+        )
+        .await;
+
+        let mut events = Vec::new();
+        while let Ok(event) = receiver.try_recv() {
+            events.push(event);
+        }
+        assert!(
+            events.iter().any(|event| event.finished == 1 && event.total == 2),
+            "the consumer sees the finished count climb: {events:?}"
+        );
+        assert_eq!(report.ranking.len(), 1, "only the fast seed ranked");
     }
 
     #[tokio::test]

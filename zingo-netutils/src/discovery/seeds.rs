@@ -43,6 +43,11 @@ pub const GRPC_PORT: u16 = 18_234;
 /// How long one measurement may take, covering connect and every RPC on the way.
 pub const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// The whole measurement batch's wall-clock ceiling. Slow DNS or unreachable
+/// hosts used to keep the batch waiting on every probe's own timeout in turn's
+/// worth of joins; this ends the run and returns the samples that finished.
+pub const TOTAL_BUDGET: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// How many measurements run at once.
 pub const PROBE_CONCURRENCY: usize = 8;
 

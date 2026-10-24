@@ -1217,6 +1217,7 @@ mod tests {
             grpc_port_offset: 10_001,
             magic: Some(MAGIC),
             timeout: Duration::from_secs(2),
+            total_budget: Duration::ZERO,
             concurrency: 1,
             max_peers: 64,
             crawl_peers: true,
