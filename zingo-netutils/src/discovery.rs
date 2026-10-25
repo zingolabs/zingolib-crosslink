@@ -439,9 +439,8 @@ mod tests {
             super::crawl_worth_attempting(&published),
             "a published DNS seed makes the exchange worth attempting"
         );
-        assert!(!super::crawl_worth_attempting(
-            &config.clone().without_peer_crawl()
-        ),
+        assert!(
+            !super::crawl_worth_attempting(&config.clone().without_peer_crawl()),
             "without_peer_crawl opts the exchange out"
         );
         assert!(config.crawl_peers, "the bare config is untouched");
@@ -688,7 +687,9 @@ mod tests {
             events.push(event);
         }
         assert!(
-            events.iter().any(|event| event.finished == 1 && event.total == 2),
+            events
+                .iter()
+                .any(|event| event.finished == 1 && event.total == 2),
             "the consumer sees the finished count climb: {events:?}"
         );
         assert_eq!(report.ranking.len(), 1, "only the fast seed ranked");
