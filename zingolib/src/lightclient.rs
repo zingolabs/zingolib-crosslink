@@ -157,6 +157,45 @@ impl LightClient {
         )
     }
 
+    /// Creates a `LightClient` with a new wallet from fresh entropy without contacting the indexer,
+    /// at [`Self::offline_fresh_wallet_birthday`].
+    ///
+    /// Use this when no indexer is reachable: creating a fresh wallet needs no network. The
+    /// offline birthday is raised to the chain's Sapling activation height where that is higher,
+    /// because the wallet cannot take an earlier birthday.
+    ///
+    /// The tradeoff of the offline birthday is a longer first sync when the wallet comes online:
+    /// it scans from the start of the chain instead of from near the tip, and rebuilds the note
+    /// commitment trees from scanned blocks rather than taking an indexer's frontier. The wallet
+    /// is correct regardless of which note commitment tree state the indexer serves.
+    ///
+    /// Will fail if a wallet file already exists in the given data directory unless `overwrite` is `true`.
+    #[allow(clippy::result_large_err)]
+    pub fn new_offline(
+        config: ZingoConfig,
+        overwrite: bool,
+        seed_derivation: SeedDerivation,
+    ) -> Result<Self, LightClientError> {
+        let sapling_activation_height = config
+            .chain
+            .activation_height(zcash_protocol::consensus::NetworkUpgrade::Sapling)
+            .expect("should have some sapling activation height");
+        let birthday = Self::offline_fresh_wallet_birthday().max(sapling_activation_height);
+        Self::create_from_wallet(
+            LightWallet::new(
+                config.chain,
+                WalletBase::FreshEntropy {
+                    no_of_accounts: config.no_of_accounts,
+                    seed_derivation,
+                },
+                birthday,
+                config.wallet_settings.clone(),
+            )?,
+            config,
+            overwrite,
+        )
+    }
+
     /// The birthday a fresh wallet gets without consulting the indexer: the higher of
     /// [`chain_height` - 100] and sapling activation height.
     pub fn default_fresh_wallet_birthday(
@@ -168,6 +207,18 @@ impl LightClient {
             .activation_height(zcash_protocol::consensus::NetworkUpgrade::Sapling)
             .expect("should have some sapling activation height");
         sapling_activation_height.max(chain_height - 100)
+    }
+
+    /// The birthday a fresh wallet gets when created offline: block 1, the start of the chain.
+    ///
+    /// This is the birthday [`Self::new_offline`] gives a fresh wallet, raised to the chain's
+    /// Sapling activation height where that is higher (the wallet cannot take an earlier
+    /// birthday). A wallet with this birthday rebuilds every shielded pool's note commitment tree
+    /// from the blocks it scans, so it is correct regardless of which note commitment tree state
+    /// the indexer serves. The tradeoff is a longer first sync when the wallet comes online.
+    #[must_use]
+    pub fn offline_fresh_wallet_birthday() -> BlockHeight {
+        BlockHeight::from_u32(1)
     }
 
     /// The birthday a fresh wallet should get against the configured indexer.
@@ -838,6 +889,50 @@ mod tests {
             "uregtest15en5x5cnsc7ye3wfy0prnh3ut34ns9w40htunlh9htfl6k5p004ja5gprxfz8fygjeax07a8489wzjk8gsx65thcp6d3ku8umgaka6f0"
                 .to_string(),
             lc.unified_addresses_json().await[0]["encoded_address"]
+        );
+    }
+
+    /// A fresh wallet can be created with no reachable indexer, at the offline default birthday.
+    #[tokio::test]
+    async fn new_offline_creates_fresh_wallet_without_indexer() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = ZingoConfig::build(ChainType::Regtest(
+            ConfiguredActivationHeights::regtest_all_active(),
+        ))
+        .set_lightwalletd_uri("http://127.0.0.1:1".parse().unwrap())
+        .set_wallet_dir(temp_dir.path().to_path_buf())
+        .create();
+
+        let lc = LightClient::new_offline(config, false, SeedDerivation::Zip32Standard).unwrap();
+
+        assert_eq!(
+            lc.wallet.read().await.birthday,
+            LightClient::offline_fresh_wallet_birthday()
+        );
+    }
+
+    /// Where the chain's sapling activation height is above the offline default, the offline
+    /// birthday is raised to it (the wallet cannot take an earlier birthday).
+    #[tokio::test]
+    async fn new_offline_uses_sapling_activation_height_where_higher() {
+        use zcash_protocol::consensus::Parameters;
+
+        let temp_dir = TempDir::new().unwrap();
+        let config = ZingoConfig::build(ChainType::Mainnet)
+            .set_wallet_dir(temp_dir.path().to_path_buf())
+            .create();
+
+        let lc = LightClient::new_offline(config, false, SeedDerivation::Zip32Standard).unwrap();
+
+        assert_eq!(
+            lc.wallet.read().await.birthday,
+            u32::from(LightClient::offline_fresh_wallet_birthday())
+                .max(u32::from(
+                    ChainType::Mainnet
+                        .activation_height(zcash_protocol::consensus::NetworkUpgrade::Sapling)
+                        .unwrap()
+                ))
+                .into()
         );
     }
 }

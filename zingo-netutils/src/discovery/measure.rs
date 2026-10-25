@@ -82,15 +82,7 @@ pub async fn measure_all(
     timeout: Duration,
     concurrency: usize,
 ) -> Vec<Sample> {
-    measure_all_with(
-        candidates,
-        wallet_chain,
-        timeout,
-        concurrency,
-        None,
-        None,
-    )
-    .await
+    measure_all_with(candidates, wallet_chain, timeout, concurrency, None, None).await
 }
 
 /// [`measure_all`] under a whole-batch wall-clock budget. `Some(ZERO)` counts
@@ -106,7 +98,15 @@ pub async fn measure_all_with_budget(
     concurrency: usize,
     total_budget: Option<Duration>,
 ) -> Vec<Sample> {
-    measure_all_with(candidates, wallet_chain, timeout, concurrency, total_budget, None).await
+    measure_all_with(
+        candidates,
+        wallet_chain,
+        timeout,
+        concurrency,
+        total_budget,
+        None,
+    )
+    .await
 }
 
 /// [`measure_all`] with every knob: a whole-batch [`Duration`] ceiling and an
@@ -678,7 +678,10 @@ mod tests {
     #[tokio::test]
     async fn a_zero_budget_counts_as_no_budget() {
         let probes = measure_all_with_budget(
-            vec![("http://does-not-resolve.invalid".to_string(), Source::Builtin)],
+            vec![(
+                "http://does-not-resolve.invalid".to_string(),
+                Source::Builtin,
+            )],
             None,
             Duration::from_millis(300),
             1,
@@ -707,10 +710,11 @@ mod tests {
         )
         .await;
 
-        let events: Vec<ProbeProgress> =
-            std::iter::from_fn(|| receiver.try_recv().ok()).collect();
+        let events: Vec<ProbeProgress> = std::iter::from_fn(|| receiver.try_recv().ok()).collect();
         assert!(
-            events.iter().any(|event| event.started == 2 && event.total == 2),
+            events
+                .iter()
+                .any(|event| event.started == 2 && event.total == 2),
             "both probes must report as started: {events:?}"
         );
         let first = events.first().expect("progress events were sent");

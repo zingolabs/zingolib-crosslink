@@ -55,6 +55,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ships with the node's nightly peers); `ZingoConfigBuilder::set_indexer_network` and
   `zingo-cli --network <name>` select which list a client uses.
 - `zingo_netutils::get_client` bounds the connection attempt with `CONNECT_TIMEOUT` (10 s).
+- `LightClient::{new_offline, offline_fresh_wallet_birthday}`: create a fresh wallet without
+  contacting the indexer. The offline birthday is block 1, raised to the chain's Sapling
+  activation height where that is higher; the wallet rebuilds the note commitment trees from
+  scanned blocks, so it is correct regardless of the indexer's tree state, at the cost of a
+  longer first sync when the wallet comes online.
 - `docs/featurenet-e2e.md`: the running log of the end-to-end run against the live featurenet.
 ### Changed
 - The lightwalletd endpoint is an indexer, and is now named so: `LightClient::{indexer_uri,
