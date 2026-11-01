@@ -247,6 +247,12 @@ pub enum BalanceError {
     /// Summation overflow
     #[error("overflow occured during summation.")]
     Overflow,
+    /// Could not connect to the indexer. The node may be down or unreachable.
+    #[error("gRPC client error. {0}")]
+    ClientError(#[from] zingo_netutils::GetClientError),
+    /// The indexer rejected or failed a request.
+    #[error("node request error. {0}")]
+    NodeError(#[from] tonic::Status),
 }
 
 /// Errors associated with key and address derivation
