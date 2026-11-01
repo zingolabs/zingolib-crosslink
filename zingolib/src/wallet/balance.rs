@@ -215,6 +215,15 @@ impl LightWallet {
     }
 
     /// Returns account balance.
+    ///
+    /// The staked amount is read from the indexer, so this call needs a reachable node.
+    ///
+    /// # Error
+    ///
+    /// Returns an error if:
+    /// - the indexer cannot be reached or a bond info request fails
+    /// - the UFVK does not have viewing capability for a pool type
+    /// - the balance summation exceeds the valid range of zatoshis
     pub async fn account_balance(
         &self,
         account_id: zip32::AccountId,
@@ -302,22 +311,20 @@ impl LightWallet {
             .collect();
 
         let indexer_uri = config.get_lightwalletd_uri();
-        let mut client = get_client(indexer_uri).await.unwrap();
+        let mut client = get_client(indexer_uri).await?;
 
         // The node's status decides what is still at stake: active and unbonding bonds count,
         // withdrawn and burned ones do not, whatever the wallet's own history says.
         let mut total_staked: u64 = 0;
         for pubkey in &active_bonds {
-            if let Ok(resp) = client
+            let resp = client
                 .get_bond_info(BondInfoRequest {
                     bond_key: pubkey.to_vec(),
                 })
-                .await
-            {
-                let bond_info = crate::crosslink::BondInfo::from(resp.into_inner());
-                if bond_info.status.is_staked() {
-                    total_staked = total_staked.saturating_add(bond_info.amount_zats);
-                }
+                .await?;
+            let bond_info = crate::crosslink::BondInfo::from(resp.into_inner());
+            if bond_info.status.is_staked() {
+                total_staked = total_staked.saturating_add(bond_info.amount_zats);
             }
         }
 
@@ -334,7 +341,7 @@ impl LightWallet {
             confirmed_transparent_balance,
             unconfirmed_transparent_balance,
             total_transparent_balance,
-            staked_amount: Zatoshis::from_u64(total_staked).unwrap(),
+            staked_amount: utils::conversion::zatoshis_from_u64(total_staked)?,
         })
     }
 
@@ -732,4 +739,27 @@ mod test {
     //         Some(1_605_001)
     //     );
     // }
+
+    /// A node that refuses the connection must surface as a `BalanceError`, not a panic.
+    #[tokio::test]
+    async fn get_client_connection_refused_maps_to_balance_error() {
+        use super::BalanceError;
+        use zingo_netutils::get_client;
+
+        // Bind then drop a listener so the port is free and nothing is listening on it.
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let uri: http::Uri = format!("http://127.0.0.1:{port}").parse().unwrap();
+
+        let err: BalanceError = get_client(uri)
+            .await
+            .map(|_| ())
+            .expect_err("connect to a closed port must fail")
+            .into();
+
+        assert!(matches!(err, BalanceError::ClientError(_)));
+        assert!(err.to_string().starts_with("gRPC client error. "));
+    }
 }
