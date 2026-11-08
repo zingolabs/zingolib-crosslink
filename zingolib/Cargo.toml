@@ -61,6 +61,7 @@ bip0039.workspace = true
 bip32 = { workspace = true, features = ["secp256k1-ffi"] }
 
 # Encoding
+base64 = { workspace = true }
 bech32 = { workspace = true }
 bs58 = { workspace = true, features = ["check"] }
 byteorder = { workspace = true }

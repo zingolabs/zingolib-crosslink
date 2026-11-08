@@ -9150,6 +9150,7 @@ name = "zingolib"
 version = "3.0.1"
 dependencies = [
  "append-only-vec",
+ "base64",
  "bech32",
  "bip0039",
  "bip32",
