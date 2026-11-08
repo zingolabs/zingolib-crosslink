@@ -4,8 +4,10 @@ use std::{
     collections::{BTreeMap, HashMap},
     io::{self, Error, ErrorKind, Read, Write},
     num::NonZeroU32,
+    path::Path,
 };
 
+use base64::Engine as _;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use log::info;
 
@@ -42,6 +44,15 @@ use pepper_sync::{
         WalletTransaction,
     },
 };
+
+/// How the wallet bytes were laid out in the file read by [`LightWallet::read_from_path`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WalletFileShape {
+    /// The file holds the serialized wallet bytes.
+    Raw,
+    /// The file holds the serialized wallet bytes encoded as standard base64 text.
+    Base64Text,
+}
 
 impl LightWallet {
     /// Changes in version 39:
@@ -143,6 +154,45 @@ impl LightWallet {
                 ),
             )),
         }
+    }
+
+    /// Reads a wallet file at `path`.
+    ///
+    /// Sniffs the little-endian `u64` version header (`1..=serialized_version()`). If it is absent,
+    /// decodes the file as standard base64 text and sniffs again.
+    ///
+    /// A wallet read from a [`WalletFileShape::Base64Text`] file has `save_required` set so the
+    /// next save rewrites the file as raw bytes.
+    pub fn read_from_path(path: &Path, network: ChainType) -> io::Result<(Self, WalletFileShape)> {
+        let file_bytes = std::fs::read(path)?;
+        if Self::has_version_header(&file_bytes) {
+            return Self::read(&file_bytes[..], network)
+                .map(|wallet| (wallet, WalletFileShape::Raw));
+        }
+
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(file_bytes.trim_ascii())
+            .ok()
+            .filter(|bytes| Self::has_version_header(bytes))
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidData,
+                    "wallet file is neither raw wallet bytes nor base64 text of wallet bytes",
+                )
+            })?;
+        drop(file_bytes);
+
+        let mut wallet = Self::read(&decoded[..], network)?;
+        wallet.save_required = true;
+        Ok((wallet, WalletFileShape::Base64Text))
+    }
+
+    /// Whether `bytes` start with a wallet version header this reader accepts.
+    fn has_version_header(bytes: &[u8]) -> bool {
+        bytes
+            .get(..8)
+            .map(|header| u64::from_le_bytes(header.try_into().expect("8 bytes")))
+            .is_some_and(|version| (1..=Self::serialized_version()).contains(&version))
     }
 
     fn read_v0<R: Read>(mut reader: R, network: ChainType, version: u64) -> io::Result<Self> {
@@ -634,5 +684,93 @@ mod seed_derivation_persistence_tests {
             read_back.seed_derivation,
             SeedDerivation::CrosslinkTruncated32
         );
+    }
+}
+
+#[cfg(test)]
+mod read_from_path_tests {
+    use super::*;
+    use crate::config::ZingoConfig;
+    use crate::wallet::{SeedDerivation, WalletBase};
+
+    fn written_wallet_bytes(config: &ZingoConfig) -> Vec<u8> {
+        let mut wallet = LightWallet::new(
+            config.chain,
+            WalletBase::FreshEntropy {
+                no_of_accounts: NonZeroU32::try_from(1).unwrap(),
+                seed_derivation: SeedDerivation::Zip32Standard,
+            },
+            // At or above Sapling activation on every network.
+            419_200.into(),
+            config.wallet_settings.clone(),
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        wallet.write(&mut bytes, &config.chain).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn read_from_path_raw_shape() {
+        let config = ZingoConfig::create_testnet();
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("wallet.dat");
+        std::fs::write(&path, written_wallet_bytes(&config)).unwrap();
+
+        let (wallet, shape) = LightWallet::read_from_path(&path, config.chain).unwrap();
+
+        assert_eq!(shape, WalletFileShape::Raw);
+        assert!(!wallet.save_required);
+    }
+
+    #[tokio::test]
+    async fn read_from_path_base64_text_shape_marks_save_required() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut config = ZingoConfig::create_testnet();
+        config.wallet_dir = Some(dir.path().to_path_buf());
+        config.wallet_name = "wallet.dat".into();
+        let path = config.get_wallet_pathbuf();
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode(written_wallet_bytes(&config));
+        std::fs::write(&path, encoded.as_bytes()).unwrap();
+
+        let (wallet, shape) = LightWallet::read_from_path(&path, config.chain).unwrap();
+        assert_eq!(shape, WalletFileShape::Base64Text);
+        assert!(wallet.save_required);
+
+        // The first save rewrites the file as raw bytes.
+        let (client, _) = crate::lightclient::LightClient::open_from_wallet_path(config).unwrap();
+        assert!(client.save_to_disk().await.unwrap());
+        let rewritten = std::fs::read(&path).unwrap();
+        assert_eq!(
+            rewritten[..8],
+            LightWallet::serialized_version().to_le_bytes()
+        );
+        assert_eq!(rewritten[..8], 40u64.to_le_bytes());
+    }
+
+    #[test]
+    fn read_from_path_rejects_neither_shape() {
+        let config = ZingoConfig::create_testnet();
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("wallet.dat");
+        // Neither a valid version header nor valid base64 (0xff is outside the alphabet).
+        let junk: Vec<u8> = (0..64u8).map(|i| 0xff - i).collect();
+        std::fs::write(&path, junk).unwrap();
+
+        let error = LightWallet::read_from_path(&path, config.chain).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn read_rejects_mismatched_chain_name() {
+        let mainnet = ZingoConfig::create_mainnet();
+        let testnet = ZingoConfig::create_testnet();
+        let bytes = written_wallet_bytes(&mainnet);
+
+        let error = LightWallet::read(&bytes[..], testnet.chain).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
     }
 }

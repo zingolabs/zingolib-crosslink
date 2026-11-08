@@ -39,6 +39,7 @@ use crate::{
     wallet::{
         LightWallet, SeedDerivation, WalletBase,
         balance::AccountBalance,
+        disk::WalletFileShape,
         error::{BalanceError, KeyError, SummaryError, WalletError},
         keys::unified::{ReceiverSelection, UnifiedAddressId},
         summary::data::{
@@ -315,6 +316,20 @@ impl LightClient {
             config,
             true,
         )
+    }
+
+    /// Creates a `LightClient` from an existing wallet file through
+    /// [`LightWallet::read_from_path`], returning the [`WalletFileShape`] the file was found in.
+    ///
+    /// A missing file is a [`LightClientError::FileError`] of kind
+    /// [`std::io::ErrorKind::NotFound`].
+    #[allow(clippy::result_large_err)]
+    pub fn open_from_wallet_path(
+        config: ZingoConfig,
+    ) -> Result<(Self, WalletFileShape), LightClientError> {
+        let (wallet, shape) = LightWallet::read_from_path(&config.get_wallet_path(), config.chain)
+            .map_err(LightClientError::FileError)?;
+        Ok((Self::create_from_wallet(wallet, config, true)?, shape))
     }
 
     /// Returns config used to create lightclient.
