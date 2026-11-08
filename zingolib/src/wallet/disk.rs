@@ -45,6 +45,141 @@ use pepper_sync::{
     },
 };
 
+/// Why a wallet file could not be opened, precise enough to show to a user.
+#[derive(Debug, thiserror::Error)]
+pub enum WalletFileError {
+    /// No file at the path.
+    #[error("wallet file not found")]
+    NotFound,
+    /// The file exists but cannot be read.
+    #[error("wallet file cannot be read: {0}")]
+    Unreadable(io::Error),
+    /// The file has no content.
+    #[error("wallet file is empty")]
+    Empty,
+    /// The file is neither raw wallet bytes nor base64 text of wallet bytes.
+    #[error("wallet file holds neither wallet bytes nor base64 text of wallet bytes")]
+    NotAWalletFile,
+    /// The version header is outside the range this reader accepts.
+    #[error(
+        "wallet file version {found} is not supported, this build reads versions {min} to {max}"
+    )]
+    UnsupportedVersion {
+        /// The version in the file.
+        found: u64,
+        /// The lowest version accepted.
+        min: u64,
+        /// The highest version accepted.
+        max: u64,
+    },
+    /// The file was written for another chain.
+    #[error("wallet file belongs to chain {file}, this build expected {expected}")]
+    ChainMismatch {
+        /// The chain name in the file.
+        file: String,
+        /// The chain name this build runs on.
+        expected: String,
+    },
+    /// The file ends before a section is complete.
+    #[error("wallet file ends early while reading the {section}")]
+    Truncated {
+        /// The section being read when the file ended.
+        section: &'static str,
+    },
+    /// A section holds data the reader rejects.
+    #[error("wallet file {section} is corrupt: {source}")]
+    Corrupt {
+        /// The section that failed.
+        section: &'static str,
+        /// What the reader reported.
+        source: io::Error,
+    },
+}
+
+impl WalletFileError {
+    fn in_section(section: &'static str, source: io::Error) -> Self {
+        if source.kind() == ErrorKind::UnexpectedEof {
+            Self::Truncated { section }
+        } else {
+            Self::Corrupt { section, source }
+        }
+    }
+}
+
+impl From<WalletFileError> for io::Error {
+    fn from(error: WalletFileError) -> Self {
+        let kind = match &error {
+            WalletFileError::NotFound => ErrorKind::NotFound,
+            WalletFileError::Unreadable(source) => source.kind(),
+            WalletFileError::Truncated { .. } => ErrorKind::UnexpectedEof,
+            _ => ErrorKind::InvalidData,
+        };
+        Error::new(kind, error.to_string())
+    }
+}
+
+/// What a user needs to restore a wallet, read from the front of its file by
+/// [`LightWallet::read_recovery_info_from_path`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WalletFileRecoveryInfo {
+    /// The wallet file version.
+    pub version: u64,
+    /// The chain name stored in the file.
+    pub chain_name: String,
+    /// The wallet birthday.
+    pub birthday: u32,
+    /// The seed phrase, for a wallet created from a seed.
+    pub seed_phrase: Option<String>,
+    /// The encoded unified full viewing key of the first account, for a wallet created
+    /// without a seed.
+    pub unified_full_viewing_key: Option<String>,
+}
+
+/// The fields at the front of a version 32 or later wallet file.
+struct FilePrefix {
+    chain_name: String,
+    seed_phrase: Option<String>,
+    birthday: u32,
+    end: u64,
+}
+
+impl FilePrefix {
+    fn read(bytes: &[u8], version: u64) -> Result<Self, WalletFileError> {
+        let mut cursor = io::Cursor::new(bytes);
+        cursor.set_position(8);
+        let chain_name = utils::read_string(&mut cursor)
+            .map_err(|source| WalletFileError::in_section("chain name", source))?;
+        let seed_bytes = Vector::read(&mut cursor, byteorder::ReadBytesExt::read_u8)
+            .map_err(|source| WalletFileError::in_section("seed", source))?;
+        let seed_phrase = if seed_bytes.is_empty() {
+            None
+        } else {
+            if version < 35 {
+                cursor
+                    .read_u32::<LittleEndian>()
+                    .map_err(|source| WalletFileError::in_section("seed", source))?;
+            }
+            Some(
+                <Mnemonic>::from_entropy(seed_bytes)
+                    .map_err(|e| WalletFileError::Corrupt {
+                        section: "seed",
+                        source: Error::new(ErrorKind::InvalidData, e.to_string()),
+                    })?
+                    .into_phrase(),
+            )
+        };
+        let birthday = cursor
+            .read_u32::<LittleEndian>()
+            .map_err(|source| WalletFileError::in_section("birthday", source))?;
+        Ok(Self {
+            chain_name,
+            seed_phrase,
+            birthday,
+            end: cursor.position(),
+        })
+    }
+}
+
 /// How the wallet bytes were laid out in the file read by [`LightWallet::read_from_path`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WalletFileShape {
@@ -164,27 +299,141 @@ impl LightWallet {
     /// A wallet read from a [`WalletFileShape::Base64Text`] file has `save_required` set so the
     /// next save rewrites the file as raw bytes.
     pub fn read_from_path(path: &Path, network: ChainType) -> io::Result<(Self, WalletFileShape)> {
-        let file_bytes = std::fs::read(path)?;
-        if Self::has_version_header(&file_bytes) {
-            return Self::read(&file_bytes[..], network)
-                .map(|wallet| (wallet, WalletFileShape::Raw));
-        }
+        Self::open_file(path, network).map_err(io::Error::from)
+    }
 
+    /// Opens a wallet file at `path` with a precise [`WalletFileError`] when it cannot.
+    ///
+    /// The file is loaded in either [`WalletFileShape`], its version header is checked, and
+    /// for files of version 32 or later the chain name, the seed and the birthday at the front of
+    /// the file are validated one by one before the rest of the wallet is parsed. A wallet read
+    /// from a [`WalletFileShape::Base64Text`] file has `save_required` set so the next save
+    /// rewrites the file as raw bytes.
+    pub fn open_file(
+        path: &Path,
+        network: ChainType,
+    ) -> Result<(Self, WalletFileShape), WalletFileError> {
+        let (bytes, shape) = Self::load_file_bytes(path)?;
+        let version = Self::file_version(&bytes)?;
+        if version >= Self::RECOVERY_INFO_MIN_VERSION {
+            let prefix = FilePrefix::read(&bytes, version)?;
+            if prefix.chain_name != network.to_string() {
+                return Err(WalletFileError::ChainMismatch {
+                    file: prefix.chain_name,
+                    expected: network.to_string(),
+                });
+            }
+        }
+        let mut wallet = Self::read(&bytes[..], network)
+            .map_err(|source| WalletFileError::in_section("wallet data", source))?;
+        if shape == WalletFileShape::Base64Text {
+            wallet.save_required = true;
+        }
+        Ok((wallet, shape))
+    }
+
+    /// Reads the recovery information from the front of a wallet file: the seed phrase, or the
+    /// unified full viewing key of a wallet created without one, and the birthday.
+    ///
+    /// Only the front of the file is parsed, so this works on a file whose synced data is
+    /// truncated or corrupt, and on a file from another chain. `network` is used only to
+    /// encode the viewing key.
+    pub fn read_recovery_info_from_path(
+        path: &Path,
+        network: ChainType,
+    ) -> Result<WalletFileRecoveryInfo, WalletFileError> {
+        let (bytes, _) = Self::load_file_bytes(path)?;
+        let version = Self::file_version(&bytes)?;
+        if version < Self::RECOVERY_INFO_MIN_VERSION {
+            return Err(WalletFileError::UnsupportedVersion {
+                found: version,
+                min: Self::RECOVERY_INFO_MIN_VERSION,
+                max: Self::serialized_version(),
+            });
+        }
+        let prefix = FilePrefix::read(&bytes, version)?;
+        let unified_full_viewing_key = if prefix.seed_phrase.is_some() {
+            None
+        } else {
+            let mut cursor = io::Cursor::new(&bytes[..]);
+            cursor.set_position(prefix.end);
+            let keys = Vector::read(&mut cursor, |r| {
+                let account_id = r.read_u32::<LittleEndian>()?;
+                Ok((account_id, UnifiedKeyStore::read(r, network)?))
+            })
+            .map_err(|source| WalletFileError::in_section("keys", source))?;
+            let (_, first) = keys
+                .into_iter()
+                .min_by_key(|(account_id, _)| *account_id)
+                .ok_or(WalletFileError::Corrupt {
+                    section: "keys",
+                    source: Error::new(ErrorKind::InvalidData, "no account in the wallet file"),
+                })?;
+            let ufvk = zcash_keys::keys::UnifiedFullViewingKey::try_from(&first).map_err(|e| {
+                WalletFileError::Corrupt {
+                    section: "keys",
+                    source: Error::new(ErrorKind::InvalidData, e.to_string()),
+                }
+            })?;
+            Some(ufvk.encode(&network))
+        };
+        Ok(WalletFileRecoveryInfo {
+            version,
+            chain_name: prefix.chain_name,
+            birthday: prefix.birthday,
+            seed_phrase: prefix.seed_phrase,
+            unified_full_viewing_key,
+        })
+    }
+
+    /// The first version whose file starts with the chain name, the seed and the birthday.
+    pub const RECOVERY_INFO_MIN_VERSION: u64 = 32;
+
+    fn load_file_bytes(path: &Path) -> Result<(Vec<u8>, WalletFileShape), WalletFileError> {
+        let file_bytes = std::fs::read(path).map_err(|e| {
+            if e.kind() == ErrorKind::NotFound {
+                WalletFileError::NotFound
+            } else {
+                WalletFileError::Unreadable(e)
+            }
+        })?;
+        if file_bytes.trim_ascii().is_empty() {
+            return Err(WalletFileError::Empty);
+        }
+        if Self::has_version_header(&file_bytes) || Self::has_any_version_header(&file_bytes) {
+            return Ok((file_bytes, WalletFileShape::Raw));
+        }
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(file_bytes.trim_ascii())
             .ok()
-            .filter(|bytes| Self::has_version_header(bytes))
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorKind::InvalidData,
-                    "wallet file is neither raw wallet bytes nor base64 text of wallet bytes",
-                )
-            })?;
-        drop(file_bytes);
+            .filter(|bytes| Self::has_version_header(bytes) || Self::has_any_version_header(bytes))
+            .ok_or(WalletFileError::NotAWalletFile)?;
+        Ok((decoded, WalletFileShape::Base64Text))
+    }
 
-        let mut wallet = Self::read(&decoded[..], network)?;
-        wallet.save_required = true;
-        Ok((wallet, WalletFileShape::Base64Text))
+    fn file_version(bytes: &[u8]) -> Result<u64, WalletFileError> {
+        let version = bytes
+            .get(..8)
+            .map(|header| u64::from_le_bytes(header.try_into().expect("8 bytes")))
+            .ok_or(WalletFileError::NotAWalletFile)?;
+        if (1..=Self::serialized_version()).contains(&version) {
+            Ok(version)
+        } else {
+            Err(WalletFileError::UnsupportedVersion {
+                found: version,
+                min: 1,
+                max: Self::serialized_version(),
+            })
+        }
+    }
+
+    /// Whether `bytes` start with a plausible version header of a wallet newer than this
+    /// reader: a small little-endian number well below any base64 text.
+    fn has_any_version_header(bytes: &[u8]) -> bool {
+        bytes
+            .get(..8)
+            .map(|header| u64::from_le_bytes(header.try_into().expect("8 bytes")))
+            .is_some_and(|version| (1..=u64::from(u16::MAX)).contains(&version))
     }
 
     /// Whether `bytes` start with a wallet version header this reader accepts.
@@ -772,5 +1021,248 @@ mod read_from_path_tests {
         let error = LightWallet::read(&bytes[..], testnet.chain).unwrap_err();
 
         assert_eq!(error.kind(), ErrorKind::InvalidData);
+    }
+}
+
+#[cfg(test)]
+mod wallet_file_error_tests {
+    use super::*;
+    use crate::config::ZingoConfig;
+    use crate::wallet::{SeedDerivation, WalletBase};
+
+    const SEED: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    fn wallet_bytes(config: &ZingoConfig, base: WalletBase) -> Vec<u8> {
+        let mut wallet = LightWallet::new(
+            config.chain,
+            base,
+            419_200.into(),
+            config.wallet_settings.clone(),
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        wallet.write(&mut bytes, &config.chain).unwrap();
+        bytes
+    }
+
+    fn seed_wallet_bytes(config: &ZingoConfig) -> Vec<u8> {
+        wallet_bytes(
+            config,
+            WalletBase::Mnemonic {
+                mnemonic: Mnemonic::from_phrase(SEED).unwrap(),
+                no_of_accounts: NonZeroU32::try_from(1).unwrap(),
+                seed_derivation: SeedDerivation::Zip32Standard,
+            },
+        )
+    }
+
+    fn file_with(dir: &tempfile::TempDir, bytes: &[u8]) -> std::path::PathBuf {
+        let path = dir.path().join("wallet.dat");
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn missing_empty_and_junk_files_are_told_apart() {
+        let config = ZingoConfig::create_testnet();
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("wallet.dat");
+
+        assert!(matches!(
+            LightWallet::open_file(&path, config.chain),
+            Err(WalletFileError::NotFound)
+        ));
+        assert!(matches!(
+            LightWallet::read_recovery_info_from_path(&path, config.chain),
+            Err(WalletFileError::NotFound)
+        ));
+
+        std::fs::write(&path, b"").unwrap();
+        assert!(matches!(
+            LightWallet::open_file(&path, config.chain),
+            Err(WalletFileError::Empty)
+        ));
+        std::fs::write(&path, b"  \n").unwrap();
+        assert!(matches!(
+            LightWallet::open_file(&path, config.chain),
+            Err(WalletFileError::Empty)
+        ));
+
+        std::fs::write(&path, b"this is not a wallet file at all").unwrap();
+        assert!(matches!(
+            LightWallet::open_file(&path, config.chain),
+            Err(WalletFileError::NotAWalletFile)
+        ));
+        assert!(matches!(
+            LightWallet::read_recovery_info_from_path(&path, config.chain),
+            Err(WalletFileError::NotAWalletFile)
+        ));
+    }
+
+    #[test]
+    fn a_newer_version_is_reported_with_its_number() {
+        let config = ZingoConfig::create_testnet();
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut bytes = seed_wallet_bytes(&config);
+        bytes[..8].copy_from_slice(&99u64.to_le_bytes());
+        let path = file_with(&dir, &bytes);
+
+        match LightWallet::open_file(&path, config.chain) {
+            Err(WalletFileError::UnsupportedVersion { found, min, max }) => {
+                assert_eq!(found, 99);
+                assert_eq!(min, 1);
+                assert_eq!(max, LightWallet::serialized_version());
+            }
+            other => panic!("expected UnsupportedVersion, got {other:?}"),
+        }
+        let text = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        std::fs::write(&path, text.as_bytes()).unwrap();
+        assert!(matches!(
+            LightWallet::open_file(&path, config.chain),
+            Err(WalletFileError::UnsupportedVersion { found: 99, .. })
+        ));
+    }
+
+    #[test]
+    fn another_chain_is_named_in_the_error_and_recovery_still_works() {
+        let mainnet = ZingoConfig::create_mainnet();
+        let testnet = ZingoConfig::create_testnet();
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = file_with(&dir, &seed_wallet_bytes(&mainnet));
+
+        match LightWallet::open_file(&path, testnet.chain) {
+            Err(WalletFileError::ChainMismatch { file, expected }) => {
+                assert_eq!(file, "main");
+                assert_eq!(expected, "test");
+            }
+            other => panic!("expected ChainMismatch, got {other:?}"),
+        }
+        let info = LightWallet::read_recovery_info_from_path(&path, testnet.chain).unwrap();
+        assert_eq!(info.chain_name, "main");
+        assert_eq!(info.seed_phrase.as_deref(), Some(SEED));
+        assert_eq!(info.birthday, 419_200);
+        assert_eq!(info.version, LightWallet::serialized_version());
+        assert!(info.unified_full_viewing_key.is_none());
+    }
+
+    #[test]
+    fn a_truncated_file_names_the_section_and_keeps_the_recovery_info() {
+        let config = ZingoConfig::create_testnet();
+        let dir = tempfile::TempDir::new().unwrap();
+        let bytes = seed_wallet_bytes(&config);
+
+        let path = file_with(&dir, &bytes[..10]);
+        assert!(matches!(
+            LightWallet::open_file(&path, config.chain),
+            Err(WalletFileError::Truncated {
+                section: "chain name"
+            })
+        ));
+
+        let path = file_with(&dir, &bytes[..20]);
+        assert!(matches!(
+            LightWallet::open_file(&path, config.chain),
+            Err(WalletFileError::Truncated { section: "seed" })
+        ));
+
+        let prefix_end = 8 + (8 + 4) + (1 + 16) + 4;
+        let path = file_with(&dir, &bytes[..prefix_end - 2]);
+        assert!(matches!(
+            LightWallet::read_recovery_info_from_path(&path, config.chain),
+            Err(WalletFileError::Truncated {
+                section: "birthday"
+            })
+        ));
+
+        let path = file_with(&dir, &bytes[..prefix_end + 12]);
+        assert!(matches!(
+            LightWallet::open_file(&path, config.chain),
+            Err(WalletFileError::Truncated {
+                section: "wallet data"
+            })
+        ));
+        let info = LightWallet::read_recovery_info_from_path(&path, config.chain).unwrap();
+        assert_eq!(info.seed_phrase.as_deref(), Some(SEED));
+        assert_eq!(info.birthday, 419_200);
+    }
+
+    #[test]
+    fn a_corrupt_prefix_names_the_section() {
+        let config = ZingoConfig::create_testnet();
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut bytes = seed_wallet_bytes(&config);
+        bytes[16] = 0xff;
+        let path = file_with(&dir, &bytes);
+
+        match LightWallet::open_file(&path, config.chain) {
+            Err(WalletFileError::Corrupt {
+                section: "chain name",
+                ..
+            }) => {}
+            other => panic!("expected a corrupt chain name, got {other:?}"),
+        }
+        let mut bytes = seed_wallet_bytes(&config);
+        bytes[20] = 31;
+        let path = file_with(&dir, &bytes);
+        match LightWallet::open_file(&path, config.chain) {
+            Err(WalletFileError::Corrupt {
+                section: "seed", ..
+            }) => {}
+            other => panic!("expected a corrupt seed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recovery_info_reads_both_shapes_and_the_viewing_key_of_a_seedless_wallet() {
+        let config = ZingoConfig::create_testnet();
+        let dir = tempfile::TempDir::new().unwrap();
+        let bytes = seed_wallet_bytes(&config);
+        let path = file_with(&dir, &bytes);
+        let raw = LightWallet::read_recovery_info_from_path(&path, config.chain).unwrap();
+        std::fs::write(
+            &path,
+            base64::engine::general_purpose::STANDARD.encode(&bytes),
+        )
+        .unwrap();
+        let text = LightWallet::read_recovery_info_from_path(&path, config.chain).unwrap();
+        assert_eq!(raw, text);
+        assert_eq!(raw.seed_phrase.as_deref(), Some(SEED));
+
+        let (wallet, _) = LightWallet::open_file(&path, config.chain).unwrap();
+        let ufvk = zcash_keys::keys::UnifiedFullViewingKey::try_from(
+            wallet.unified_key_store.get(&AccountId::ZERO).unwrap(),
+        )
+        .unwrap()
+        .encode(&config.chain);
+        let view_only = wallet_bytes(&config, WalletBase::Ufvk(ufvk.clone()));
+        let path = file_with(&dir, &view_only);
+        let info = LightWallet::read_recovery_info_from_path(&path, config.chain).unwrap();
+        assert!(info.seed_phrase.is_none());
+        assert_eq!(
+            info.unified_full_viewing_key.as_deref(),
+            Some(ufvk.as_str())
+        );
+        assert_eq!(info.birthday, 419_200);
+    }
+
+    #[test]
+    fn read_from_path_keeps_the_io_error_kinds() {
+        let config = ZingoConfig::create_testnet();
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("wallet.dat");
+        assert_eq!(
+            LightWallet::read_from_path(&path, config.chain)
+                .unwrap_err()
+                .kind(),
+            ErrorKind::NotFound
+        );
+        let bytes = seed_wallet_bytes(&config);
+        file_with(&dir, &bytes[..20]);
+        let error = LightWallet::read_from_path(&path, config.chain).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::UnexpectedEof);
+        assert_eq!(
+            error.to_string(),
+            "wallet file ends early while reading the seed"
+        );
     }
 }
