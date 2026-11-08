@@ -830,28 +830,9 @@ impl ZingoConfig {
         self.wallet_path_exists()
     }
 
-    /// TODO: Add Doc Comment Here!
-    pub fn backup_existing_wallet(&self) -> Result<String, String> {
-        if !self.wallet_path_exists() {
-            return Err(format!(
-                "Couldn't find existing wallet to backup. Looked in {:?}",
-                self.get_wallet_path().to_str()
-            ));
-        }
-
-        let mut backup_file_path = self.get_zingo_wallet_dir().into_path_buf();
-        backup_file_path.push(format!(
-            "zingo-wallet.backup.{}.dat",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-        ));
-
-        let backup_file_str = backup_file_path.to_string_lossy().to_string();
-        std::fs::copy(self.get_wallet_path(), backup_file_path).map_err(|e| format!("{e}"))?;
-
-        Ok(backup_file_str)
+    /// Removes the wallet file. Fails with [`std::io::ErrorKind::NotFound`] if there is none.
+    pub fn remove_wallet_file(&self) -> std::io::Result<()> {
+        std::fs::remove_file(self.get_wallet_path())
     }
 
     /// TODO: Add Doc Comment Here!
@@ -947,5 +928,38 @@ mod tests {
         //     true,
         // );
         // assert_eq!(invalid_config.is_err(), true);
+    }
+}
+
+#[cfg(test)]
+mod wallet_file_tests {
+    use std::path::PathBuf;
+
+    use tempfile::TempDir;
+
+    use crate::config::{ChainType, ConfiguredActivationHeights, ZingoConfig};
+
+    fn config_in(temp_dir: &TempDir, wallet_name: &str) -> ZingoConfig {
+        let mut config = ZingoConfig::build(ChainType::Regtest(
+            ConfiguredActivationHeights::regtest_all_active(),
+        ))
+        .set_wallet_dir(temp_dir.path().to_path_buf())
+        .create();
+        config.wallet_name = PathBuf::from(wallet_name);
+        config
+    }
+
+    #[test]
+    fn remove_wallet_file_missing_is_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = config_in(&temp_dir, "wallet.dat");
+
+        let error = config.remove_wallet_file().unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+
+        std::fs::write(config.get_wallet_path(), b"A").unwrap();
+        assert!(config.wallet_path_exists());
+        config.remove_wallet_file().unwrap();
+        assert!(!config.wallet_path_exists());
     }
 }
