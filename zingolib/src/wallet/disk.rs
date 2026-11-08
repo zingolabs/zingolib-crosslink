@@ -723,19 +723,30 @@ mod read_from_path_tests {
         assert!(!wallet.save_required);
     }
 
-    #[test]
-    fn read_from_path_base64_text_shape_marks_save_required() {
-        let config = ZingoConfig::create_testnet();
+    #[tokio::test]
+    async fn read_from_path_base64_text_shape_marks_save_required() {
         let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("wallet.dat");
+        let mut config = ZingoConfig::create_testnet();
+        config.wallet_dir = Some(dir.path().to_path_buf());
+        config.wallet_name = "wallet.dat".into();
+        let path = config.get_wallet_pathbuf();
         let encoded =
             base64::engine::general_purpose::STANDARD.encode(written_wallet_bytes(&config));
         std::fs::write(&path, encoded.as_bytes()).unwrap();
 
         let (wallet, shape) = LightWallet::read_from_path(&path, config.chain).unwrap();
-
         assert_eq!(shape, WalletFileShape::Base64Text);
         assert!(wallet.save_required);
+
+        // The first save rewrites the file as raw bytes.
+        let (client, _) = crate::lightclient::LightClient::open_from_wallet_path(config).unwrap();
+        assert!(client.save_to_disk().await.unwrap());
+        let rewritten = std::fs::read(&path).unwrap();
+        assert_eq!(
+            rewritten[..8],
+            LightWallet::serialized_version().to_le_bytes()
+        );
+        assert_eq!(rewritten[..8], 40u64.to_le_bytes());
     }
 
     #[test]

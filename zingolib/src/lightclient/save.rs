@@ -9,6 +9,9 @@ use super::LightClient;
 use crate::data::PollReport;
 
 /// Writes `bytes` to file at `wallet_path`.
+///
+/// The bytes go to a `.tmp` sibling first, which is synced and then renamed over `wallet_path`,
+/// so an interrupted write leaves the previous file intact.
 fn write_to_path(wallet_path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     let temp_wallet_path: std::path::PathBuf = wallet_path.with_extension(
         wallet_path
@@ -40,6 +43,22 @@ fn write_to_path(wallet_path: &std::path::Path, bytes: &[u8]) -> std::io::Result
     Ok(())
 }
 impl LightClient {
+    /// Serializes the wallet and writes it atomically to the configured wallet path when the
+    /// wallet's `save_required` flag is set.
+    ///
+    /// Returns `Ok(true)` if a file was written and `Ok(false)` if nothing changed since the last
+    /// save.
+    pub async fn save_to_disk(&self) -> std::io::Result<bool> {
+        let wallet_path = self.config.get_wallet_path();
+        match self.wallet.write().await.save()? {
+            Some(wallet_bytes) => {
+                write_to_path(&wallet_path, &wallet_bytes)?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
     /// Launches a task for saving the wallet data to persistance when the wallet's `save_required` flag is set.
     pub async fn save_task(&mut self) {
         if self.save_active.load(atomic::Ordering::Acquire) {
@@ -137,6 +156,132 @@ impl LightClient {
             error!("{err}");
             log::debug!("File does not exist, nothing to delete.");
             Err(err)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bip0039::Mnemonic;
+    use tempfile::TempDir;
+    use zingo_test_vectors::seeds::CHIMNEY_BETTER_SEED;
+
+    use super::write_to_path;
+    use crate::{
+        config::{ChainType, ConfiguredActivationHeights, ZingoConfig},
+        lightclient::{LightClient, error::LightClientError},
+        wallet::{LightWallet, SeedDerivation, WalletBase},
+    };
+
+    fn regtest_config(temp_dir: &TempDir) -> ZingoConfig {
+        ZingoConfig::build(ChainType::Regtest(
+            ConfiguredActivationHeights::regtest_all_active(),
+        ))
+        .set_wallet_dir(temp_dir.path().to_path_buf())
+        .create()
+    }
+
+    fn client_from_phrase(config: &ZingoConfig) -> LightClient {
+        LightClient::create_from_wallet(
+            LightWallet::new(
+                config.chain,
+                WalletBase::Mnemonic {
+                    mnemonic: Mnemonic::from_phrase(CHIMNEY_BETTER_SEED.to_string()).unwrap(),
+                    no_of_accounts: config.no_of_accounts,
+                    seed_derivation: SeedDerivation::Zip32Standard,
+                },
+                1.into(),
+                config.wallet_settings.clone(),
+            )
+            .unwrap(),
+            config.clone(),
+            false,
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn save_to_disk_round_trips_through_open_from_wallet_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = regtest_config(&temp_dir);
+        let lc = client_from_phrase(&config);
+
+        assert!(lc.save_to_disk().await.unwrap());
+        assert!(!lc.wallet.read().await.save_required);
+
+        let (reopened, shape) = LightClient::open_from_wallet_path(config).unwrap();
+        assert_eq!(shape, crate::wallet::disk::WalletFileShape::Raw);
+        assert_eq!(
+            "tmYd5GP6JxUxTUcz98NLPumEotvaMPaXytz".to_string(),
+            reopened.transparent_addresses_json().await[0]["encoded_address"]
+        );
+        assert_eq!(
+            "uregtest15en5x5cnsc7ye3wfy0prnh3ut34ns9w40htunlh9htfl6k5p004ja5gprxfz8fygjeax07a8489wzjk8gsx65thcp6d3ku8umgaka6f0"
+                .to_string(),
+            reopened.unified_addresses_json().await[0]["encoded_address"]
+        );
+    }
+
+    #[tokio::test]
+    async fn save_to_disk_is_noop_when_nothing_changed() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = regtest_config(&temp_dir);
+        let lc = client_from_phrase(&config);
+
+        assert!(lc.save_to_disk().await.unwrap());
+        let first = std::fs::read(config.get_wallet_path()).unwrap();
+
+        assert!(!lc.save_to_disk().await.unwrap());
+        let second = std::fs::read(config.get_wallet_path()).unwrap();
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn write_to_path_uses_tmp_sibling_and_removes_it() {
+        let temp_dir = TempDir::new().unwrap();
+        let wallet_path = temp_dir.path().join("wallet.dat");
+        let tmp_path = temp_dir.path().join("wallet.dat.tmp");
+
+        write_to_path(&wallet_path, b"A").unwrap();
+
+        assert_eq!(std::fs::read(&wallet_path).unwrap(), b"A");
+        assert!(!tmp_path.exists());
+        let names: Vec<_> = std::fs::read_dir(temp_dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("wallet.dat")]);
+    }
+
+    #[test]
+    fn write_to_path_leaves_previous_file_intact_on_failure() {
+        let temp_dir = TempDir::new().unwrap();
+        let wallet_path = temp_dir.path().join("wallet.dat");
+        write_to_path(&wallet_path, b"A").unwrap();
+
+        // A directory at the `.tmp` sibling's path cannot be opened for writing, so the second
+        // write must fail before the rename.
+        let tmp_path = temp_dir.path().join("wallet.dat.tmp");
+        std::fs::create_dir(&tmp_path).unwrap();
+
+        write_to_path(&wallet_path, b"B").unwrap_err();
+
+        assert_eq!(std::fs::read(&wallet_path).unwrap(), b"A");
+    }
+
+    #[test]
+    fn open_from_wallet_path_missing_file_is_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = regtest_config(&temp_dir);
+
+        let error = LightClient::open_from_wallet_path(config).unwrap_err();
+
+        match error {
+            LightClientError::FileError(io_error) => {
+                assert_eq!(io_error.kind(), std::io::ErrorKind::NotFound);
+            }
+            other => panic!("expected FileError, got {other:?}"),
         }
     }
 }
