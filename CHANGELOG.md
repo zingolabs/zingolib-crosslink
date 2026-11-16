@@ -69,7 +69,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `info` key `indexer_uri`, and in `zingo-cli` the `--indexer` flag and `change_indexer` command
   (were `--server`, `change_server`). Test helpers follow (`ConductChain::indexer_uri`).
 - removed `dev` branch reference from `zingo_common_components` crate and pointed to version `0.2`
-- `crosslink_monolith` pinned to `0735e958` (NU6.3 at height 1, `FeaturenetUpgrade1` at 55296,
+- `crosslink_monolith` pinned to `3fb7a038` (v17): `FeaturenetUpgrade2` activates at height 165000
+  with consensus branch ID `0x46545532`. `ConfiguredActivationHeights` gains
+  `featurenet_upgrade_2`, and `crosslink_featurenet()` schedules it at the height the node ships.
+  A wallet built on the earlier pin signs for the `FeaturenetUpgrade1` branch above that height and
+  cannot read transactions mined there.
+- `crosslink_monolith` was pinned to `0735e958` (NU6.3 at height 1, `FeaturenetUpgrade1` at 55296,
   self-certifying finalizer addresses, `StakingAction` as an enum, bond spending keys in the
   unified spending key). `orchard` 0.15, `sapling-crypto` 0.7, `shardtree` 0.7.
 - `ConfiguredActivationHeights` is now defined in `zingolib::config` (the `zebra-chain` dependency

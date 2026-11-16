@@ -68,9 +68,8 @@ impl Network {
     /// This chain's built-in indexers, from zingolib's list, in the order to try them. They are
     /// a starting point only: before it connects, the wallet measures them and goes to the
     /// best one on its own chain (see the backend's seed probe), and the peer exchange finds
-    /// the rest. In October 2026 the stable chain's first entry is the node on the live chain;
-    /// the three Shielded Labs nodes after it stayed on the branch from before
-    /// FeaturenetUpgrade1, a chain that stopped at block 62,152.
+    /// the rest. A listed node can miss a network upgrade: in November 2026 the last entry
+    /// stopped at block 164,999, the block before FeaturenetUpgrade2.
     pub fn servers(self) -> Vec<String> {
         zingolib::config::IndexerList::builtin()
             .iter()

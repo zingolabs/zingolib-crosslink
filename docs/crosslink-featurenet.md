@@ -8,7 +8,7 @@ What this wallet talks to, and what changed with the `0735e958` monolith pin.
 |---|---|
 | Base | Zcash testnet parameters, network magic `ClT1` |
 | Genesis | `05a60a92d99d85997cce3b87616c089f6124d7342af37106edc76126334a2c38` |
-| Upgrades | every upgrade through NU6.3 at height 1; `FeaturenetUpgrade1` at 55 296 (branch id `0x46545531`) |
+| Upgrades | every upgrade through NU6.3 at height 1; `FeaturenetUpgrade1` at 55 296 (branch id `0x46545531`); `FeaturenetUpgrade2` at 165 000 (branch id `0x46545532`) |
 | Pools | transparent, Sprout, Sapling, Orchard, Ironwood, deferred, staking bonded, staking unbonded |
 
 The node's default peers, all Shielded Labs hosts, serve the PoW network on port 8233, the
@@ -19,6 +19,10 @@ indexer on its P2P port plus 10001 (`18234`).
 As of 2026-10-19 those three hosts sit on a stale fork at height 62149 without
 `FeaturenetUpgrade1`; the live chain (branch id `46545531`, near height 69 000) is served by other
 peers, for example `http://88.198.67.189:18234`. See [featurenet-e2e.md](featurenet-e2e.md).
+
+As of 2026-11-16 the roles are reversed for `FeaturenetUpgrade2`: the three Shielded Labs hosts
+follow the live chain (branch id `46545532`), and `88.198.67.189` stopped at height 164 999 on the
+`FeaturenetUpgrade1` branch.
 
 ## Indexer lists
 

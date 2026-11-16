@@ -69,6 +69,9 @@ pub struct ConfiguredActivationHeights {
     pub nu6_3: Option<u32>,
     /// The first Crosslink featurenet hard fork (power-of-10 bonds, top-level PoS issuance split).
     pub featurenet_upgrade_1: Option<u32>,
+    /// The second Crosslink featurenet hard fork (fat pointer bound into the block commitment,
+    /// strict two-thirds BFT quorum, a new consensus branch ID).
+    pub featurenet_upgrade_2: Option<u32>,
     pub nu7: Option<u32>,
 }
 
@@ -76,7 +79,8 @@ impl ConfiguredActivationHeights {
     /// The activation schedule of the Crosslink featurenet, as shipped in the node.
     ///
     /// Every upgrade through NU6.3 (which brings the Ironwood pool) activates at height 1, and
-    /// `FeaturenetUpgrade1` activates at the height hard-coded in `zcash_protocol`. The wallet and
+    /// `FeaturenetUpgrade1` and `FeaturenetUpgrade2` activate at the heights hard-coded in
+    /// `zcash_protocol`. The wallet and
     /// the node must agree on these, or every transaction the wallet builds carries a consensus
     /// branch ID the node rejects.
     #[must_use]
@@ -96,16 +100,18 @@ impl ConfiguredActivationHeights {
             featurenet_upgrade_1: Some(
                 zcash_protocol::consensus::TESTNET_FEATURENET_UPGRADE_1_HEIGHT,
             ),
+            featurenet_upgrade_2: zcash_protocol::consensus::TESTNET_FEATURENET_UPGRADE_2_HEIGHT,
             nu7: None,
         }
     }
 
-    /// A regtest schedule with every upgrade through NU6.3 active from height 1 and no
-    /// `FeaturenetUpgrade1`.
+    /// A regtest schedule with every upgrade through NU6.3 active from height 1 and neither
+    /// featurenet upgrade.
     #[must_use]
     pub fn regtest_all_active() -> Self {
         Self {
             featurenet_upgrade_1: None,
+            featurenet_upgrade_2: None,
             ..Self::crosslink_featurenet()
         }
     }
@@ -164,6 +170,9 @@ impl Parameters for ChainType {
                 NetworkUpgrade::FeaturenetUpgrade1 => activation_heights
                     .featurenet_upgrade_1
                     .map(BlockHeight::from_u32),
+                NetworkUpgrade::FeaturenetUpgrade2 => activation_heights
+                    .featurenet_upgrade_2
+                    .map(BlockHeight::from_u32),
             },
             Mainnet => MAIN_NETWORK.activation_height(nu),
             Regtest(activation_heights) => match nu {
@@ -183,6 +192,9 @@ impl Parameters for ChainType {
                 NetworkUpgrade::Nu6_3 => activation_heights.nu6_3.map(BlockHeight::from_u32),
                 NetworkUpgrade::FeaturenetUpgrade1 => activation_heights
                     .featurenet_upgrade_1
+                    .map(BlockHeight::from_u32),
+                NetworkUpgrade::FeaturenetUpgrade2 => activation_heights
+                    .featurenet_upgrade_2
                     .map(BlockHeight::from_u32),
             },
         }
@@ -851,6 +863,34 @@ mod tests {
     use std::num::NonZeroU32;
 
     use crate::wallet::WalletSettings;
+
+    #[test]
+    fn featurenet_switches_branch_at_each_featurenet_upgrade() {
+        use zcash_protocol::consensus::{BlockHeight, BranchId};
+
+        let featurenet =
+            super::ChainType::Testnet(super::ConfiguredActivationHeights::crosslink_featurenet());
+        let branch = |height| BranchId::for_height(&featurenet, BlockHeight::from_u32(height));
+
+        assert_eq!(branch(55_295), BranchId::Nu6_3);
+        assert_eq!(branch(55_296), BranchId::FeaturenetUpgrade1);
+        assert_eq!(branch(164_999), BranchId::FeaturenetUpgrade1);
+        assert_eq!(branch(165_000), BranchId::FeaturenetUpgrade2);
+        assert_eq!(u32::from(branch(165_000)), 0x4654_5532);
+    }
+
+    #[test]
+    fn regtest_schedule_has_no_featurenet_upgrade() {
+        use zcash_protocol::consensus::{BlockHeight, BranchId};
+
+        let regtest =
+            super::ChainType::Regtest(super::ConfiguredActivationHeights::regtest_all_active());
+
+        assert_eq!(
+            BranchId::for_height(&regtest, BlockHeight::from_u32(200_000)),
+            BranchId::Nu6_3
+        );
+    }
 
     /// Validate that the `load_clientconfig` function creates a valid config from an empty uri
     #[tokio::test]

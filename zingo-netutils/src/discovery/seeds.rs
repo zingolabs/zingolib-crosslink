@@ -6,10 +6,10 @@
 
 /// gRPC seed endpoints of the stable featurenet, measured directly by every discovery run.
 pub const CROSSLINK_STABLE_SEED_URIS: &[&str] = &[
-    "http://88.198.67.189:18234",
     "http://45.63.75.9:18234",
     "http://70.34.220.94:18234",
     "http://64.177.44.176:18234",
+    "http://88.198.67.189:18234",
 ];
 
 /// gRPC seed endpoints of the nightly featurenet, measured directly by every discovery run.
