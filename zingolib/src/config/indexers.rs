@@ -219,12 +219,6 @@ impl IndexerList {
             "https://testnet.zec.rocks:443",
             "zec.rocks testnet",
         );
-        add(
-            &mut list,
-            IndexerNetwork::CrosslinkFeaturenet,
-            "http://88.198.67.189:18234",
-            "crosslink featurenet (live chain, 2026-10)",
-        );
         for host in ["45.63.75.9", "70.34.220.94", "64.177.44.176"] {
             add(
                 &mut list,
@@ -233,6 +227,12 @@ impl IndexerList {
                 "Shielded Labs (node default peer)",
             );
         }
+        add(
+            &mut list,
+            IndexerNetwork::CrosslinkFeaturenet,
+            "http://88.198.67.189:18234",
+            "crosslink featurenet (community node)",
+        );
         for host in ["45.32.186.234", "64.177.122.73", "70.34.201.146"] {
             add(
                 &mut list,
