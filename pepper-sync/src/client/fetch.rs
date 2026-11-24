@@ -26,6 +26,10 @@ const HEAVY_UNARY_TIMEOUT: Duration = Duration::from_secs(20);
 #[cfg(not(feature = "darkside_test"))]
 use zcash_client_backend::proto::service::{GetSubtreeRootsArg, SubtreeRoot};
 
+/// The most blocks one block range request asks for. The crosslink node refuses a request that
+/// spans more than 10,000 blocks.
+pub(crate) const MAX_BLOCK_RANGE_SPAN: u32 = 10_000;
+
 async fn call_with_timeout<T, F>(
     what: &'static str,
     dur: Duration,
@@ -211,22 +215,31 @@ async fn get_block(
     Ok(resp.into_inner())
 }
 
-async fn get_block_range(
-    client: &mut CompactTxStreamerClient<Channel>,
-    block_range: Range<BlockHeight>,
-) -> Result<tonic::Streaming<CompactBlock>, tonic::Status> {
-    let mut request = tonic::Request::new(BlockRange {
+/// The request for the blocks of `block_range` (end exclusive), cut to the first
+/// [`MAX_BLOCK_RANGE_SPAN`] of them.
+fn capped_block_range(block_range: &Range<BlockHeight>) -> BlockRange {
+    let start = u64::from(block_range.start);
+    let end = (u64::from(block_range.end) - 1).min(start + u64::from(MAX_BLOCK_RANGE_SPAN) - 1);
+
+    BlockRange {
         start: Some(BlockId {
-            height: u64::from(block_range.start),
+            height: start,
             hash: vec![],
         }),
         end: Some(BlockId {
-            height: u64::from(block_range.end) - 1,
+            height: end,
             hash: vec![],
         }),
         // Empty means the server's default pool selection, which includes every shielded pool.
         pool_types: vec![],
-    });
+    }
+}
+
+async fn get_block_range(
+    client: &mut CompactTxStreamerClient<Channel>,
+    block_range: Range<BlockHeight>,
+) -> Result<tonic::Streaming<CompactBlock>, tonic::Status> {
+    let mut request = tonic::Request::new(capped_block_range(&block_range));
 
     request.set_timeout(HEAVY_UNARY_TIMEOUT);
 
@@ -250,18 +263,7 @@ async fn get_block_range_nullifiers(
     client: &mut CompactTxStreamerClient<Channel>,
     block_range: Range<BlockHeight>,
 ) -> Result<tonic::Streaming<CompactBlock>, tonic::Status> {
-    let mut request = tonic::Request::new(BlockRange {
-        start: Some(BlockId {
-            height: u64::from(block_range.start),
-            hash: vec![],
-        }),
-        end: Some(BlockId {
-            height: u64::from(block_range.end) - 1,
-            hash: vec![],
-        }),
-        // Empty means the server's default pool selection, which includes every shielded pool.
-        pool_types: vec![],
-    });
+    let mut request = tonic::Request::new(capped_block_range(&block_range));
 
     request.set_timeout(HEAVY_UNARY_TIMEOUT);
 
@@ -415,4 +417,25 @@ pub(crate) async fn get_mempool_stream(
     .await?;
 
     Ok(resp.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use zcash_protocol::consensus::BlockHeight;
+
+    use super::{MAX_BLOCK_RANGE_SPAN, capped_block_range};
+
+    fn heights(start: u32, end: u32) -> (u64, u64) {
+        let request =
+            capped_block_range(&(BlockHeight::from_u32(start)..BlockHeight::from_u32(end)));
+        (request.start.unwrap().height, request.end.unwrap().height)
+    }
+
+    #[test]
+    fn a_block_range_request_spans_at_most_the_cap() {
+        assert_eq!(heights(5, 6), (5, 5));
+        assert_eq!(heights(1, MAX_BLOCK_RANGE_SPAN + 1), (1, 10_000));
+        assert_eq!(heights(1, MAX_BLOCK_RANGE_SPAN + 2), (1, 10_000));
+        assert_eq!(heights(10_001, 192_514), (10_001, 20_000));
+    }
 }

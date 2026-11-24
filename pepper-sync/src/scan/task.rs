@@ -409,6 +409,8 @@ where
                 let mut first_batch = true;
                 // final tree sizes of the block before the one being batched, once known
                 let mut previous_block_final_tree_sizes: Option<(u32, u32, u32)> = None;
+                // the height a stream that ended short of the range was continued from
+                let mut continued_from: Option<BlockHeight> = None;
 
                 let mut block_stream = {
                     let range = scan_task.scan_range.block_range().clone();
@@ -498,8 +500,38 @@ where
                         }
                     };
 
-                    let Some(compact_block) = maybe_block else {
-                        break;
+                    let compact_block = match maybe_block {
+                        Some(compact_block) => {
+                            continued_from = None;
+                            compact_block
+                        }
+                        None if retry_height < scan_task.scan_range.block_range().end
+                            && continued_from != Some(retry_height) =>
+                        {
+                            continued_from = Some(retry_height);
+                            let rest = retry_height..scan_task.scan_range.block_range().end;
+                            let frs = fetch_request_sender.clone();
+                            let continue_fut = async move {
+                                if fetch_nullifiers_only {
+                                    client::get_nullifier_range(frs, rest).await
+                                } else {
+                                    client::get_compact_block_range(frs, rest).await
+                                }
+                            };
+                            block_stream =
+                                match tokio::time::timeout(STREAM_OPEN_TIMEOUT, continue_fut).await
+                                {
+                                    Ok(res) => res?,
+                                    Err(_) => {
+                                        return Err(tonic::Status::deadline_exceeded(
+                                            "open stream timeout (continue)",
+                                        )
+                                        .into());
+                                    }
+                                };
+                            continue;
+                        }
+                        None => break,
                     };
 
                     if fetch_nullifiers_only {
