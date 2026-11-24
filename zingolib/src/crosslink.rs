@@ -123,6 +123,10 @@ pub struct BondInfo {
     /// The height of the action that put the bond in its current state: creation while active,
     /// the unbond while unbonding, the withdrawal once withdrawn.
     pub last_action_height: u32,
+    /// The version an action on the bond must spend from `FeaturenetUpgrade3`: the txid of the
+    /// last action that spent the bond, or of the transaction that created it. `None` when the
+    /// node is too old to report one.
+    pub version: Option<[u8; 32]>,
 }
 
 impl BondInfo {
@@ -142,6 +146,7 @@ impl From<zcash_client_backend::proto::service::BondInfoResponse> for BondInfo {
             amount_zats: response.amount,
             status: BondStatus::from_wire(response.status),
             last_action_height: response.last_action_height,
+            version: response.version.as_slice().try_into().ok(),
         }
     }
 }
@@ -250,6 +255,7 @@ mod tests {
             amount_zats: 1,
             status: BondStatus::Active,
             last_action_height: 5,
+            version: None,
         };
         assert_eq!(active.next_action_height(&CALENDAR), Some(100));
         let withdrawn = BondInfo {
@@ -270,8 +276,29 @@ mod tests {
     }
 
     #[test]
+    fn bond_info_reads_the_version_a_node_reports() {
+        use zcash_client_backend::proto::service::BondInfoResponse;
+
+        let reported = BondInfo::from(BondInfoResponse {
+            amount: 10,
+            status: 1,
+            last_action_height: 7,
+            version: vec![9; 32],
+        });
+        assert_eq!(reported.version, Some([9; 32]));
+
+        let unreported = BondInfo::from(BondInfoResponse {
+            amount: 10,
+            status: 1,
+            last_action_height: 7,
+            version: Vec::new(),
+        });
+        assert_eq!(unreported.version, None);
+    }
+
+    #[test]
     fn round_trips_a_finalizer_address() {
-        let (_, signing_key, pub_key) = finalizer_key_from_seed(b"zingolib finalizer test");
+        let (signing_key, pub_key) = finalizer_key_from_seed(b"zingolib finalizer test");
         let address = FinalizerAddress::create(&signing_key);
         let encoded = encode_finalizer_address(&address);
 
@@ -293,7 +320,7 @@ mod tests {
             Err(FinalizerAddressError::Encoding)
         );
 
-        let (_, signing_key, _) = finalizer_key_from_seed(b"zingolib finalizer test");
+        let (signing_key, _) = finalizer_key_from_seed(b"zingolib finalizer test");
         let mut encoded = encode_finalizer_address(&FinalizerAddress::create(&signing_key));
         // Flip one character inside the signature part of the payload.
         let last = encoded.pop().unwrap();
@@ -306,7 +333,7 @@ mod tests {
 
     #[test]
     fn a_version_two_prefix_is_rejected() {
-        let (_, signing_key, _) = finalizer_key_from_seed(b"zingolib finalizer test");
+        let (signing_key, _) = finalizer_key_from_seed(b"zingolib finalizer test");
         let encoded = encode_finalizer_address(&FinalizerAddress::create(&signing_key));
         let future = encoded.replacen("zfinv1", "zfinv2", 1);
         assert_eq!(

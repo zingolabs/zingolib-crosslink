@@ -69,6 +69,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `info` key `indexer_uri`, and in `zingo-cli` the `--indexer` flag and `change_indexer` command
   (were `--server`, `change_server`). Test helpers follow (`ConductChain::indexer_uri`).
 - removed `dev` branch reference from `zingo_common_components` crate and pointed to version `0.2`
+- `crosslink_monolith` pinned to `93f44c75` (v19): `FeaturenetUpgrade3` activates at height 189000
+  (branch ID `0x464e5533`) and `FeaturenetUpgrade4` at 213000 (branch ID `0x464e5534`).
+  `ConfiguredActivationHeights` gains `featurenet_upgrade_3` and `featurenet_upgrade_4`. From
+  `FeaturenetUpgrade3`, `begin_unstake`, `redelegate` and `withdraw_stake` spend the bond version
+  the node reports (`BondInfo::version`) and fail with `BondVersionUnavailable` without one.
+  `stake` and `redelegate` refuse a finalizer address whose key is small order.
+- `pepper-sync` asks for at most 10000 blocks per block range request and continues from the next
+  block; the crosslink node (v19) refuses a wider request, which stopped the sync of a wallet
+  whose scan range or Ironwood size count spanned more.
 - `crosslink_monolith` pinned to `3fb7a038` (v17): `FeaturenetUpgrade2` activates at height 165000
   with consensus branch ID `0x46545532`. `ConfiguredActivationHeights` gains
   `featurenet_upgrade_2`, and `crosslink_featurenet()` schedules it at the height the node ships.

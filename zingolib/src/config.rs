@@ -72,6 +72,12 @@ pub struct ConfiguredActivationHeights {
     /// The second Crosslink featurenet hard fork (fat pointer bound into the block commitment,
     /// strict two-thirds BFT quorum, a new consensus branch ID).
     pub featurenet_upgrade_2: Option<u32>,
+    /// The third Crosslink featurenet hard fork (each action on a bond spends the bond's version,
+    /// small-order finalizer keys are refused).
+    pub featurenet_upgrade_3: Option<u32>,
+    /// The fourth Crosslink featurenet hard fork (a withdrawal waits for the chain to finalize
+    /// past the unbonding).
+    pub featurenet_upgrade_4: Option<u32>,
     pub nu7: Option<u32>,
 }
 
@@ -79,8 +85,7 @@ impl ConfiguredActivationHeights {
     /// The activation schedule of the Crosslink featurenet, as shipped in the node.
     ///
     /// Every upgrade through NU6.3 (which brings the Ironwood pool) activates at height 1, and
-    /// `FeaturenetUpgrade1` and `FeaturenetUpgrade2` activate at the heights hard-coded in
-    /// `zcash_protocol`. The wallet and
+    /// the four featurenet upgrades activate at the heights hard-coded in `zcash_protocol`. The wallet and
     /// the node must agree on these, or every transaction the wallet builds carries a consensus
     /// branch ID the node rejects.
     #[must_use]
@@ -101,17 +106,21 @@ impl ConfiguredActivationHeights {
                 zcash_protocol::consensus::TESTNET_FEATURENET_UPGRADE_1_HEIGHT,
             ),
             featurenet_upgrade_2: zcash_protocol::consensus::TESTNET_FEATURENET_UPGRADE_2_HEIGHT,
+            featurenet_upgrade_3: zcash_protocol::consensus::TESTNET_FEATURENET_UPGRADE_3_HEIGHT,
+            featurenet_upgrade_4: zcash_protocol::consensus::TESTNET_FEATURENET_UPGRADE_4_HEIGHT,
             nu7: None,
         }
     }
 
-    /// A regtest schedule with every upgrade through NU6.3 active from height 1 and neither
+    /// A regtest schedule with every upgrade through NU6.3 active from height 1 and no
     /// featurenet upgrade.
     #[must_use]
     pub fn regtest_all_active() -> Self {
         Self {
             featurenet_upgrade_1: None,
             featurenet_upgrade_2: None,
+            featurenet_upgrade_3: None,
+            featurenet_upgrade_4: None,
             ..Self::crosslink_featurenet()
         }
     }
@@ -173,6 +182,12 @@ impl Parameters for ChainType {
                 NetworkUpgrade::FeaturenetUpgrade2 => activation_heights
                     .featurenet_upgrade_2
                     .map(BlockHeight::from_u32),
+                NetworkUpgrade::FeaturenetUpgrade3 => activation_heights
+                    .featurenet_upgrade_3
+                    .map(BlockHeight::from_u32),
+                NetworkUpgrade::FeaturenetUpgrade4 => activation_heights
+                    .featurenet_upgrade_4
+                    .map(BlockHeight::from_u32),
             },
             Mainnet => MAIN_NETWORK.activation_height(nu),
             Regtest(activation_heights) => match nu {
@@ -195,6 +210,12 @@ impl Parameters for ChainType {
                     .map(BlockHeight::from_u32),
                 NetworkUpgrade::FeaturenetUpgrade2 => activation_heights
                     .featurenet_upgrade_2
+                    .map(BlockHeight::from_u32),
+                NetworkUpgrade::FeaturenetUpgrade3 => activation_heights
+                    .featurenet_upgrade_3
+                    .map(BlockHeight::from_u32),
+                NetworkUpgrade::FeaturenetUpgrade4 => activation_heights
+                    .featurenet_upgrade_4
                     .map(BlockHeight::from_u32),
             },
         }
@@ -877,6 +898,12 @@ mod tests {
         assert_eq!(branch(164_999), BranchId::FeaturenetUpgrade1);
         assert_eq!(branch(165_000), BranchId::FeaturenetUpgrade2);
         assert_eq!(u32::from(branch(165_000)), 0x4654_5532);
+        assert_eq!(branch(188_999), BranchId::FeaturenetUpgrade2);
+        assert_eq!(branch(189_000), BranchId::FeaturenetUpgrade3);
+        assert_eq!(u32::from(branch(189_000)), 0x464e_5533);
+        assert_eq!(branch(212_999), BranchId::FeaturenetUpgrade3);
+        assert_eq!(branch(213_000), BranchId::FeaturenetUpgrade4);
+        assert_eq!(u32::from(branch(213_000)), 0x464e_5534);
     }
 
     #[test]

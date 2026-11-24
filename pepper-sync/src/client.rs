@@ -160,6 +160,9 @@ pub(crate) async fn get_compact_block(
 
 /// Gets the specified range of compact blocks from the server (end exclusive).
 ///
+/// One stream carries at most [`fetch::MAX_BLOCK_RANGE_SPAN`] blocks. When it ends before the end
+/// of the range, ask again from the block after the last one received.
+///
 /// Requires [`crate::client::fetch::fetch`] to be running concurrently, connected via the `fetch_request` channel.
 pub(crate) async fn get_compact_block_range(
     fetch_request_sender: UnboundedSender<FetchRequest>,
@@ -185,6 +188,9 @@ pub(crate) async fn get_compact_block_range(
 /// Gets the specified range of nullifiers from the server (end exclusive).
 ///
 /// Nullifiers are stored in compact blocks where the actions contain only nullifiers.
+///
+/// One stream carries at most [`fetch::MAX_BLOCK_RANGE_SPAN`] blocks. When it ends before the end
+/// of the range, ask again from the block after the last one received.
 ///
 /// Requires [`crate::client::fetch::fetch`] to be running concurrently, connected via the `fetch_request` channel.
 pub(crate) async fn get_nullifier_range(
@@ -516,19 +522,28 @@ impl IronwoodSizes {
             "server serves no Ironwood tree state at height {block_height}. counting the Ironwood actions in blocks {count_from}..={block_height} instead."
         );
 
-        let mut block_stream =
-            get_nullifier_range(fetch_request_sender, count_from..block_height + 1).await?;
         let mut counted = Vec::new();
-        while let Some(block) = next_stream_item(&mut block_stream, "NullifierRange").await? {
-            let block_count: u32 = block
-                .vtx
-                .iter()
-                .map(|tx| tx.ironwood_actions.len())
-                .sum::<usize>()
-                .try_into()
-                .expect("Ironwood output count cannot exceed a u32");
-            size += block_count;
-            counted.push((block.height(), size));
+        let mut next_height = count_from;
+        while next_height <= block_height {
+            let stream_start = next_height;
+            let mut block_stream =
+                get_nullifier_range(fetch_request_sender.clone(), next_height..block_height + 1)
+                    .await?;
+            while let Some(block) = next_stream_item(&mut block_stream, "NullifierRange").await? {
+                let block_count: u32 = block
+                    .vtx
+                    .iter()
+                    .map(|tx| tx.ironwood_actions.len())
+                    .sum::<usize>()
+                    .try_into()
+                    .expect("Ironwood output count cannot exceed a u32");
+                size += block_count;
+                counted.push((block.height(), size));
+                next_height = block.height() + 1;
+            }
+            if next_height == stream_start {
+                break;
+            }
         }
         if counted.last().map(|(height, _)| *height) != Some(block_height) {
             return Err(tonic::Status::data_loss(format!(

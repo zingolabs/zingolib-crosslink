@@ -8,7 +8,7 @@ What this wallet talks to, and what changed with the `0735e958` monolith pin.
 |---|---|
 | Base | Zcash testnet parameters, network magic `ClT1` |
 | Genesis | `05a60a92d99d85997cce3b87616c089f6124d7342af37106edc76126334a2c38` |
-| Upgrades | every upgrade through NU6.3 at height 1; `FeaturenetUpgrade1` at 55 296 (branch id `0x46545531`); `FeaturenetUpgrade2` at 165 000 (branch id `0x46545532`) |
+| Upgrades | every upgrade through NU6.3 at height 1; `FeaturenetUpgrade1` at 55 296 (branch id `0x46545531`); `FeaturenetUpgrade2` at 165 000 (branch id `0x46545532`); `FeaturenetUpgrade3` at 189 000 (branch id `0x464e5533`); `FeaturenetUpgrade4` at 213 000 (branch id `0x464e5534`) |
 | Pools | transparent, Sprout, Sapling, Orchard, Ironwood, deferred, staking bonded, staking unbonded |
 
 The node's default peers, all Shielded Labs hosts, serve the PoW network on port 8233, the
@@ -117,6 +117,19 @@ the height of that previous action; `zingolib::crosslink::BondInfo::next_action_
 into the first height consensus accepts the next action, which `get_bonds` prints. `begin_unstake`
 and `redelegate` ask the node first and fail with `BondNotActive` or `StakingActionDelayNotMet`
 rather than at the mempool; `withdraw_stake` requires the node to hold the bond as unbonding.
+
+From `FeaturenetUpgrade3` an unbond, retarget or withdrawal spends the bond's version: the txid of
+the last action on the bond, or of the transaction that created it. The wallet takes it from
+`GetBondInfo` (`BondInfo::version`) and fails with `BondVersionUnavailable` when the node gives
+none. The node also refuses a finalizer whose key is small order; the wallet refuses to build a
+stake or retarget to one at any height.
+
+From `FeaturenetUpgrade4` the node accepts a withdrawal only when the chain has finalized past
+the unbonding. `GetBondInfo` does not report the finalized height, so the wallet cannot check
+this before it sends; the node rejects the withdrawal while finality is behind.
+
+The node serves at most 10 000 blocks per `GetBlockRange` or `GetBlockRangeNullifiers` request
+(v19). `pepper-sync` asks for at most that many and continues from the next block.
 
 ## Finalizer addresses
 
