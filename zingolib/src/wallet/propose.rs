@@ -362,6 +362,24 @@ impl LightWallet {
         staking_calendar(&self.network)
     }
 
+    /// The bond version an action mined at `height` spends: the one the node reports from
+    /// `FeaturenetUpgrade3`, none before it. `None` when the action must spend a version and
+    /// the node gave none.
+    fn bond_spends(
+        &self,
+        bond_info: Option<&BondInfo>,
+        height: BlockHeight,
+    ) -> Option<Option<[u8; 32]>> {
+        if self
+            .network
+            .is_nu_active(consensus::NetworkUpgrade::FeaturenetUpgrade3, height)
+        {
+            bond_info.and_then(|info| info.version).map(Some)
+        } else {
+            Some(None)
+        }
+    }
+
     /// Fails when the node reports the bond in a state other than `expected`, or when its
     /// previous action is too recent for consensus to accept the next one at `height`.
     fn check_bond_ready(
@@ -434,7 +452,7 @@ impl LightWallet {
         target_finalizer: FinalizerAddress,
         account_id: zip32::AccountId,
     ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
-        if !target_finalizer.verify() {
+        if !target_finalizer.verify() || target_finalizer.pub_key.is_small_order() {
             return Err(ProposeSendError::InvalidFinalizerAddress);
         }
 
@@ -489,9 +507,14 @@ impl LightWallet {
             self.check_bond_ready(bond_key, bond_info, BondStatus::Active, target_height)?;
         }
 
+        let spends = self
+            .bond_spends(bond_info, target_height)
+            .ok_or(ProposeSendError::BondVersionUnavailable(bond_key))?;
+
         let staking_action = StakingAction::BeginDelegationUnbonding {
             unique_pubkey: bond_key,
             signature: [0u8; 64],
+            spends,
         };
         let proposal = self
             .create_staking_proposal(Zatoshis::ZERO, account_id)
@@ -517,7 +540,7 @@ impl LightWallet {
         bond_info: Option<&BondInfo>,
         account_id: zip32::AccountId,
     ) -> Result<StakingProposal<ExtraFeeProposal>, ProposeSendError> {
-        if !to_finalizer.verify() {
+        if !to_finalizer.verify() || to_finalizer.pub_key.is_small_order() {
             return Err(ProposeSendError::InvalidFinalizerAddress);
         }
         if let Some(bond_info) = bond_info.filter(|info| info.status != BondStatus::Active) {
@@ -530,11 +553,16 @@ impl LightWallet {
             .current_bond_target_address(bond_key)
             .ok_or(ProposeSendError::UnknownBond(bond_key))?;
 
+        let spends = self
+            .bond_spends(bond_info, self.next_target_height()?)
+            .ok_or(ProposeSendError::BondVersionUnavailable(bond_key))?;
+
         let staking_action = StakingAction::RetargetDelegationBond {
             unique_pubkey: bond_key,
             signature: [0u8; 64],
             from_finalizer,
             to_finalizer,
+            spends,
         };
         let proposal = self
             .create_staking_proposal(Zatoshis::ZERO, account_id)
@@ -727,10 +755,14 @@ impl LightWallet {
             return Err(WithdrawError::NotEnoughFundsForFee);
         }
 
+        let spends = self
+            .bond_spends(Some(&bond_info), target_height.into())
+            .ok_or(WithdrawError::BondVersionUnavailable(bond_key))?;
         txb.put_staking_action(StakingAction::WithdrawDelegationBond {
             amount_zats: bond_value,
             unique_pubkey: bond_key,
             signature: [0u8; 64],
+            spends,
         })
         .map_err(|_| WithdrawError::PutStakingActionFailed)?;
 

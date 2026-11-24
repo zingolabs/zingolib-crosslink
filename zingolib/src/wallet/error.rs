@@ -89,6 +89,12 @@ pub enum WithdrawError {
     /// the node reported no such bond
     #[error("the node has no bond with key {}", hex::encode(.0))]
     BondInfoUnavailable([u8; 32]),
+    /// the node reported no version for the bond, which the action must spend
+    #[error(
+        "the node reported no version for bond {}, which a withdrawal must spend from FeaturenetUpgrade3",
+        hex::encode(.0)
+    )]
+    BondVersionUnavailable([u8; 32]),
     /// the node reports the bond in a state other than unbonding
     #[error(
         "bond {} is {status}, so consensus would reject the withdrawal; a bond must be unbonding",
@@ -381,6 +387,12 @@ pub enum ProposeSendError {
         /// the first height at which consensus accepts the action again
         next_window_start: u32,
     },
+    /// the node could not be asked for the bond's version, which the action must spend
+    #[error(
+        "the node reported no version for bond {}, which this action must spend from FeaturenetUpgrade3",
+        hex::encode(.0)
+    )]
+    BondVersionUnavailable([u8; 32]),
     /// the node reports the bond in a state that does not allow this action
     #[error("bond {} is {status}, so consensus would reject this action", hex::encode(.bond_key))]
     BondNotActive {
